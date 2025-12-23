@@ -1,0 +1,2 @@
+[console_scripts]
+livecc-run = src.app:main

@@ -1,0 +1,1207 @@
+# src/miis_broadcast/gui.py
+
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+from typing import Optional
+
+import cv2
+import numpy as np
+from PySide6 import QtCore, QtGui, QtWidgets
+from .workers.chatterbox_tts import ChatterboxTTSWorker
+from .widgets.text_output import TextOutputWidget
+from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
+from .workers.openai_tts import OpenAITTSWorker
+from .core.prompt.prompt_manager import PromptManager
+from collections import deque
+
+# ============================================================
+# High-DPI / Scaling (必須在 QApplication 建立前設定才最有效)
+# ============================================================
+
+def _configure_qt_highdpi() -> None:
+    if QtWidgets.QApplication.instance() is None:
+        try:
+            QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+        except Exception:
+            pass
+        try:
+            QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+        except Exception:
+            pass
+
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+
+
+def _find_project_root(start: Path) -> Path:
+    """
+    從目前檔案往上找，找到包含 configs/ 的那層當作專案根目錄。
+    這樣你搬路徑也不容易壞。
+    """
+    p = start.resolve()
+    for parent in [p] + list(p.parents):
+        if (parent / "configs").exists():
+            return parent
+    # 兜底：回到 src 的上一層
+    for parent in p.parents:
+        if parent.name == "src":
+            return parent.parent
+    return p.parent
+
+
+_configure_qt_highdpi()
+
+
+# ============================================================
+# Threads
+# ============================================================
+
+class CameraThread(QtCore.QThread):
+    signal_frame = QtCore.Signal(np.ndarray)
+    signal_error = QtCore.Signal(str)
+
+    def __init__(self, camera_index: int = 0, parent: Optional[QtCore.QObject] = None) -> None:
+        super().__init__(parent)
+        self.camera_index = camera_index
+        self._stop_requested = False
+
+    def run(self) -> None:
+        cap = cv2.VideoCapture(self.camera_index)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+        if not cap.isOpened():
+            self.signal_error.emit(f"無法開啟鏡頭 (Index: {self.camera_index})")
+            return
+
+        while not self._stop_requested:
+            ret, frame_bgr = cap.read()
+            if not ret:
+                time.sleep(0.1)
+                continue
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            self.signal_frame.emit(frame_rgb)
+            time.sleep(0.033)
+
+        cap.release()
+
+    @QtCore.Slot()
+    def requestStop(self) -> None:
+        self._stop_requested = True
+
+
+class VideoThread(QtCore.QThread):
+    signal_video_loaded = QtCore.Signal(int, float)
+    signal_frame = QtCore.Signal(np.ndarray, int, float)
+    signal_video_ended = QtCore.Signal()
+    signal_invalid_video = QtCore.Signal(str)
+
+    def __init__(self, video_path: str, parent: Optional[QtCore.QObject] = None) -> None:
+        super().__init__(parent)
+        self.video_path = video_path
+        self._stop_requested = False
+        self._seek_requested = False
+        self._seek_frame_idx = 0
+
+    def run(self) -> None:
+        cap = cv2.VideoCapture(self.video_path)
+        if not cap.isOpened():
+            self.signal_invalid_video.emit(f"無法開啟影片：{self.video_path}")
+            return
+
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps is None or fps <= 0:
+            fps = 30.0
+
+        self.signal_video_loaded.emit(frame_count, fps)
+        delay_sec = 1.0 / fps
+        frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        last_time = time.time()
+
+        while not self._stop_requested:
+            if self._seek_requested:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, self._seek_frame_idx)
+                frame_idx = self._seek_frame_idx
+                self._seek_requested = False
+
+            ret, frame_bgr = cap.read()
+            if not ret:
+                break
+
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            self.signal_frame.emit(frame_rgb, frame_idx, fps)
+            frame_idx += 1
+
+            now = time.time()
+            elapsed = now - last_time
+            sleep_time = delay_sec - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            last_time = time.time()
+
+        cap.release()
+        self.signal_video_ended.emit()
+
+    @QtCore.Slot()
+    def requestStop(self) -> None:
+        self._stop_requested = True
+
+    @QtCore.Slot(int)
+    def requestSeek(self, frame_idx: int) -> None:
+        self._seek_requested = True
+        self._seek_frame_idx = max(0, frame_idx)
+
+
+# ============================================================
+# UI Components
+# ============================================================
+
+class VideoPanel(QtWidgets.QWidget):
+    seekRequested = QtCore.Signal(int)
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+
+        self.label_video = QtWidgets.QLabel("等待輸入訊號...")
+        self.label_video.setAlignment(QtCore.Qt.AlignCenter)
+
+        # ✅ 關鍵：用 Ignored 讓 label 不會把 splitter 擠爆（筆電小螢幕比較穩）
+        self.label_video.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
+        self.label_video.setMinimumSize(0, 0)
+
+        self.label_video.setStyleSheet("""
+            QLabel {
+                color: #9a9a9a;
+                background: #1e1e1e;
+                border: 2px dashed #444;
+                border-radius: 12px;
+            }
+        """)
+        layout.addWidget(self.label_video, stretch=1)
+
+        control_layout = QtWidgets.QHBoxLayout()
+        control_layout.setSpacing(12)
+
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider.setRange(0, 0)
+        self.slider.setEnabled(False)
+        self.slider.setStyleSheet("""
+            QSlider::groove:horizontal { height: 10px; background: #333; border-radius: 5px; }
+            QSlider::handle:horizontal { background: #3a86ff; width: 26px; margin: -9px 0; border-radius: 13px; }
+        """)
+
+        self.lbl_time = QtWidgets.QLabel("00:00 / 00:00")
+        self.lbl_time.setMinimumWidth(150)
+        self.lbl_time.setStyleSheet("color: #d0d0d0; font-family: monospace; font-weight: 600;")
+
+        control_layout.addWidget(self.slider, stretch=1)
+        control_layout.addWidget(self.lbl_time, stretch=0)
+        layout.addLayout(control_layout)
+
+        self.slider.sliderMoved.connect(self.on_slider_moved)
+        self.fps = 30.0
+        self.total_time_str = "00:00"
+        self._last_frame_rgb: np.ndarray | None = None
+
+    @QtCore.Slot(int)
+    def on_slider_moved(self, value: int) -> None:
+        if self.slider.isEnabled():
+            self.seekRequested.emit(value)
+
+    def update_frame(self, frame_rgb: np.ndarray) -> None:
+        self._last_frame_rgb = frame_rgb
+
+        w_label = max(1, self.label_video.width())
+        h_label = max(1, self.label_video.height())
+
+        h, w, c = frame_rgb.shape
+        # ✅ 用 copy 避免偶發顯示破圖（尤其在多 thread + numpy buffer）
+        qimg = QtGui.QImage(frame_rgb.data, w, h, w * c, QtGui.QImage.Format.Format_RGB888).copy()
+        pix = QtGui.QPixmap.fromImage(qimg).scaled(
+            w_label, h_label,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation,
+        )
+        self.label_video.setPixmap(pix)
+
+    def set_duration(self, frame_count: int, fps: float) -> None:
+        self.slider.setEnabled(True)
+        self.slider.setRange(0, max(0, frame_count - 1))
+        self.fps = fps
+        self.total_time_str = MainWindow.fmt_time_ms(frame_count / fps * 1000.0)
+        self.lbl_time.setText(f"00:00 / {self.total_time_str}")
+
+    def set_position(self, frame_idx: int, fps: float) -> None:
+        if self.slider.isEnabled() and not self.slider.isSliderDown():
+            self.slider.setValue(frame_idx)
+        cur_time = MainWindow.fmt_time_ms(frame_idx / fps * 1000.0)
+        self.lbl_time.setText(f"{cur_time} / {self.total_time_str}")
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if self._last_frame_rgb is not None:
+            QtCore.QTimer.singleShot(0, lambda: self.update_frame(self._last_frame_rgb))
+
+
+class ControlPanel(QtWidgets.QWidget):
+    requestOpenVideo = QtCore.Signal()
+    requestOpenCamera = QtCore.Signal()
+    requestStart = QtCore.Signal()
+    requestFontScale = QtCore.Signal(int)
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setMinimumWidth(380)
+        self.setMaximumWidth(520)  # ✅ 讓小螢幕不至於被預覽壓扁太多
+        self.setup_ui()
+
+    def setup_ui(self) -> None:
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        # Source
+        grp_source = QtWidgets.QGroupBox("影像來源 (Source)")
+        v_src = QtWidgets.QVBoxLayout(grp_source)
+        v_src.setSpacing(10)
+        v_src.setContentsMargins(14, 18, 14, 12)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        btn_style = """
+            QPushButton {
+                background-color: #505050;
+                border-radius: 10px;
+                padding: 10px 10px;
+                font-weight: 650;
+            }
+            QPushButton:hover { background-color: #606060; }
+        """
+
+        self.btn_open = QtWidgets.QPushButton("選擇影片")
+        self.btn_open.setStyleSheet(btn_style)
+
+        self.btn_camera = QtWidgets.QPushButton("開啟鏡頭")
+        self.btn_camera.setStyleSheet(btn_style)
+
+        btn_row.addWidget(self.btn_open)
+        btn_row.addWidget(self.btn_camera)
+
+        self.lbl_status = QtWidgets.QLabel("目前狀態: 未載入")
+        self.lbl_status.setStyleSheet("color: #b5b5b5;")
+        self.lbl_status.setWordWrap(True)
+
+        v_src.addLayout(btn_row)
+        v_src.addWidget(self.lbl_status)
+        layout.addWidget(grp_source)
+
+        # Settings
+        grp_settings = QtWidgets.QGroupBox("推論設定 (Settings)")
+        form = QtWidgets.QFormLayout(grp_settings)
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+        form.setFormAlignment(QtCore.Qt.AlignTop)
+        form.setSpacing(12)
+        form.setContentsMargins(14, 18, 14, 12)
+
+        combo_style = """
+            QComboBox {
+                padding: 6px 10px;
+                border-radius: 8px;
+                background-color: #333;
+                min-height: 30px;
+            }
+            QComboBox::drop-down { border: 0px; }
+            QComboBox QAbstractItemView { background-color: #333; color: #fff; }
+        """
+
+        # --- TTS Mode ---
+        self.cmb_tts = QtWidgets.QComboBox()
+        self.cmb_tts.addItem("不啟用 (Mute)", userData="none")
+        self.cmb_tts.addItem("OpenAI TTS", userData="openai")
+        self.cmb_tts.addItem("Local TTS", userData="local")
+        self.cmb_tts.setCurrentIndex(1)
+        self.cmb_tts.setStyleSheet(combo_style)
+
+        # --- LiveCC style ---
+        self.cmb_style = QtWidgets.QComboBox()
+        self.cmb_style.setStyleSheet(combo_style)
+
+        # --- OpenAI: Voice ---
+        self.cmb_voice = QtWidgets.QComboBox()
+        self.cmb_voice.setStyleSheet(combo_style)
+        for v in ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]:
+            self.cmb_voice.addItem(v, userData=v)
+        self.cmb_voice.setCurrentText("coral")
+
+        # --- OpenAI: Speed slider ---
+        self.slider_speed = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_speed.setRange(50, 200)  # 0.5x ~ 2.0x
+        self.slider_speed.setValue(150)      # 你 core 預設 speed=1.5
+
+        self.lbl_speed_val = QtWidgets.QLabel("1.5x")
+        self.lbl_speed_val.setMinimumWidth(55)
+        self.lbl_speed_val.setAlignment(QtCore.Qt.AlignCenter)
+
+        speed_row = QtWidgets.QHBoxLayout()
+        speed_row.setSpacing(10)
+        speed_row.addWidget(self.slider_speed, stretch=1)
+        speed_row.addWidget(self.lbl_speed_val, stretch=0)
+
+        self._speed_row_widget = QtWidgets.QWidget()
+        self._speed_row_widget.setLayout(speed_row)
+
+        # --- Local: Exaggeration slider (0.2~1.2) ---
+        self.slider_exag = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_exag.setRange(20, 120)
+        self.slider_exag.setValue(80)
+
+        self.lbl_exag_val = QtWidgets.QLabel("0.8")
+        self.lbl_exag_val.setMinimumWidth(55)
+        self.lbl_exag_val.setAlignment(QtCore.Qt.AlignCenter)
+
+        exag_row = QtWidgets.QHBoxLayout()
+        exag_row.setSpacing(10)
+        exag_row.addWidget(self.slider_exag, stretch=1)
+        exag_row.addWidget(self.lbl_exag_val, stretch=0)
+
+        self._exag_row_widget = QtWidgets.QWidget()
+        self._exag_row_widget.setLayout(exag_row)
+
+        # --- Local: CFG slider (0.2~1.2) ---
+        self.slider_cfg = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_cfg.setRange(20, 120)
+        self.slider_cfg.setValue(70)
+
+        self.lbl_cfg_val = QtWidgets.QLabel("0.7")
+        self.lbl_cfg_val.setMinimumWidth(55)
+        self.lbl_cfg_val.setAlignment(QtCore.Qt.AlignCenter)
+
+        cfg_row = QtWidgets.QHBoxLayout()
+        cfg_row.setSpacing(10)
+        cfg_row.addWidget(self.slider_cfg, stretch=1)
+        cfg_row.addWidget(self.lbl_cfg_val, stretch=0)
+
+        self._cfg_row_widget = QtWidgets.QWidget()
+        self._cfg_row_widget.setLayout(cfg_row)
+
+        # --- UI scale slider ---
+        self.slider_ui_scale = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_ui_scale.setRange(10, 26)
+        self.slider_ui_scale.setValue(14)
+
+        self.lbl_ui_scale_val = QtWidgets.QLabel("14pt")
+        self.lbl_ui_scale_val.setMinimumWidth(55)
+        self.lbl_ui_scale_val.setAlignment(QtCore.Qt.AlignCenter)
+
+        font_row = QtWidgets.QHBoxLayout()
+        font_row.setSpacing(10)
+        font_row.addWidget(self.slider_ui_scale, stretch=1)
+        font_row.addWidget(self.lbl_ui_scale_val, stretch=0)
+
+        self._font_row_widget = QtWidgets.QWidget()
+        self._font_row_widget.setLayout(font_row)
+
+        lbl_style = "QLabel { color: #dedede; }"
+        self.l_tts = QtWidgets.QLabel("語音模式:")
+        self.l_style = QtWidgets.QLabel("播報風格:")
+        self.l_voice = QtWidgets.QLabel("Voice:")
+        self.l_speed = QtWidgets.QLabel("語速調整:")
+        self.l_exag = QtWidgets.QLabel("Exaggeration:")
+        self.l_cfg = QtWidgets.QLabel("CFG:")
+        self.l_ui = QtWidgets.QLabel("介面縮放:")
+
+        for x in (self.l_tts, self.l_style, self.l_voice, self.l_speed, self.l_exag, self.l_cfg, self.l_ui):
+            x.setStyleSheet(lbl_style)
+
+        form.addRow(self.l_tts, self.cmb_tts)
+        form.addRow(self.l_style, self.cmb_style)
+        form.addRow(self.l_voice, self.cmb_voice)
+        form.addRow(self.l_speed, self._speed_row_widget)
+        form.addRow(self.l_exag, self._exag_row_widget)
+        form.addRow(self.l_cfg, self._cfg_row_widget)
+        form.addRow(self.l_ui, self._font_row_widget)
+
+        layout.addWidget(grp_settings)
+
+        # Action
+        grp_action = QtWidgets.QGroupBox("操作 (Action)")
+        v_act = QtWidgets.QVBoxLayout(grp_action)
+        v_act.setContentsMargins(14, 18, 14, 12)
+
+        self.btn_start = QtWidgets.QPushButton("開始播報 (Start)")
+        self.btn_start.setEnabled(False)
+        self.btn_start.setStyleSheet("""
+            QPushButton {
+                background-color: #3a86ff;
+                color: white;
+                font-weight: 750;
+                border-radius: 12px;
+                padding: 14px 10px;
+            }
+            QPushButton:hover { background-color: #2667cc; }
+            QPushButton:disabled { background-color: #555; color: #999; }
+            QPushButton[active="true"] { background-color: #ef233c; border: 2px solid #ff9999; }
+        """)
+        v_act.addWidget(self.btn_start)
+        layout.addWidget(grp_action)
+
+        layout.addStretch(1)
+
+        # Signals
+        self.btn_open.clicked.connect(self.requestOpenVideo.emit)
+        self.btn_camera.clicked.connect(self.requestOpenCamera.emit)
+        self.btn_start.clicked.connect(self.requestStart.emit)
+
+        self.slider_speed.valueChanged.connect(lambda v: self.lbl_speed_val.setText(f"{v/100:.1f}x"))
+        self.slider_exag.valueChanged.connect(lambda v: self.lbl_exag_val.setText(f"{v/100:.1f}"))
+        self.slider_cfg.valueChanged.connect(lambda v: self.lbl_cfg_val.setText(f"{v/100:.1f}"))
+        self.slider_ui_scale.valueChanged.connect(self.on_font_scale_changed)
+
+        # 模式切換顯示/隱藏
+        self.cmb_tts.currentIndexChanged.connect(self._refresh_tts_controls_visibility)
+        self._refresh_tts_controls_visibility()
+
+    # ---------------- ControlPanel Helpers ----------------
+
+    def _refresh_tts_controls_visibility(self) -> None:
+        mode = self.get_tts_mode()
+
+        show_openai = (mode == "openai")
+        self.l_voice.setVisible(show_openai)
+        self.cmb_voice.setVisible(show_openai)
+        self.l_speed.setVisible(show_openai)
+        self._speed_row_widget.setVisible(show_openai)
+
+        show_local = (mode == "local")
+        self.l_exag.setVisible(show_local)
+        self._exag_row_widget.setVisible(show_local)
+        self.l_cfg.setVisible(show_local)
+        self._cfg_row_widget.setVisible(show_local)
+
+    def set_tts_controls_enabled(self, enabled: bool) -> None:
+        # ✅ 推論中鎖定，避免中途改造成狀態錯亂
+        self.cmb_tts.setEnabled(enabled)
+        self.cmb_style.setEnabled(enabled)
+
+        self.cmb_voice.setEnabled(enabled)
+        self.slider_speed.setEnabled(enabled)
+
+        self.slider_exag.setEnabled(enabled)
+        self.slider_cfg.setEnabled(enabled)
+
+    def on_font_scale_changed(self, value: int) -> None:
+        self.lbl_ui_scale_val.setText(f"{value}pt")
+        self.requestFontScale.emit(value)
+
+    def get_tts_mode(self) -> str:
+        return self.cmb_tts.currentData()
+
+    def get_selected_style_key(self) -> str:
+        return self.cmb_style.currentData()
+
+    def get_selected_style_label(self) -> str:
+        return self.cmb_style.currentText()
+
+    def get_openai_voice(self) -> str:
+        v = self.cmb_voice.currentData()
+        return str(v) if v is not None else "coral"
+
+    def get_openai_speed(self) -> float:
+        return float(self.slider_speed.value()) / 100.0
+
+    def get_local_exaggeration(self) -> float:
+        return float(self.slider_exag.value()) / 100.0
+
+    def get_local_cfg(self) -> float:
+        return float(self.slider_cfg.value()) / 100.0
+
+    def set_status(self, text: str) -> None:
+        self.lbl_status.setText(f"目前狀態: {text}")
+
+    def set_start_button_state(self, running: bool) -> None:
+        if running:
+            self.btn_start.setText("停止播報 (Stop)")
+            self.btn_start.setProperty("active", True)
+        else:
+            self.btn_start.setText("開始播報 (Start)")
+            self.btn_start.setProperty("active", False)
+        self.btn_start.style().unpolish(self.btn_start)
+        self.btn_start.style().polish(self.btn_start)
+
+
+# ============================================================
+# Main Window
+# ============================================================
+
+class MainWindow(QtWidgets.QMainWindow):
+    signal_start_livecc = QtCore.Signal(str, str)
+    signal_start_camera_livecc = QtCore.Signal(str)
+    
+
+    # ✅ 用 signal 把設定丟到 tts thread，避免你直接 call slot 其實跑在主執行緒
+    signal_tts_apply_settings = QtCore.Signal(str, float)
+    signal_tts_stop = QtCore.Signal()
+
+    signal_tts_speak = QtCore.Signal(str)
+    signal_tts_interrupt = QtCore.Signal()
+    signal_local_tts_apply_settings = QtCore.Signal(float, float) # exag, cfg
+    signal_local_tts_speak = QtCore.Signal(str)
+    signal_local_tts_interrupt = QtCore.Signal()
+    signal_local_tts_stop = QtCore.Signal()
+
+    def __init__(self, configs: dict, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.configs = configs
+        self.parseConfigs()
+
+        self.current_video_path: Optional[str] = None
+        self.model_ready: bool = False
+        self.mode = "file"
+        self.is_inference_running = False
+
+        self.video_thread: Optional[VideoThread] = None
+        self.camera_thread: Optional[CameraThread] = None
+        self.video_fps: float = 30.0
+        self.tts_mode: str = "none"
+
+        self.font_family = "Sans Serif"
+        self.font_size = 14
+
+        self.livecc_model = None
+        self.prompt_manager: Optional[PromptManager] = None
+
+        self._load_livecc_model()
+
+        self._init_fonts()
+        self._initUI()
+        self._initTTSWorker()
+
+        self._playback_sec: float = 0.0
+        self._pending_segments = deque()  # items: (start_t, stop_t, text)
+
+        self._subtitle_timer = QtCore.QTimer(self)
+        self._subtitle_timer.setInterval(50)  # 20 FPS 更新足夠
+        self._subtitle_timer.timeout.connect(self._tick_subtitle_scheduler)
+        self._subtitle_timer.start()
+
+        QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
+
+    # ---------------- Fonts / Styles ----------------
+
+    def _init_fonts(self) -> None:
+        font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+        if os.path.exists(font_path):
+            font_id = QtGui.QFontDatabase.addApplicationFont(font_path)
+            if font_id != -1:
+                families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
+                if families:
+                    self.font_family = families[0]
+
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        dpi = float(screen.logicalDotsPerInch()) if screen else 96.0
+        scale = max(0.85, min(1.6, dpi / 96.0))
+        self.font_size = int(round(14 * scale))
+        self.font_size = max(11, min(20, self.font_size))
+
+        self._apply_styles(self.font_size)
+
+    def _apply_styles(self, size_pt: int) -> None:
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+
+        app.setStyle("Fusion")
+
+        palette = QtGui.QPalette()
+        palette.setColor(QtGui.QPalette.Window, QtGui.QColor(45, 45, 45))
+        palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor(220, 220, 220))
+        palette.setColor(QtGui.QPalette.Base, QtGui.QColor(30, 30, 30))
+        palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(45, 45, 45))
+        palette.setColor(QtGui.QPalette.Text, QtGui.QColor(220, 220, 220))
+        palette.setColor(QtGui.QPalette.Button, QtGui.QColor(60, 60, 60))
+        palette.setColor(QtGui.QPalette.ButtonText, QtGui.QColor(220, 220, 220))
+        palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(42, 130, 218))
+        palette.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(255, 255, 255))
+        app.setPalette(palette)
+
+        font = QtGui.QFont(self.font_family)
+        font.setPointSize(int(size_pt))
+        app.setFont(font)
+
+        grp_margin = max(10, int(size_pt * 0.9))
+        grp_padding = max(8, int(size_pt * 0.7))
+
+        app.setStyleSheet(f"""
+            QGroupBox {{
+                font-weight: 750;
+                border: 2px solid #555;
+                border-radius: 10px;
+                margin-top: {grp_margin}px;
+                padding-top: {grp_padding}px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+            }}
+
+            QTextEdit {{
+                background-color: #252525;
+                color: #e0e0e0;
+                border: 1px solid #555;
+                border-radius: 10px;
+                line-height: 150%;
+            }}
+
+            QMainWindow {{
+                background: #2d2d2d;
+            }}
+        """)
+
+    # ---------------- Model ----------------
+
+    def _load_livecc_model(self) -> None:
+        try:
+            from miis_broadcast.core.models.livecc_transformers import LiveCCInfer
+            print("[Main] 正在主執行緒載入 LiveCC 模型...")
+            self.livecc_model = LiveCCInfer(device_id=0)
+            print("[Main] LiveCC 模型載入完成")
+            self.model_ready = True
+        except ImportError:
+            print("[Simulate] 找不到 livecc 模組，將使用模擬模式 (僅 GUI 測試)。")
+            self.model_ready = True
+        except Exception as e:
+            print(f"[Main] 模型載入失敗: {e}")
+            self.model_ready = False
+
+    def parseConfigs(self) -> None:
+        gui_cfg = self.configs.get("gui_window", {})
+        self.window_width_min = gui_cfg.get("min_width", 1400)
+        self.window_height_min = gui_cfg.get("min_height", 900)
+        self.window_title = gui_cfg.get("title", "LiveCC Studio")
+
+    # ---------------- UI ----------------
+
+    def _initUI(self) -> None:
+        self.setMinimumSize(self.window_width_min, self.window_height_min)
+        self.setWindowTitle(self.window_title)
+
+        central = QtWidgets.QWidget()
+        main_layout = QtWidgets.QVBoxLayout(central)
+        main_layout.setContentsMargins(18, 18, 18, 18)
+        main_layout.setSpacing(16)
+
+        self.top_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.top_splitter.setChildrenCollapsible(False)
+
+        self.video_panel = VideoPanel()
+        self.control_panel = ControlPanel()
+
+        self.top_splitter.addWidget(self.video_panel)
+        self.top_splitter.addWidget(self.control_panel)
+
+        # ✅ 讓預覽吃更多空間，但控制面板不要被壓扁到很誇張
+        self.top_splitter.setStretchFactor(0, 10)
+        self.top_splitter.setStretchFactor(1, 1)
+
+        main_layout.addWidget(self.top_splitter, stretch=4)
+
+        bottom_group = QtWidgets.QGroupBox("即時解說字幕 (Live Commentary Log)")
+        bottom_layout = QtWidgets.QVBoxLayout(bottom_group)
+        bottom_layout.setContentsMargins(14, 18, 14, 12)
+
+        self.text_output = TextOutputWidget()
+        bottom_layout.addWidget(self.text_output)
+
+        main_layout.addWidget(bottom_group, stretch=2)
+
+        self.setCentralWidget(central)
+        self.statusBar().showMessage("正在初始化系統...")
+
+        # Signals
+        self.control_panel.requestOpenVideo.connect(self.on_open_video_clicked)
+        self.control_panel.requestOpenCamera.connect(self.on_open_camera_clicked)
+        self.control_panel.requestStart.connect(self.on_start_clicked)
+        self.control_panel.requestFontScale.connect(self.on_font_scale_request)
+        self.video_panel.seekRequested.connect(self.on_seek_requested)
+
+        # 載入 prompts.yml 並填入下拉式選單
+        self._init_prompt_manager_and_fill_styles()
+
+        self._initLiveCCWorker()
+        self._initCameraWorker()
+
+        if self.livecc_model is not None:
+            self.livecc_worker.signal_model_loaded.emit()
+
+    def _init_prompt_manager_and_fill_styles(self) -> None:
+        try:
+            project_root = _find_project_root(Path(__file__))
+            cfg_path = project_root / "configs" / "livecc_prompts.yml"
+            self.prompt_manager = PromptManager(cfg_path)
+
+            self.control_panel.cmb_style.blockSignals(True)
+            self.control_panel.cmb_style.clear()
+            for item in self.prompt_manager.list_styles():
+                self.control_panel.cmb_style.addItem(item.label, userData=item.key)
+
+            default_key = self.prompt_manager.default_style_key()
+            idx = self.control_panel.cmb_style.findData(default_key)
+            if idx >= 0:
+                self.control_panel.cmb_style.setCurrentIndex(idx)
+            self.control_panel.cmb_style.blockSignals(False)
+
+        except Exception as e:
+            self.append_text(f"載入播報風格設定失敗：{e}")
+            self.control_panel.cmb_style.clear()
+            self.control_panel.cmb_style.addItem("預設 (Fallback)", userData="fallback")
+            self.prompt_manager = None
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
+
+    def _apply_initial_geometry(self) -> None:
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        if not screen:
+            return
+        geo = screen.availableGeometry()
+
+        target_w = max(self.minimumWidth(), int(geo.width() * 0.90))
+        target_h = max(self.minimumHeight(), int(geo.height() * 0.90))
+
+        if self.width() < self.minimumWidth() or self.height() < self.minimumHeight():
+            self.resize(target_w, target_h)
+
+        w = max(1, self.width())
+        self.top_splitter.setSizes([int(w * 0.72), int(w * 0.28)])
+
+    # ---------------- Workers ----------------
+
+    def _initLiveCCWorker(self) -> None:
+        self.livecc_thread = QtCore.QThread(self)
+        self.livecc_worker = LiveCCWorker()
+        self.livecc_worker.livecc = self.livecc_model
+        self.livecc_worker.moveToThread(self.livecc_thread)
+        self.livecc_worker.signal_model_loaded.connect(self.on_model_loaded)
+        self.livecc_worker.signal_segment.connect(self.on_segment)
+        self.livecc_worker.signal_finished.connect(self.on_finished)
+        self.livecc_worker.signal_error.connect(self.on_error)
+        self.signal_start_livecc.connect(self.livecc_worker.runInference)
+
+        self.livecc_thread.start()
+
+    def _initCameraWorker(self) -> None:
+        self.cam_worker_thread = QtCore.QThread(self)
+        self.cam_worker = LiveCCCameraWorker(device_id=0)
+        self.cam_worker.livecc = self.livecc_model
+        self.cam_worker.moveToThread(self.cam_worker_thread)
+        self.cam_worker.signal_model_loaded.connect(self.on_model_loaded)
+        self.cam_worker.signal_segment.connect(self.on_segment)
+        self.cam_worker.signal_error.connect(self.on_error)
+        self.signal_start_camera_livecc.connect(self.cam_worker.runCameraInference)
+        self.cam_worker_thread.start()
+
+    def _initTTSWorker(self) -> None:
+            """初始化所有的 TTS Worker (OpenAI + Local Chatterbox)"""
+            
+            # ==========================================
+            # 1. OpenAI TTS Worker (雲端)
+            # ==========================================
+            self.tts_thread = QtCore.QThread(self)
+            self.tts_worker = OpenAITTSWorker()
+            self.tts_worker.moveToThread(self.tts_thread)
+
+            # Thread 啟動時，自動呼叫 worker.start() 初始化連線
+            self.tts_thread.started.connect(self.tts_worker.start)
+
+            # 連接 OpenAI 專用信號
+            self.signal_tts_apply_settings.connect(self.tts_worker.apply_settings, QtCore.Qt.QueuedConnection)
+            self.signal_tts_stop.connect(self.tts_worker.stop, QtCore.Qt.QueuedConnection)
+            self.signal_tts_speak.connect(self.tts_worker.speak, QtCore.Qt.QueuedConnection)
+            self.signal_tts_interrupt.connect(self.tts_worker.interrupt, QtCore.Qt.QueuedConnection)
+
+            self.tts_thread.start()
+
+            # ==========================================
+            # 2. Local TTS Worker (本地 Chatterbox)
+            # ==========================================
+            self.local_tts_thread = QtCore.QThread(self)
+            self.local_tts_worker = ChatterboxTTSWorker()
+            self.local_tts_worker.moveToThread(self.local_tts_thread)
+            
+            # Thread 啟動時，自動呼叫 worker.start() 載入模型 (需時較久)
+            self.local_tts_thread.started.connect(self.local_tts_worker.start)
+
+            # 連接 Local TTS 專用信號
+            self.signal_local_tts_apply_settings.connect(self.local_tts_worker.apply_settings, QtCore.Qt.QueuedConnection)
+            self.signal_local_tts_stop.connect(self.local_tts_worker.stop, QtCore.Qt.QueuedConnection)
+            self.signal_local_tts_speak.connect(self.local_tts_worker.speak, QtCore.Qt.QueuedConnection)
+            self.signal_local_tts_interrupt.connect(self.local_tts_worker.interrupt, QtCore.Qt.QueuedConnection)
+
+            # 🔥 [修改點 1] 註解掉或刪除原本的直接啟動，改為 Lazy Load
+            # self.local_tts_thread.start() 
+
+            # 🔥 [修改點 2] 監聽下拉選單變化
+            self.control_panel.cmb_tts.currentIndexChanged.connect(self._on_tts_mode_changed)
+
+            # 如果預設選項剛好就是 Local (雖然通常預設是 OpenAI)，初始化時檢查一次
+            self._on_tts_mode_changed()
+
+    # ---------------- Slots ----------------
+
+    def _tick_subtitle_scheduler(self) -> None:
+        """
+        檔案模式：用播放時間決定何時顯示字幕（推論可超前，但顯示必同步）。
+        """
+        if self.mode != "file":
+            return
+        if not self.is_inference_running:
+            return
+        if not hasattr(self, "_pending_segments"):
+            return
+        if not self._pending_segments:
+            return
+
+        cur = float(getattr(self, "_playback_sec", 0.0))
+
+        latest = None
+        while self._pending_segments and float(self._pending_segments[0][0]) <= cur:
+            latest = self._pending_segments.popleft()
+
+        if latest is None:
+            return
+
+        start_t, stop_t, text = latest
+        text = str(text)
+        if not text.strip():
+            return
+
+        line = f"[{self._fmt_time(float(start_t))}] {text}"
+        self.text_output.appendText(line)
+
+        # ✅ TTS：在「顯示」時才播，才會跟影片同步
+        if self.tts_mode == "openai":
+            self.signal_tts_speak.emit(text)
+        elif self.tts_mode == "local":
+            self.signal_local_tts_speak.emit(text)
+
+        # 防止推論超前太多造成 queue 爆掉（保命，非限制模型）
+        MAX_PENDING = 400
+        while len(self._pending_segments) > MAX_PENDING:
+            self._pending_segments.popleft()
+
+    @QtCore.Slot()
+    def _on_tts_mode_changed(self) -> None:
+        mode = self.control_panel.get_tts_mode()
+        
+        if mode == "local":
+            # 檢查 thread 是否已經在運行，如果沒有才啟動
+            if hasattr(self, "local_tts_thread") and not self.local_tts_thread.isRunning():
+                self.append_text("[System] 偵測到 Local TTS 請求，開始載入 Chatterbox 模型 (首次載入需稍候)...")
+                self.control_panel.set_status("載入 Local Model 中...")
+                self.local_tts_thread.start()
+    @QtCore.Slot(int)
+    def on_font_scale_request(self, size_pt: int) -> None:
+        self.font_size = int(size_pt)
+        self._apply_styles(self.font_size)
+        self.statusBar().showMessage(f"字體大小已調整為: {self.font_size}pt", 2000)
+        QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
+
+    @QtCore.Slot()
+    def on_open_video_clicked(self) -> None:
+        dlg = QtWidgets.QFileDialog(self, "選擇影片")
+        dlg.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
+        dlg.setFileMode(QtWidgets.QFileDialog.ExistingFile)
+        dlg.setNameFilter("Video Files (*.mp4 *.mov *.avi *.mkv);;All Files (*)")
+
+        dlg_font = dlg.font()
+        dlg_font.setPointSize(self.font_size)
+        dlg.setFont(dlg_font)
+        dlg.resize(1000, 700)
+
+        if dlg.exec():
+            paths = dlg.selectedFiles()
+            if paths:
+                self.on_video_selected(paths[0])
+
+    @QtCore.Slot(str)
+    def on_video_selected(self, path: str) -> None:
+        self.stop_inference()
+        self.mode = "file"
+        if hasattr(self, "_pending_segments"):
+            self._pending_segments.clear()
+        self._playback_sec = 0.0
+
+        if self.camera_thread:
+            self.camera_thread.requestStop()
+            self.camera_thread.wait()
+            self.camera_thread = None
+
+        self.current_video_path = path
+        self.control_panel.set_status(f"檔案: {os.path.basename(path)}")
+        self.append_text(f"已載入影片：{os.path.basename(path)}")
+
+        self._load_video_preview(path)
+        self.video_panel.slider.setEnabled(True)
+        self._update_start_button_state()
+
+    @QtCore.Slot()
+    def on_open_camera_clicked(self) -> None:
+        self.stop_inference()
+        self.mode = "camera"
+        self.current_video_path = "Live Camera"
+        self.control_panel.set_status("模式: 即時鏡頭")
+        self.append_text("已切換至鏡頭模式")
+
+        if self.video_thread:
+            self.video_thread.requestStop()
+            self.video_thread.wait()
+            self.video_thread = None
+
+        self.camera_start_time = time.time()
+        self.camera_thread = CameraThread(camera_index=0)
+        self.camera_thread.signal_frame.connect(self.on_camera_frame)
+        self.camera_thread.signal_error.connect(self.on_error)
+        self.camera_thread.start()
+
+        self.video_panel.slider.setEnabled(False)
+        self._update_start_button_state()
+
+    def _apply_tts_settings_before_start(self) -> None:
+        """根據目前模式套用對應設定"""
+        self.tts_mode = self.control_panel.get_tts_mode()
+
+        if self.tts_mode == "openai":
+            voice = self.control_panel.get_openai_voice()
+            speed = self.control_panel.get_openai_speed()
+            # 確保重置 Local (可選)
+            self.signal_tts_apply_settings.emit(voice, float(speed))
+
+        elif self.tts_mode == "local":
+            exag = self.control_panel.get_local_exaggeration()
+            cfg = self.control_panel.get_local_cfg()
+            # 發送給 Local Worker
+            self.signal_local_tts_apply_settings.emit(float(exag), float(cfg))
+
+    @QtCore.Slot()
+    def on_start_clicked(self) -> None:
+        if self.is_inference_running:
+            self.stop_inference()
+            return
+
+        if not self.model_ready:
+            self.append_text("模型尚未就緒")
+            return
+
+        style_key = self.control_panel.get_selected_style_key()
+        style_label = self.control_panel.get_selected_style_label()
+
+        if self.prompt_manager is not None:
+            prompt = self.prompt_manager.build_query(style_key)
+        else:
+            prompt = "請使用繁體中文即時播報畫面，不要使用符號表情，不要臆測。"
+
+        # ✅ Start 前先套用 TTS 設定
+        self._apply_tts_settings_before_start()
+
+        self.is_inference_running = True
+        self.control_panel.set_start_button_state(True)
+        self.control_panel.set_tts_controls_enabled(False)  # ✅ 鎖定：推論中不可改
+        self.text_output.setText("")
+
+        self.append_text(f"開始推論 (Style: {style_label}, TTS: {self.tts_mode})")
+
+        if self.mode == "file":
+            if hasattr(self, "_pending_segments"):
+                self._pending_segments.clear()
+            self._playback_sec = 0.0
+
+        if self.mode == "file":
+            if self.video_thread:
+                self.video_thread.requestStop()
+                self.video_thread.wait()
+
+            self.video_thread = VideoThread(self.current_video_path)
+            self.video_thread.signal_video_loaded.connect(self.video_panel.set_duration)
+            self.video_thread.signal_frame.connect(self.on_video_frame)
+            self.video_thread.signal_video_ended.connect(self.on_finished)
+            self.video_thread.signal_invalid_video.connect(self.on_error)
+            self.video_thread.start()
+            self.signal_start_livecc.emit(self.current_video_path, prompt)
+
+        elif self.mode == "camera":
+            self.signal_start_camera_livecc.emit(prompt)
+
+    def stop_inference(self) -> None:
+        if not self.is_inference_running:
+            return
+
+        self.append_text("停止推論")
+        if hasattr(self, "_pending_segments"):
+            self._pending_segments.clear()
+        if self.tts_mode == "openai":
+            try: self.signal_tts_interrupt.emit()
+            except: pass
+        elif self.tts_mode == "local":
+            try: self.signal_local_tts_interrupt.emit()
+            except: pass
+        if hasattr(self, "livecc_worker"):
+            self.livecc_worker.requestStop()
+        if hasattr(self, "cam_worker"):
+            self.cam_worker.requestStop()
+
+        if self.mode == "file" and self.video_thread:
+            self.video_thread.requestStop()
+            self.video_thread.wait()
+            self.video_thread = None
+
+        self.is_inference_running = False
+        self.control_panel.set_start_button_state(False)
+        self.control_panel.set_tts_controls_enabled(True)  # ✅ 解鎖：停止後可改
+
+    # ---------------- Frame handlers ----------------
+
+    @QtCore.Slot(np.ndarray, int, float)
+    def on_video_frame(self, frame_rgb: np.ndarray, frame_idx: int, fps: float) -> None:
+        self.video_panel.update_frame(frame_rgb)
+        self.video_panel.set_position(frame_idx, fps)
+
+        if self.mode == "file" and fps and fps > 0:
+            self._playback_sec = float(frame_idx) / float(fps)
+
+    @QtCore.Slot(np.ndarray)
+    def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
+        self.video_panel.update_frame(frame_rgb)
+        if self.is_inference_running and self.mode == "camera":
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            t_relative = time.time() - self.camera_start_time
+            self.cam_worker.push_frame(frame_bgr, t_relative)
+
+    # ---------------- Model callbacks ----------------
+
+    @QtCore.Slot()
+    def on_model_loaded(self) -> None:
+        self.model_ready = True
+        self.statusBar().showMessage("模型就緒")
+        self.control_panel.set_status("模型就緒，請選擇來源")
+        self._update_start_button_state()
+
+    @QtCore.Slot(float, float, str)
+    def on_segment(self, start_t: float, stop_t: float, text: str) -> None:
+        # Camera mode：沒有播放器時間軸可排程，所以直接顯示/唸
+        if self.mode != "file":
+            line = f"[{self._fmt_time(start_t)}] {text}"
+            self.text_output.appendText(line)
+
+            if not str(text).strip():
+                return
+            if self.tts_mode == "openai":
+                self.signal_tts_speak.emit(text)
+            elif self.tts_mode == "local":
+                self.signal_local_tts_speak.emit(text)
+            return
+
+        # File mode：先進 queue，等影片播放到對應時間再顯示/唸（避免不同步）
+        if not hasattr(self, "_pending_segments"):
+            self._pending_segments = deque()
+
+        self._pending_segments.append((float(start_t), float(stop_t), str(text)))
+
+        if not text.strip():
+            return
+
+        # 根據模式分流
+        if self.tts_mode == "openai":
+            self.signal_tts_speak.emit(text)
+        elif self.tts_mode == "local":
+            self.signal_local_tts_speak.emit(text)
+
+    @QtCore.Slot()
+    def on_finished(self) -> None:
+        self.append_text("播放/推論結束")
+        self.stop_inference()
+
+    @QtCore.Slot(str)
+    def on_error(self, msg: str) -> None:
+        self.append_text(f"錯誤：{msg}")
+        self.stop_inference()
+
+    # ---------------- Helpers ----------------
+
+    def _load_video_preview(self, path: str) -> None:
+        cap = cv2.VideoCapture(path)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret:
+                self.video_panel.update_frame(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        cap.release()
+
+    def _update_start_button_state(self) -> None:
+        can_start = self.model_ready and (self.current_video_path is not None)
+        self.control_panel.btn_start.setEnabled(bool(can_start))
+
+    def append_text(self, msg: str) -> None:
+        self.text_output.appendText(msg)
+
+    @QtCore.Slot(int)
+    def on_seek_requested(self, frame_idx: int) -> None:
+        if self.mode == "file" and self.video_thread:
+            self.video_thread.requestSeek(frame_idx)
+
+    @staticmethod
+    def _fmt_time(t: float) -> str:
+        m, s = divmod(int(max(0, t)), 60)
+        return f"{m:02d}:{s:02d}"
+
+    @staticmethod
+    def fmt_time_ms(ms: float) -> str:
+        m, s = divmod(int(max(0, ms) / 1000), 60)
+        return f"{m:02d}:{s:02d}"
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        # ✅ 先停推論
+        self.stop_inference()
+
+        # ✅ 停 camera thread
+        if self.camera_thread:
+            self.camera_thread.requestStop()
+            self.camera_thread.wait(1000)
+            self.camera_thread = None
+
+        # ✅ 停 TTS（避免 QThread: Destroyed while thread is still running）
+        try:
+            self.signal_tts_stop.emit()
+        except Exception:
+            pass
+        if hasattr(self, "tts_thread") and self.tts_thread:
+            self.tts_thread.quit()
+            self.tts_thread.wait(2000)
+
+        # ✅ 停 LiveCC worker threads
+        if hasattr(self, "cam_worker_thread") and self.cam_worker_thread:
+            self.cam_worker_thread.quit()
+            self.cam_worker_thread.wait(2000)
+
+        if hasattr(self, "livecc_thread") and self.livecc_thread:
+            self.livecc_thread.quit()
+            self.livecc_thread.wait(2000)
+        try:
+            self.signal_local_tts_stop.emit()
+        except: pass
+        
+        if hasattr(self, "local_tts_thread") and self.local_tts_thread:
+            self.local_tts_thread.quit()
+            self.local_tts_thread.wait(2000)
+
+        super().closeEvent(event)

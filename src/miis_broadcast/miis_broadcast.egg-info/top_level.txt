@@ -1,0 +1,8 @@
+__init__
+__main__
+app
+core
+gui
+ui
+widgets
+workers
