@@ -1,0 +1,8 @@
+[project]
+name = "miis_broadcast"
+version = "0.1.0"
+description = "A GUI application for automatic broadcasting commentary generation."
+readme = "README.md"
+
+[project.scripts]
+livecc-run = "miis_broadcast.__main__:main"

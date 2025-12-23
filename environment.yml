@@ -1,0 +1,8 @@
+name: livecc
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pyaudio
+prefix: /home/miislab/miniforge3/envs/livecc
