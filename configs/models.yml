@@ -1,5 +1,4 @@
 classifiers:
-classifiers:
   livecc_7b:
     desc: LiveCC (streaming video captioner; config not used)
     model_path: livecc

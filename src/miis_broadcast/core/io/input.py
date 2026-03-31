@@ -130,7 +130,3 @@ class VideoInput(BaseInput):
         if frame_position >= 0 and frame_position < self.frame_count:
             self.seeking = True
             self.seek_frame = frame_position
-
-class InputWrapper:
-    def __init__(self) -> None:
-        pass
