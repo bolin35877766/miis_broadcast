@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -313,6 +314,7 @@ class ControlPanel(QtWidgets.QWidget):
         form.setSpacing(12)
         form.setContentsMargins(14, 18, 14, 12)
 
+        # [CSS]
         combo_style = """
             QComboBox {
                 padding: 6px 10px;
@@ -321,11 +323,28 @@ class ControlPanel(QtWidgets.QWidget):
                 min-height: 30px;
             }
             QComboBox::drop-down { border: 0px; }
-            QComboBox QAbstractItemView { background-color: #333; color: #fff; }
+            QComboBox QAbstractItemView { 
+                background-color: #333; 
+                color: #fff;
+                selection-background-color: #3a86ff;
+                selection-color: white;
+                outline: 0px;
+            }
         """
+        
+        # [FIX] WSL 下拉選單修復 helper
+        def _fix_combo_behavior(combo: QtWidgets.QComboBox):
+            combo.setItemDelegate(QtWidgets.QStyledItemDelegate())
+            # 強制在「按下」時就選取並關閉，避開 WSL 吃掉 MouseRelease 事件的問題
+            combo.view().pressed.connect(lambda idx: (
+                combo.setCurrentIndex(idx.row()),
+                combo.hidePopup()
+            ))
 
         # --- TTS Mode ---
         self.cmb_tts = QtWidgets.QComboBox()
+        _fix_combo_behavior(self.cmb_tts) # [Apply Fix]
+        
         self.cmb_tts.addItem("不啟用 (Mute)", userData="none")
         self.cmb_tts.addItem("OpenAI TTS", userData="openai")
         self.cmb_tts.addItem("Local TTS", userData="local")
@@ -334,10 +353,12 @@ class ControlPanel(QtWidgets.QWidget):
 
         # --- LiveCC style ---
         self.cmb_style = QtWidgets.QComboBox()
+        _fix_combo_behavior(self.cmb_style) # [Apply Fix]
         self.cmb_style.setStyleSheet(combo_style)
 
         # --- OpenAI: Voice ---
         self.cmb_voice = QtWidgets.QComboBox()
+        _fix_combo_behavior(self.cmb_voice) # [Apply Fix]
         self.cmb_voice.setStyleSheet(combo_style)
         for v in ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]:
             self.cmb_voice.addItem(v, userData=v)
@@ -345,10 +366,10 @@ class ControlPanel(QtWidgets.QWidget):
 
         # --- OpenAI: Speed slider ---
         self.slider_speed = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider_speed.setRange(50, 200)  # 0.5x ~ 2.0x
-        self.slider_speed.setValue(150)      # 你 core 預設 speed=1.5
+        self.slider_speed.setRange(25, 150)  # 0.25x ~ 1.5x
+        self.slider_speed.setValue(100)      # 預設 1.0x
 
-        self.lbl_speed_val = QtWidgets.QLabel("1.5x")
+        self.lbl_speed_val = QtWidgets.QLabel("1.0x")
         self.lbl_speed_val.setMinimumWidth(55)
         self.lbl_speed_val.setAlignment(QtCore.Qt.AlignCenter)
 
@@ -723,6 +744,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.text_output = TextOutputWidget()
         bottom_layout.addWidget(self.text_output)
 
+        # 點擊字幕行 -> 跳到影片對應時間
+        self._install_text_output_click_handler()
+
         main_layout.addWidget(bottom_group, stretch=2)
 
         self.setCentralWidget(central)
@@ -875,26 +899,28 @@ class MainWindow(QtWidgets.QMainWindow):
 
         cur = float(getattr(self, "_playback_sec", 0.0))
 
-        latest = None
+        # 把「已經到時間」的段落全部取出（避免只顯示最後一段造成跳秒/漏段）
+        ready: list[tuple[float, float, str]] = []
         while self._pending_segments and float(self._pending_segments[0][0]) <= cur:
-            latest = self._pending_segments.popleft()
+            st, ed, tx = self._pending_segments.popleft()
+            ready.append((float(st), float(ed), str(tx)))
 
-        if latest is None:
+        if not ready:
             return
 
-        start_t, stop_t, text = latest
-        text = str(text)
-        if not text.strip():
-            return
+        for start_t, stop_t, text in ready:
+            text = str(text)
+            if not text.strip():
+                continue
 
-        line = f"[{self._fmt_time(float(start_t))}] {text}"
-        self.text_output.appendText(line)
+            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {text}"
+            self.text_output.appendText(line)
 
-        # ✅ TTS：在「顯示」時才播，才會跟影片同步
-        if self.tts_mode == "openai":
-            self.signal_tts_speak.emit(text)
-        elif self.tts_mode == "local":
-            self.signal_local_tts_speak.emit(text)
+            # ✅ TTS：在「顯示」時才播，才會跟影片同步
+            if self.tts_mode == "openai":
+                self.signal_tts_speak.emit(text)
+            elif self.tts_mode == "local":
+                self.signal_local_tts_speak.emit(text)
 
         # 防止推論超前太多造成 queue 爆掉（保命，非限制模型）
         MAX_PENDING = 400
@@ -1154,6 +1180,107 @@ class MainWindow(QtWidgets.QMainWindow):
     def append_text(self, msg: str) -> None:
         self.text_output.appendText(msg)
 
+
+    def _install_text_output_click_handler(self) -> None:
+        '''
+        讓使用者在字幕輸出區「點一下某一行」就跳到影片對應時間。
+        不改 TextOutputWidget 的前提下，嘗試抓到其內部的 QTextEdit/QPlainTextEdit/QTextBrowser。
+        '''
+        self._text_click_widget = None
+        self._text_click_viewport = None
+
+        # 先找子元件（TextOutputWidget 可能是包了一層）
+        for cls in (QtWidgets.QTextBrowser, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit):
+            w = self.text_output.findChild(cls)
+            if w is not None:
+                self._text_click_widget = w
+                break
+
+        # 如果本體就是 text widget
+        if self._text_click_widget is None and isinstance(
+            self.text_output, (QtWidgets.QTextBrowser, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit)
+        ):
+            self._text_click_widget = self.text_output
+
+        if self._text_click_widget is None:
+            self.append_text("[System] 無法掛載字幕點擊跳轉：找不到文字輸出元件（QTextEdit/QPlainTextEdit/QTextBrowser）。")
+            return
+
+        # mouse event 多半在 viewport 上
+        self._text_click_viewport = getattr(self._text_click_widget, "viewport", lambda: None)()
+        if self._text_click_viewport is None:
+            self._text_click_viewport = self._text_click_widget
+
+        self._text_click_viewport.installEventFilter(self)
+
+    def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if getattr(self, "_text_click_viewport", None) is not None and obj is self._text_click_viewport:
+            if event.type() == QtCore.QEvent.Type.MouseButtonRelease:
+                try:
+                    if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                        w = getattr(self, "_text_click_widget", None)
+                        if w is None:
+                            return False
+                        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+                        if hasattr(w, "cursorForPosition"):
+                            cursor = w.cursorForPosition(pos)
+                            line = cursor.block().text()
+                            t_sec = self._parse_seek_time_from_line(line)
+                            if t_sec is not None:
+                                self.seek_to_seconds(t_sec)
+                                return True
+                except Exception:
+                    return False
+        return super().eventFilter(obj, event)
+
+    @staticmethod
+    def _parse_seek_time_from_line(line: str) -> float | None:
+        '''
+        支援格式：
+          [00:07.25-00:09.25] ...
+          [00:07.25] ...
+        回傳要 seek 的秒數（預設用 start）。
+        '''
+        s = line.strip()
+
+        m = re.search(r"\[(\d{2}):(\d{2}(?:\.\d+)?)\s*-\s*(\d{2}):(\d{2}(?:\.\d+)?)\]", s)
+        if m:
+            mm = int(m.group(1)); ss = float(m.group(2))
+            return mm * 60.0 + ss
+
+        m = re.search(r"\[(\d{2}):(\d{2}(?:\.\d+)?)\]", s)
+        if m:
+            mm = int(m.group(1)); ss = float(m.group(2))
+            return mm * 60.0 + ss
+
+        return None
+
+    def seek_to_seconds(self, t_sec: float) -> None:
+        '''檔案模式：跳到影片的指定秒數（會換算成 frame idx）。'''
+        if self.mode != "file":
+            return
+        if not self.video_thread:
+            return
+
+        fps = float(getattr(self.video_panel, "fps", 30.0) or 30.0)
+        frame_idx = int(round(max(0.0, float(t_sec)) * fps))
+
+        # clamp
+        try:
+            frame_idx = max(0, min(frame_idx, int(self.video_panel.slider.maximum())))
+        except Exception:
+            frame_idx = max(0, frame_idx)
+
+        # 更新 slider + 對 video thread 發 seek
+        try:
+            self.video_panel.slider.setValue(frame_idx)
+        except Exception:
+            pass
+
+        self.video_thread.requestSeek(frame_idx)
+        self._playback_sec = float(frame_idx) / fps
+        self.control_panel.set_status(f"跳轉到 {self._fmt_time(self._playback_sec)}")
+
     @QtCore.Slot(int)
     def on_seek_requested(self, frame_idx: int) -> None:
         if self.mode == "file" and self.video_thread:
@@ -1161,8 +1288,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @staticmethod
     def _fmt_time(t: float) -> str:
-        m, s = divmod(int(max(0, t)), 60)
-        return f"{m:02d}:{s:02d}"
+        '''Format seconds to mm:ss.xx (keep 2 decimals to avoid repeated timestamps).'''
+        t = max(0.0, float(t))
+        m = int(t // 60)
+        s = t - (m * 60)
+        return f"{m:02d}:{s:05.2f}"
 
     @staticmethod
     def fmt_time_ms(ms: float) -> str:

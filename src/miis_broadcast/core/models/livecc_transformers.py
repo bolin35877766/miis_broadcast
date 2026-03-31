@@ -32,9 +32,17 @@ def print_final_stats() -> None:
     print("LiveCC Performance")
     print("=" * 40)
 
-    if perf_stats["gen_times"]:
-        avg_gen = sum(perf_stats["gen_times"]) / len(perf_stats["gen_times"])
-        print(f"Average LiveCC latency (Video->Text): {avg_gen:.3f} s")
+    times = perf_stats["gen_times"]
+    if times:
+        # 1. 顯示第一次推論時間 (First Latency)
+        print(f"First LiveCC latency (Video->Text): {times[0]:.3f} s")
+
+        # 2. 顯示其餘推論的平均時間 (Average Excluding First)
+        if len(times) > 1:
+            avg_rest = sum(times[1:]) / len(times[1:])
+            print(f"Average LiveCC latency (Excluding First): {avg_rest:.3f} s")
+        else:
+            print("Average LiveCC latency (Excluding First): N/A (only 1 generation)")
     else:
         print("no data for LiveCC latency (Video->Text)")
 
@@ -176,7 +184,7 @@ class VideoClip:
 
 class LiveCCInfer:
     fps: float = 4.0
-    initial_fps_frames: int = 12
+    initial_fps_frames: int = 12            
     streaming_fps_frames: int = 8
     initial_time_interval: float = initial_fps_frames / fps
     streaming_time_interval: float = streaming_fps_frames / fps
@@ -461,6 +469,7 @@ class LiveCCInfer:
             if past_ids is not None:
                 inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
+            # [關鍵] 記錄開始推論的時間點
             t_gen_start = time.time()
 
             outputs = self.model.generate(
@@ -489,6 +498,9 @@ class LiveCCInfer:
 
             # ✅ 方案A：更新最近播報文字（供下一次 reset 時帶走）
             self._update_recent_texts(state, response)
+
+            # [關鍵] 傳送文字時，把「t_gen_start」也傳給 TTS 佇列
+            enqueue_tts_text(response, ref_ts=t_gen_start)
 
             yield (start_timestamp, stop_timestamp), response, state
 
@@ -564,6 +576,7 @@ class LiveCCInfer:
         if past_ids is not None:
             inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
+        # [關鍵] 記錄開始推論的時間點
         t_gen_start = time.time()
 
         outputs = self.model.generate(
@@ -591,5 +604,8 @@ class LiveCCInfer:
 
         # ✅ 方案A：更新最近播報文字（供下一次 reset 時帶走）
         self._update_recent_texts(state, response)
+
+        # [關鍵] 傳送文字時，把「t_gen_start」也傳給 TTS 佇列
+        enqueue_tts_text(response, ref_ts=t_gen_start)
 
         yield (start_timestamp, stop_timestamp), response, state

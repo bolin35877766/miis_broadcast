@@ -10,7 +10,8 @@ from typing import Deque, Dict, Any, Tuple
 
 import numpy as np
 import time
-from ..core.models.livecc_transformers import LiveCCInfer
+from ..core.models.livecc_transformers import LiveCCInfer, print_final_stats
+from ..core.models.openai_tts import print_tts_stats
 
 
 class LiveCCWorker(QtCore.QObject):
@@ -110,6 +111,8 @@ class LiveCCWorker(QtCore.QObject):
             logging.exception("[LiveCCWorker] Error during inference")
             self.signal_error.emit(str(e))
         finally:
+            print_final_stats()
+            print_tts_stats()
             # ✅ 新增：推論結束後也清空快取
             if self.livecc is not None:
                 self.livecc._cached_video_readers_with_hw.clear()
@@ -130,7 +133,7 @@ class FrameItem:
     t: float           # 收到 frame 的時間（秒）
     frame: np.ndarray  # BGR frame（cv2.VideoCapture 出來的）
 
-
+from ..core.models.livecc_transformers import VideoClip
 def build_clip_from_buffer(
     buffer: Deque[FrameItem],
     window_sec: float,
@@ -207,7 +210,7 @@ class LiveCCCameraWorker(QtCore.QObject):
         self,
         device_id: int = 0,
         window_sec: float = 2.0,
-        target_fps: float = 1.0,
+        target_fps: float = 2.0,
         infer_interval: float = 2.0,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
@@ -220,7 +223,7 @@ class LiveCCCameraWorker(QtCore.QObject):
         self.livecc: Optional[LiveCCInfer] = None
         self._stop_requested = False
 
-        self._buffer: Deque[FrameItem] = deque(maxlen=90)
+        self._buffer: Deque[FrameItem] = deque(maxlen=180)
         self._state: Dict[str, Any] = {}
         self._query: str = "請描述畫面"
         self._inference_start_time = 0.0  # ✅ 新增：記錄推論開始時間
