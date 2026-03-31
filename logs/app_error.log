@@ -5369,3 +5369,1320 @@ INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
 INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
 INFO:root:[LiveCCCameraWorker] Camera inference loop finished
 INFO:root:input frame rate=25
+WARNING:huggingface_hub.utils._http:'(ReadTimeoutError("HTTPSConnectionPool(host='huggingface.co', port=443): Read timed out. (read timeout=10)"), '(Request ID: 6d62ea87-9d0a-44b3-94e2-86f286270ec3)')' thrown while requesting HEAD https://huggingface.co/chenjoya/LiveCC-7B-Instruct/resolve/main/config.json
+WARNING:huggingface_hub.utils._http:Retrying in 1s [Retry 1/5].
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 42.89 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 26.77 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 6.09 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+ERROR:root:[LiveCCWorker] Error during inference
+Traceback (most recent call last):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/workers/livecc.py", line 87, in runInference
+    for (start_t, stop_t), response, state in self.livecc.live_cc(query, state):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/core/models/livecc_transformers.py", line 352, in live_cc
+    self._cached_video_readers_with_hw[video_path] = get_smart_resized_video_reader(
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/livecc_utils/video_process_patch.py", line 112, in get_smart_resized_video_reader
+    height, width, _ = video_reader.next().shape
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/decord/video_reader.py", line 117, in next
+    arr = _CAPI_VideoReaderNextFrame(self._handle)
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/decord/_ffi/_ctypes/function.py", line 173, in __call__
+    check_call(_LIB.DECORDFuncCall(
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/decord/_ffi/base.py", line 78, in check_call
+    raise DECORDError(err_str)
+decord._ffi.base.DECORDError: [15:09:03] /github/workspace/src/video/video_reader.cc:444: [/home/miislab/livecc_gui/examples/basketball_1080p_02.mp4]Unable to handle EOF because it takes too long to retrieve last few frames and `DECORD_EOF_RETRY_MAX=10240`. You may override the limit by `export DECORD_EOF_RETRY_MAX=20480` for example to allow more EOF retry attempts, exit...
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 10.07 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.49 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.46 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 14.04 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 14.27 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 56.31 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 80.67 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:input frame rate=25
+INFO:root:input frame rate=25
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Video ended
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 45.15 s
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+ERROR:root:[LiveCCWorker] Error during inference
+Traceback (most recent call last):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/workers/livecc.py", line 87, in runInference
+    for (start_t, stop_t), response, state in self.livecc.live_cc(query, state):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/core/models/livecc_transformers.py", line 441, in live_cc
+    inputs = inputs.to(self.device)
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/transformers/feature_extraction_utils.py", line 246, in to
+    self.data = {k: maybe_to(v) for k, v in self.items()}
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/transformers/feature_extraction_utils.py", line 246, in <dictcomp>
+    self.data = {k: maybe_to(v) for k, v in self.items()}
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/transformers/feature_extraction_utils.py", line 242, in maybe_to
+    return v.to(device=device, non_blocking=non_blocking)
+torch.AcceleratorError: CUDA error: device-side assert triggered
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/PLG.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+ERROR:root:[LiveCCWorker] Error during inference
+Traceback (most recent call last):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/workers/livecc.py", line 87, in runInference
+    for (start_t, stop_t), response, state in self.livecc.live_cc(query, state):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/core/models/livecc_transformers.py", line 352, in live_cc
+    self._cached_video_readers_with_hw[video_path] = get_smart_resized_video_reader(
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/livecc_utils/video_process_patch.py", line 110, in get_smart_resized_video_reader
+    video_reader = decord.VideoReader(video_path)
+  File "/home/miislab/miniforge3/envs/livecc_chatterboxtts/lib/python3.10/site-packages/decord/video_reader.py", line 57, in __init__
+    raise RuntimeError("Error reading " + uri + "...")
+RuntimeError: Error reading /home/miislab/livecc_gui/examples/PLG.mp4...
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/PLG_ 使用 Clipchamp 製作.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 141.08 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/PLG_ 使用 Clipchamp 製作.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 48.03 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 4.84 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 149.81 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.11 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.83 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 12.13 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.83 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 36.05 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 67.72 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Video ended
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 340.13 s
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 161.25 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.87 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.82 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 12.10 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.92 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.90 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.86 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.12 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.09 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.92 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.98 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.17 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.09 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+ERROR:root:[LiveCCWorker] Error during inference
+Traceback (most recent call last):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/workers/livecc.py", line 88, in runInference
+    for (start_t, stop_t), response, state in self.livecc.live_cc(query, state):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/core/models/livecc_transformers.py", line 408, in live_cc
+    interleave_clips.append(clip[: self.initial_fps_frames])
+TypeError: slice indices must be integers or None or have an __index__ method
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.46 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.42 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.38 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.42 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.28 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 6.62 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.41 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.50 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.49 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.31 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.30 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.39 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.28 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.26 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.25 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.25 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.98 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.93 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.84 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.07 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.02 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.31 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.28 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.93 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.01 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.90 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.95 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.09 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.03 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.96 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.05 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 12.14 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.86 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.90 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.15 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.99 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.33 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.39 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.86 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.19 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.02 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.15 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.13 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.77 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.98 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.36 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.80 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.23 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.99 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.00 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.87 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.27 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.01 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 2.49 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Video ended
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.28 s
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+ERROR:root:[LiveCCWorker] Error during inference
+Traceback (most recent call last):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/workers/livecc.py", line 88, in runInference
+    for (start_t, stop_t), response, state in self.livecc.live_cc(query, state):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/core/models/livecc_transformers.py", line 402, in live_cc
+    state["last_video_pts_index"] = clip_idxs[-1]
+IndexError: list index out of range
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+ERROR:root:[LiveCCWorker] Error during inference
+Traceback (most recent call last):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/workers/livecc.py", line 88, in runInference
+    for (start_t, stop_t), response, state in self.livecc.live_cc(query, state):
+  File "/home/miislab/livecc_gui/src/miis_broadcast/core/models/livecc_transformers.py", line 402, in live_cc
+    state["last_video_pts_index"] = clip_idxs[-1]
+IndexError: list index out of range
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.17 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.02 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.78 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.67 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/evl/evl_fast.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.07 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 39.06 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 42.84 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.91 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.80 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/basketball_1080p_02.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 58.78 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 12.67 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 9.69 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 10.42 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.93 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 9.77 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 10.48 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 8.35 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.36 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.80 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 44.15 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.85 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 10.24 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Video ended
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 41.93 s
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 8.03 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 10.04 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 23.17 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.38 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 11.30 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 8.44 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_long.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 14.92 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 13.37 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/boat.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 25.34 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=20)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=20)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=25)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=20)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=20)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=20)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCCameraWorker] Start camera inference loop
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=5)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=10)
+INFO:root:[LiveCCCameraWorker] Memory Reset (Count=15)
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCCameraWorker] Camera inference loop finished
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/20260120.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 42.37 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 12.28 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 10.24 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.80 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.78 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.81 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 12.68 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.68 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.48 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.73 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 14.96 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 8.34 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 23.41 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.27 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 10.66 s
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.29 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.17 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.26 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.29 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.23 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 8.15 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 10.08 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 23.83 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.57 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.35 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.35 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.32 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 23.11 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 24.06 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 23.93 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 15.95 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/wheelchair_short.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 23.90 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 30.45 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 6.21 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 20.35 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 110.85 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 20.02 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 110.07 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball_play.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 60.22 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 50.43 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 34.24 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 109.79 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/散剪.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 58.35 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/散剪.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 50.87 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/散剪.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 23.11 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/散剪.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 49.47 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/散剪.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 5.72 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/散剪.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 88.90 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+WARNING:huggingface_hub.utils._http:'(ReadTimeoutError("HTTPSConnectionPool(host='huggingface.co', port=443): Read timed out. (read timeout=10)"), '(Request ID: 574c0994-018d-474f-9317-2b1c220ba0da)')' thrown while requesting HEAD https://huggingface.co/chenjoya/LiveCC-7B-Instruct/resolve/main/audio_tokenizer_config.json
+WARNING:huggingface_hub.utils._http:Retrying in 1s [Retry 1/5].
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/實況主.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 58.29 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.52 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 7.35 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 6.21 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 21.99 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 16.55 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 3.46 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 22.69 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 12.37 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 28.39 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 25.95 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab/livecc_gui/examples/vr_test/VR_Frank_basketball.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 42.17 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
