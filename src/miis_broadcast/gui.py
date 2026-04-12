@@ -15,6 +15,7 @@ from .workers.chatterbox_tts import ChatterboxTTSWorker
 from .widgets.text_output import TextOutputWidget
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.openai_tts import OpenAITTSWorker
+from .workers.obs_input import OBSCameraThread
 from .core.prompt.prompt_manager import PromptManager
 from collections import deque
 
@@ -256,6 +257,7 @@ class VideoPanel(QtWidgets.QWidget):
 class ControlPanel(QtWidgets.QWidget):
     requestOpenVideo = QtCore.Signal()
     requestOpenCamera = QtCore.Signal()
+    requestOpenOBS = QtCore.Signal()
     requestStart = QtCore.Signal()
     requestFontScale = QtCore.Signal(int)
 
@@ -295,8 +297,12 @@ class ControlPanel(QtWidgets.QWidget):
         self.btn_camera = QtWidgets.QPushButton("開啟鏡頭")
         self.btn_camera.setStyleSheet(btn_style)
 
+        self.btn_obs = QtWidgets.QPushButton("OBS 串流")
+        self.btn_obs.setStyleSheet(btn_style)
+
         btn_row.addWidget(self.btn_open)
         btn_row.addWidget(self.btn_camera)
+        btn_row.addWidget(self.btn_obs)
 
         self.lbl_status = QtWidgets.QLabel("目前狀態: 未載入")
         self.lbl_status.setStyleSheet("color: #b5b5b5;")
@@ -481,6 +487,7 @@ class ControlPanel(QtWidgets.QWidget):
         # Signals
         self.btn_open.clicked.connect(self.requestOpenVideo.emit)
         self.btn_camera.clicked.connect(self.requestOpenCamera.emit)
+        self.btn_obs.clicked.connect(self.requestOpenOBS.emit)
         self.btn_start.clicked.connect(self.requestStart.emit)
 
         self.slider_speed.valueChanged.connect(lambda v: self.lbl_speed_val.setText(f"{v/100:.1f}x"))
@@ -592,6 +599,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.video_thread: Optional[VideoThread] = None
         self.camera_thread: Optional[CameraThread] = None
+        self.obs_thread: Optional[OBSCameraThread] = None
         self.video_fps: float = 30.0
         self.tts_mode: str = "none"
 
@@ -755,6 +763,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Signals
         self.control_panel.requestOpenVideo.connect(self.on_open_video_clicked)
         self.control_panel.requestOpenCamera.connect(self.on_open_camera_clicked)
+        self.control_panel.requestOpenOBS.connect(self.on_open_obs_clicked)
         self.control_panel.requestStart.connect(self.on_start_clicked)
         self.control_panel.requestFontScale.connect(self.on_font_scale_request)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
@@ -1004,6 +1013,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
 
+    @QtCore.Slot()
+    def on_open_obs_clicked(self) -> None:
+        """Switch to OBS Virtual Camera mode."""
+        self.stop_inference()
+        self.mode = "obs"
+        self.current_video_path = "OBS Virtual Camera"
+        self.control_panel.set_status("模式: OBS 虛擬攝影機")
+        self.append_text("已切換至 OBS 串流模式 — 請確認 OBS 已啟動虛擬攝影機")
+
+        # Stop any running video/camera thread
+        if self.video_thread:
+            self.video_thread.requestStop()
+            self.video_thread.wait()
+            self.video_thread = None
+
+        if self.camera_thread:
+            self.camera_thread.requestStop()
+            self.camera_thread.wait()
+            self.camera_thread = None
+
+        if self.obs_thread:
+            self.obs_thread.requestStop()
+            self.obs_thread.wait()
+
+        self.camera_start_time = time.time()
+        self.obs_thread = OBSCameraThread()
+        self.obs_thread.signal_frame.connect(self.on_camera_frame)
+        self.obs_thread.signal_error.connect(self.on_error)
+        self.obs_thread.start()
+
+        self.video_panel.slider.setEnabled(False)
+        self._update_start_button_state()
+
     def _apply_tts_settings_before_start(self) -> None:
         """根據目前模式套用對應設定"""
         self.tts_mode = self.control_panel.get_tts_mode()
@@ -1066,7 +1108,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.start()
             self.signal_start_livecc.emit(self.current_video_path, prompt)
 
-        elif self.mode == "camera":
+        elif self.mode in ("camera", "obs"):
             self.signal_start_camera_livecc.emit(prompt)
 
     def stop_inference(self) -> None:
@@ -1092,6 +1134,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.wait()
             self.video_thread = None
 
+        if self.mode == "obs" and self.obs_thread is not None:
+            self.obs_thread.requestStop()
+            self.obs_thread.wait()
+            self.obs_thread = None
+
         self.is_inference_running = False
         self.control_panel.set_start_button_state(False)
         self.control_panel.set_tts_controls_enabled(True)  # ✅ 解鎖：停止後可改
@@ -1109,7 +1156,7 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
         self.video_panel.update_frame(frame_rgb)
-        if self.is_inference_running and self.mode == "camera":
+        if self.is_inference_running and self.mode in ("camera", "obs"):
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             t_relative = time.time() - self.camera_start_time
             self.cam_worker.push_frame(frame_bgr, t_relative)
