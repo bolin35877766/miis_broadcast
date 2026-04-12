@@ -212,7 +212,7 @@ class ByteTrackWrapper:
         self,
         frame_bgr: np.ndarray,
         frame_id: int,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Run YOLOX detection + BYTETracker on one BGR frame.
 
@@ -223,7 +223,7 @@ class ByteTrackWrapper:
         Returns:
             annotated_bgr:     frame with track boxes drawn (BGR)
             subject_crop_rgb:  padded crop of main subject (RGB),
-                               or full-frame RGB if no detections
+                               or None if no valid subject is detected
         """
         self._total_frames += 1
         h, w = frame_bgr.shape[:2]
@@ -391,10 +391,11 @@ class ByteTrackWrapper:
         self,
         frame_bgr: np.ndarray,
         vis_tlwhs: list,
-    ) -> np.ndarray:
+    ) -> Optional[np.ndarray]:
         """
         Crop the subject region from the frame and convert to RGB.
-        Falls back to full frame if no tracked subject.
+        Returns None when no valid subject is tracked — callers should
+        skip pushing to LiveCC in that case to avoid empty-frame backlog.
         """
         h, w = frame_bgr.shape[:2]
         if vis_tlwhs:
@@ -407,5 +408,5 @@ class ByteTrackWrapper:
                 crop_bgr = frame_bgr[y1:y2, x1:x2]
                 return cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
 
-        # Fallback: full frame
-        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        # No valid subject — return None to suppress LiveCC push
+        return None

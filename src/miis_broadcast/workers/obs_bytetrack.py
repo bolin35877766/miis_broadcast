@@ -57,8 +57,8 @@ class OBSByteTrackThread(QtCore.QThread):
         subject_pad: float = 0.15,
         min_subject_area_ratio: float = 0.03,
         preempt_ratio: float = 4.0,
-        # Rate-limit frames sent to LiveCC (seconds between pushes)
-        livecc_push_interval: float = 0.5,
+        # Rate-limit frames sent to LiveCC (should match LiveCCCameraWorker.infer_interval)
+        livecc_push_interval: float = 2.0,
         # OBS camera arguments
         device_name: str = OBSVirtualCameraInput.DEFAULT_DEVICE_NAME,
         fallback_index: int = 1,
@@ -162,14 +162,21 @@ class OBSByteTrackThread(QtCore.QThread):
             # Emit annotated preview (BGR) every frame for smooth GUI display
             self.signal_frame.emit(annotated_bgr)
 
-            # Rate-limit subject crop sent to LiveCC to avoid overwhelming it
-            now = time.time()
-            if now - self._last_push_time >= self._livecc_push_interval:
-                self._last_push_time = now
-                self.signal_subject_frame.emit(subject_crop_rgb)
-                
-                # Detailed Log for visibility
-                print(f"[OBS-ByteTrack] 🚀 Pushed to LiveCC | Frame: {frame_id} | Interval: {now - self._last_push_time:.3f}s")
+# Rate-limit + subject guard: only push when a real subject is detected
+        now = time.time()
+        if (
+            subject_crop_rgb is not None
+            and now - self._last_push_time >= self._livecc_push_interval
+        ):
+            actual_interval = now - self._last_push_time
+            self._last_push_time = now
+            self.signal_subject_frame.emit(subject_crop_rgb)
+
+            # Detailed Log for visibility
+            print(
+                f"[OBS-ByteTrack] 🚀 Pushed to LiveCC | "
+                f"Frame: {frame_id} | Interval: {actual_interval:.3f}s"
+            )
             
             # Pace loop to match source FPS
             elapsed = time.perf_counter() - t_start
