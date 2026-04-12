@@ -202,11 +202,20 @@ class LiveCCInfer:
 
         t_load_start = time.time()
         self.device = f"cuda:{device_id}"
+        # Try flash_attention_2 first (requires flash_attn installed);
+        # fall back to sdpa which works without any extra package.
+        try:
+            import flash_attn  # noqa: F401
+            attn_impl = "flash_attention_2"
+        except ImportError:
+            print("flash_attn not found, falling back to sdpa attention.")
+            attn_impl = "sdpa"
+
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_path,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map=self.device,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_impl,
         )
         self.processor = AutoProcessor.from_pretrained(model_path, use_fast=False)
 

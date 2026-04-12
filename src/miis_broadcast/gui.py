@@ -707,11 +707,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.livecc_model = LiveCCInfer(device_id=0)
             print("[Main] LiveCC 模型載入完成")
             self.model_ready = True
-        except ImportError:
-            print("[Simulate] 找不到 livecc 模組，將使用模擬模式 (僅 GUI 測試)。")
+        except ImportError as e:
+            print(f"[Simulate] livecc 模組載入失敗 (ImportError): {e}")
+            print("[Simulate] 將使用模擬模式 (僅 GUI 測試)。")
             self.model_ready = True
         except Exception as e:
             print(f"[Main] 模型載入失敗: {e}")
+            import traceback; traceback.print_exc()
             self.model_ready = False
 
     def parseConfigs(self) -> None:
