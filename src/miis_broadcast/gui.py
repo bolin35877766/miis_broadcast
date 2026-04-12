@@ -1153,6 +1153,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.set_start_button_state(True)
         self.control_panel.set_tts_controls_enabled(False)  # ✅ 鎖定：推論中不可改
         self.text_output.setText("")
+        self._obs_drop_logged = False  # reset drop-log flag so it fires again if needed
 
         self.append_text(f"開始推論 (Style: {style_label}, TTS: {self.tts_mode})")
 
@@ -1246,6 +1247,12 @@ class MainWindow(QtWidgets.QMainWindow):
             subject_bgr = cv2.cvtColor(subject_crop_rgb, cv2.COLOR_RGB2BGR)
             t_relative = time.time() - self.camera_start_time
             self.cam_worker.push_frame(subject_bgr, t_relative)
+        else:
+            # Diagnostic: print why frames are being dropped
+            if not hasattr(self, '_obs_drop_logged'):
+                self._obs_drop_logged = True
+                print(f"[GUI] ⚠️  on_obs_track_subject_frame dropped: "
+                      f"is_inference_running={self.is_inference_running}, mode='{self.mode}'")
 
     # ---------------- Model callbacks ----------------
 

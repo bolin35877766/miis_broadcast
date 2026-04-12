@@ -269,6 +269,8 @@ class LiveCCCameraWorker(QtCore.QObject):
         self._state = {}      # 初始清空 KV Cache 和 past_ids
         self._buffer.clear()  # 清空影像緩衝
 
+        print(f"[LiveCCCameraWorker] 🚀 runCameraInference started | query='{self._query[:30]}...'")
+
         # ✅ 新增：初始化計數器
         inference_count = 0
 
@@ -290,8 +292,11 @@ class LiveCCCameraWorker(QtCore.QObject):
                     self.target_fps
                 )
                 if clip is None:
+                    print(f"[LiveCCCameraWorker] ⏳ Buffer too thin (size={len(self._buffer)}) — waiting")
                     QtCore.QThread.msleep(100)
                     continue
+
+                print(f"[LiveCCCameraWorker] 🎬 Clip built ({len(clip.frames)} frames) — running VLM")
 
                 last_infer_t = now
 

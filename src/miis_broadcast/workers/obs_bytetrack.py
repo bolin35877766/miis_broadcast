@@ -163,6 +163,8 @@ class OBSByteTrackThread(QtCore.QThread):
             # window, so no extra rate-limiting is needed here.
             if subject_crop_rgb is not None:
                 self.signal_subject_frame.emit(subject_crop_rgb)
+                if frame_id % 60 == 0:  # log once every ~3 seconds
+                    print(f"[OBS-ByteTrack] ✅ signal_subject_frame emitted | Frame: {frame_id}")
 
             # Pace loop to match source FPS
             elapsed = time.perf_counter() - t_start
