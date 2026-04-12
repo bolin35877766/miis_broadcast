@@ -453,7 +453,7 @@ class LiveCCInfer:
                 images=None,
                 videos=[clip_part],
                 return_tensors="pt",
-                return_attention_mask=False,
+                return_attention_mask=True,
             )
             inputs = inputs.to(self.device)
 
@@ -476,6 +476,13 @@ class LiveCCInfer:
 
             past_ids = state.get("past_ids", None)
             if past_ids is not None:
+                # Extend attention_mask to cover the prepended past tokens
+                past_mask = torch.ones(
+                    (1, past_ids.shape[1]), dtype=torch.long, device=self.device
+                )
+                inputs["attention_mask"] = torch.cat(
+                    [past_mask, inputs["attention_mask"]], dim=1
+                )
                 inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
             # [關鍵] 記錄開始推論的時間點
@@ -561,7 +568,7 @@ class LiveCCInfer:
             images=None,
             videos=[clip.frames],
             return_tensors="pt",
-            return_attention_mask=False,
+            return_attention_mask=True,
         )
         inputs = inputs.to(self.device)
 
@@ -583,6 +590,13 @@ class LiveCCInfer:
 
         past_ids = state.get("past_ids", None)
         if past_ids is not None:
+            # Extend attention_mask to cover the prepended past tokens
+            past_mask = torch.ones(
+                (1, past_ids.shape[1]), dtype=torch.long, device=self.device
+            )
+            inputs["attention_mask"] = torch.cat(
+                [past_mask, inputs["attention_mask"]], dim=1
+            )
             inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
         # [關鍵] 記錄開始推論的時間點
