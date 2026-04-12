@@ -11,7 +11,7 @@ from typing import Optional
 import cv2
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
-from .workers.chatterbox_tts import ChatterboxTTSWorker
+# from .workers.chatterbox_tts import ChatterboxTTSWorker  # [ChatterBox disabled]
 from .widgets.text_output import TextOutputWidget
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.openai_tts import OpenAITTSWorker
@@ -353,7 +353,7 @@ class ControlPanel(QtWidgets.QWidget):
         
         self.cmb_tts.addItem("不啟用 (Mute)", userData="none")
         self.cmb_tts.addItem("OpenAI TTS", userData="openai")
-        self.cmb_tts.addItem("Local TTS", userData="local")
+        # self.cmb_tts.addItem("Local TTS", userData="local")  # [ChatterBox disabled]
         self.cmb_tts.setCurrentIndex(1)
         self.cmb_tts.setStyleSheet(combo_style)
 
@@ -582,10 +582,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     signal_tts_speak = QtCore.Signal(str)
     signal_tts_interrupt = QtCore.Signal()
-    signal_local_tts_apply_settings = QtCore.Signal(float, float) # exag, cfg
-    signal_local_tts_speak = QtCore.Signal(str)
-    signal_local_tts_interrupt = QtCore.Signal()
-    signal_local_tts_stop = QtCore.Signal()
+    # [ChatterBox disabled]
+    # signal_local_tts_apply_settings = QtCore.Signal(float, float)
+    # signal_local_tts_speak = QtCore.Signal(str)
+    # signal_local_tts_interrupt = QtCore.Signal()
+    # signal_local_tts_stop = QtCore.Signal()
 
     def __init__(self, configs: dict, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -867,29 +868,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tts_thread.start()
 
             # ==========================================
-            # 2. Local TTS Worker (本地 Chatterbox)
+            # 2. Local TTS Worker (本地 Chatterbox) [ChatterBox disabled]
             # ==========================================
-            self.local_tts_thread = QtCore.QThread(self)
-            self.local_tts_worker = ChatterboxTTSWorker()
-            self.local_tts_worker.moveToThread(self.local_tts_thread)
-            
-            # Thread 啟動時，自動呼叫 worker.start() 載入模型 (需時較久)
-            self.local_tts_thread.started.connect(self.local_tts_worker.start)
-
-            # 連接 Local TTS 專用信號
-            self.signal_local_tts_apply_settings.connect(self.local_tts_worker.apply_settings, QtCore.Qt.QueuedConnection)
-            self.signal_local_tts_stop.connect(self.local_tts_worker.stop, QtCore.Qt.QueuedConnection)
-            self.signal_local_tts_speak.connect(self.local_tts_worker.speak, QtCore.Qt.QueuedConnection)
-            self.signal_local_tts_interrupt.connect(self.local_tts_worker.interrupt, QtCore.Qt.QueuedConnection)
-
-            # 🔥 [修改點 1] 註解掉或刪除原本的直接啟動，改為 Lazy Load
-            # self.local_tts_thread.start() 
-
-            # 🔥 [修改點 2] 監聽下拉選單變化
-            self.control_panel.cmb_tts.currentIndexChanged.connect(self._on_tts_mode_changed)
-
-            # 如果預設選項剛好就是 Local (雖然通常預設是 OpenAI)，初始化時檢查一次
-            self._on_tts_mode_changed()
+            # self.local_tts_thread = QtCore.QThread(self)
+            # self.local_tts_worker = ChatterboxTTSWorker()
+            # self.local_tts_worker.moveToThread(self.local_tts_thread)
+            # self.local_tts_thread.started.connect(self.local_tts_worker.start)
+            # self.signal_local_tts_apply_settings.connect(self.local_tts_worker.apply_settings, QtCore.Qt.QueuedConnection)
+            # self.signal_local_tts_stop.connect(self.local_tts_worker.stop, QtCore.Qt.QueuedConnection)
+            # self.signal_local_tts_speak.connect(self.local_tts_worker.speak, QtCore.Qt.QueuedConnection)
+            # self.signal_local_tts_interrupt.connect(self.local_tts_worker.interrupt, QtCore.Qt.QueuedConnection)
 
     # ---------------- Slots ----------------
 
@@ -928,8 +916,8 @@ class MainWindow(QtWidgets.QMainWindow):
             # ✅ TTS：在「顯示」時才播，才會跟影片同步
             if self.tts_mode == "openai":
                 self.signal_tts_speak.emit(text)
-            elif self.tts_mode == "local":
-                self.signal_local_tts_speak.emit(text)
+            # elif self.tts_mode == "local":  # [ChatterBox disabled]
+            #     self.signal_local_tts_speak.emit(text)
 
         # 防止推論超前太多造成 queue 爆掉（保命，非限制模型）
         MAX_PENDING = 400
@@ -938,14 +926,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _on_tts_mode_changed(self) -> None:
-        mode = self.control_panel.get_tts_mode()
-        
-        if mode == "local":
-            # 檢查 thread 是否已經在運行，如果沒有才啟動
-            if hasattr(self, "local_tts_thread") and not self.local_tts_thread.isRunning():
-                self.append_text("[System] 偵測到 Local TTS 請求，開始載入 Chatterbox 模型 (首次載入需稍候)...")
-                self.control_panel.set_status("載入 Local Model 中...")
-                self.local_tts_thread.start()
+        pass  # [ChatterBox disabled]
+
     @QtCore.Slot(int)
     def on_font_scale_request(self, size_pt: int) -> None:
         self.font_size = int(size_pt)
@@ -1056,11 +1038,10 @@ class MainWindow(QtWidgets.QMainWindow):
             # 確保重置 Local (可選)
             self.signal_tts_apply_settings.emit(voice, float(speed))
 
-        elif self.tts_mode == "local":
-            exag = self.control_panel.get_local_exaggeration()
-            cfg = self.control_panel.get_local_cfg()
-            # 發送給 Local Worker
-            self.signal_local_tts_apply_settings.emit(float(exag), float(cfg))
+        # elif self.tts_mode == "local":  # [ChatterBox disabled]
+        #     exag = self.control_panel.get_local_exaggeration()
+        #     cfg = self.control_panel.get_local_cfg()
+        #     self.signal_local_tts_apply_settings.emit(float(exag), float(cfg))
 
     @QtCore.Slot()
     def on_start_clicked(self) -> None:
@@ -1121,9 +1102,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.tts_mode == "openai":
             try: self.signal_tts_interrupt.emit()
             except: pass
-        elif self.tts_mode == "local":
-            try: self.signal_local_tts_interrupt.emit()
-            except: pass
+        # elif self.tts_mode == "local":  # [ChatterBox disabled]
+        #     try: self.signal_local_tts_interrupt.emit()
+        #     except: pass
         if hasattr(self, "livecc_worker"):
             self.livecc_worker.requestStop()
         if hasattr(self, "cam_worker"):
@@ -1181,8 +1162,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             if self.tts_mode == "openai":
                 self.signal_tts_speak.emit(text)
-            elif self.tts_mode == "local":
-                self.signal_local_tts_speak.emit(text)
+            # elif self.tts_mode == "local":  # [ChatterBox disabled]
+            #     self.signal_local_tts_speak.emit(text)
             return
 
         # File mode：先進 queue，等影片播放到對應時間再顯示/唸（避免不同步）
@@ -1197,8 +1178,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # 根據模式分流
         if self.tts_mode == "openai":
             self.signal_tts_speak.emit(text)
-        elif self.tts_mode == "local":
-            self.signal_local_tts_speak.emit(text)
+        # elif self.tts_mode == "local":  # [ChatterBox disabled]
+        #     self.signal_local_tts_speak.emit(text)
 
     @QtCore.Slot()
     def on_finished(self) -> None:
