@@ -1,5 +1,6 @@
-# Core AI
-torch>=2.5.0
+# Core AI (torch/torchvision/torchaudio must be pre-installed on the server)
+# Server uses torch==2.8.0+cu129 — install manually via:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 livecc-utils==0.0.2
 qwen-vl-utils
 # ByteTrack tracking
@@ -169,9 +170,9 @@ threadpoolctl==3.6.0
 timm==1.0.22
 tokenizers==0.22.1
 tomlkit==0.13.3
-torch==2.8.0+cu129
-torchaudio==2.8.0+cu129
-torchvision==0.23.0+cu129
+# torch==2.8.0+cu129  # pre-installed on server, cannot install from PyPI
+# torchaudio==2.8.0+cu129  # pre-installed on server
+# torchvision==0.23.0+cu129  # pre-installed on server
 tqdm==4.67.1
 transformers==4.57.1
 triton==3.4.0
