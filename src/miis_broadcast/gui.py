@@ -16,6 +16,7 @@ from .widgets.text_output import TextOutputWidget
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.openai_tts import OpenAITTSWorker
 from .workers.obs_input import OBSCameraThread
+from .workers.obs_bytetrack import OBSByteTrackThread
 from .core.prompt.prompt_manager import PromptManager
 from collections import deque
 
@@ -258,6 +259,7 @@ class ControlPanel(QtWidgets.QWidget):
     requestOpenVideo = QtCore.Signal()
     requestOpenCamera = QtCore.Signal()
     requestOpenOBS = QtCore.Signal()
+    requestOpenOBSTrack = QtCore.Signal()
     requestStart = QtCore.Signal()
     requestFontScale = QtCore.Signal(int)
 
@@ -300,9 +302,13 @@ class ControlPanel(QtWidgets.QWidget):
         self.btn_obs = QtWidgets.QPushButton("OBS 串流")
         self.btn_obs.setStyleSheet(btn_style)
 
+        self.btn_obs_track = QtWidgets.QPushButton("OBS + 追蹤")
+        self.btn_obs_track.setStyleSheet(btn_style)
+
         btn_row.addWidget(self.btn_open)
         btn_row.addWidget(self.btn_camera)
         btn_row.addWidget(self.btn_obs)
+        btn_row.addWidget(self.btn_obs_track)
 
         self.lbl_status = QtWidgets.QLabel("目前狀態: 未載入")
         self.lbl_status.setStyleSheet("color: #b5b5b5;")
@@ -488,6 +494,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.btn_open.clicked.connect(self.requestOpenVideo.emit)
         self.btn_camera.clicked.connect(self.requestOpenCamera.emit)
         self.btn_obs.clicked.connect(self.requestOpenOBS.emit)
+        self.btn_obs_track.clicked.connect(self.requestOpenOBSTrack.emit)
         self.btn_start.clicked.connect(self.requestStart.emit)
 
         self.slider_speed.valueChanged.connect(lambda v: self.lbl_speed_val.setText(f"{v/100:.1f}x"))
@@ -601,6 +608,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_thread: Optional[VideoThread] = None
         self.camera_thread: Optional[CameraThread] = None
         self.obs_thread: Optional[OBSCameraThread] = None
+        self.obs_bytetrack_thread: Optional[OBSByteTrackThread] = None
         self.video_fps: float = 30.0
         self.tts_mode: str = "none"
 
@@ -767,6 +775,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.requestOpenVideo.connect(self.on_open_video_clicked)
         self.control_panel.requestOpenCamera.connect(self.on_open_camera_clicked)
         self.control_panel.requestOpenOBS.connect(self.on_open_obs_clicked)
+        self.control_panel.requestOpenOBSTrack.connect(self.on_open_obs_track_clicked)
         self.control_panel.requestStart.connect(self.on_start_clicked)
         self.control_panel.requestFontScale.connect(self.on_font_scale_request)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
@@ -1030,6 +1039,78 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
 
+    @QtCore.Slot()
+    def on_open_obs_track_clicked(self) -> None:
+        """Switch to OBS Virtual Camera + ByteTrack subject-tracking mode."""
+        self.stop_inference()
+        self.mode = "obs_track"
+        self.current_video_path = "OBS + ByteTrack"
+        self.control_panel.set_status("模式: OBS + ByteTrack 追蹤")
+        self.append_text("已切換至 OBS + ByteTrack 追蹤模式 — 請確認 OBS 已啟動虛擬攝影機")
+
+        # Stop any running camera / obs threads
+        if self.video_thread:
+            self.video_thread.requestStop()
+            self.video_thread.wait()
+            self.video_thread = None
+
+        if self.camera_thread:
+            self.camera_thread.requestStop()
+            self.camera_thread.wait()
+            self.camera_thread = None
+
+        if self.obs_thread:
+            self.obs_thread.requestStop()
+            self.obs_thread.wait()
+            self.obs_thread = None
+
+        if self.obs_bytetrack_thread:
+            self.obs_bytetrack_thread.requestStop()
+            self.obs_bytetrack_thread.wait()
+            self.obs_bytetrack_thread = None
+
+        # Read bytetrack config from configs dict
+        bt_cfg = self.configs.get("bytetrack", {})
+
+        # Resolve repo path: config value takes priority, env var is fallback
+        # (ByteTrackWrapper itself also does the same resolution internally)
+        repo_path = bt_cfg.get("bytetrack_repo") or None
+        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_x_mix_det.py")
+        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_x_mot17.pth.tar")
+
+        # If paths are relative, resolve them against the ByteTrack_repo dir
+        import os
+        if repo_path and not os.path.isabs(exp_file):
+            exp_file  = os.path.join(repo_path, exp_file)
+        if repo_path and not os.path.isabs(ckpt_path):
+            ckpt_path = os.path.join(repo_path, ckpt_path)
+
+        self.camera_start_time = time.time()
+        self.obs_bytetrack_thread = OBSByteTrackThread(
+            ckpt_path           = ckpt_path,
+            exp_file            = exp_file,
+            bytetrack_repo      = repo_path,
+            device              = bt_cfg.get("device", "cuda"),
+            fp16                = bool(bt_cfg.get("fp16", True)),
+            fuse                = bool(bt_cfg.get("fuse", True)),
+            track_thresh        = float(bt_cfg.get("track_thresh", 0.5)),
+            match_thresh        = float(bt_cfg.get("match_thresh", 0.8)),
+            track_buffer        = int(bt_cfg.get("track_buffer", 30)),
+            aspect_ratio_thresh = float(bt_cfg.get("aspect_ratio_thresh", 1.6)),
+            min_box_area        = float(bt_cfg.get("min_box_area", 10)),
+            subject_only        = bool(bt_cfg.get("subject_only", True)),
+            subject_pad         = float(bt_cfg.get("subject_pad", 0.15)),
+        )
+        # Annotated BGR preview → GUI video panel
+        self.obs_bytetrack_thread.signal_frame.connect(self.on_obs_track_frame)
+        # Subject crop RGB → LiveCC inference
+        self.obs_bytetrack_thread.signal_subject_frame.connect(self.on_obs_track_subject_frame)
+        self.obs_bytetrack_thread.signal_error.connect(self.on_error)
+        self.obs_bytetrack_thread.start()
+
+        self.video_panel.slider.setEnabled(False)
+        self._update_start_button_state()
+
     def _apply_tts_settings_before_start(self) -> None:
         """根據目前模式套用對應設定"""
         self.tts_mode = self.control_panel.get_tts_mode()
@@ -1091,7 +1172,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.start()
             self.signal_start_livecc.emit(self.current_video_path, prompt)
 
-        elif self.mode in ("camera", "obs"):
+        elif self.mode in ("camera", "obs", "obs_track"):
             self.signal_start_camera_livecc.emit(prompt)
 
     def stop_inference(self) -> None:
@@ -1122,6 +1203,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.obs_thread.wait()
             self.obs_thread = None
 
+        if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:
+            self.obs_bytetrack_thread.requestStop()
+            self.obs_bytetrack_thread.wait()
+            self.obs_bytetrack_thread = None
+
         self.is_inference_running = False
         self.control_panel.set_start_button_state(False)
         self.control_panel.set_tts_controls_enabled(True)  # ✅ 解鎖：停止後可改
@@ -1143,6 +1229,21 @@ class MainWindow(QtWidgets.QMainWindow):
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             t_relative = time.time() - self.camera_start_time
             self.cam_worker.push_frame(frame_bgr, t_relative)
+
+    @QtCore.Slot(np.ndarray)
+    def on_obs_track_frame(self, annotated_bgr: np.ndarray) -> None:
+        """Display ByteTrack annotated frame (BGR) in the video panel."""
+        annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+        self.video_panel.update_frame(annotated_rgb)
+
+    @QtCore.Slot(np.ndarray)
+    def on_obs_track_subject_frame(self, subject_crop_rgb: np.ndarray) -> None:
+        """Forward the padded subject crop (RGB) from ByteTrack to LiveCC cam_worker."""
+        if self.is_inference_running and self.mode == "obs_track":
+            # cam_worker.push_frame expects BGR
+            subject_bgr = cv2.cvtColor(subject_crop_rgb, cv2.COLOR_RGB2BGR)
+            t_relative = time.time() - self.camera_start_time
+            self.cam_worker.push_frame(subject_bgr, t_relative)
 
     # ---------------- Model callbacks ----------------
 

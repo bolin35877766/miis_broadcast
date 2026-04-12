@@ -4,3 +4,35 @@ classifiers:
     model_path: livecc
     frame_size: 0
     n_frames: 0
+
+# ---------------------------------------------------------------------------
+# ByteTrack — YOLOX + BYTETracker subject-tracking configuration
+#
+# bytetrack_repo : absolute path to ByteTrack_repo (can also be set via
+#                  BYTETRACK_REPO environment variable)
+# exp_file       : YOLOX experiment config (.py) relative to repo root,
+#                  or an absolute path
+# ckpt_path      : path to the .pth checkpoint file
+# model_size     : informational only (x / l / m / s)
+# device         : "cuda" or "cpu"
+# fp16           : half-precision inference (requires CUDA)
+# fuse           : fuse Conv+BN layers for speed
+# ---------------------------------------------------------------------------
+bytetrack:
+  bytetrack_repo: ""           # leave blank → auto-detect via BYTETRACK_REPO env var
+  exp_file: "exps/example/mot/yolox_x_mix_det.py"
+  ckpt_path: "pretrained/bytetrack_x_mot17.pth.tar"
+  model_size: "x"
+  device: "cuda"
+  fp16: true
+  fuse: true
+  # BYTETracker hyper-parameters
+  track_thresh: 0.5
+  match_thresh: 0.8
+  track_buffer: 30
+  aspect_ratio_thresh: 1.6
+  min_box_area: 10
+  mot20: false
+  # Subject-mode
+  subject_only: true
+  subject_pad: 0.15

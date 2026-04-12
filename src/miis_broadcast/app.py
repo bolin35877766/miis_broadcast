@@ -14,7 +14,8 @@ def main():
 
     # Config parsing
     configs = parse_configs(CONFIG_PATH)
-    classifier_configs = parse_configs(MODEL_CONFIG_PATH)['classifiers']
+    model_configs = parse_configs(MODEL_CONFIG_PATH)
+    classifier_configs = model_configs['classifiers']
 
     # Merge configs
     configs['gui_window']['classifier_list'] = classifier_configs
@@ -26,6 +27,9 @@ def main():
         logging.error(error_msg)
         QtWidgets.QMessageBox.information(None, 'Error', error_msg, QtWidgets.QMessageBox.StandardButton.Ok)
         sys.exit()
+
+    # Pass bytetrack section to MainWindow
+    configs['bytetrack'] = model_configs.get('bytetrack', {})
 
     mw = MainWindow(configs=configs)
     mw.show()
