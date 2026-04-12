@@ -14,12 +14,14 @@ from typing import Optional
 
 import numpy as np
 import websockets
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 # ==========================================
 # 🔐 讀取 API Key
 # ==========================================
-load_dotenv()
+# find_dotenv() searches upward from this file's location,
+# so .env is always found regardless of the working directory.
+load_dotenv(find_dotenv(usecwd=False, raise_error_if_not_found=False))
 MY_API_KEY = os.getenv("OPENAI_API_KEY")
 if not MY_API_KEY:
     raise RuntimeError("[OpenAI TTS] OPENAI_API_KEY not found in environment")
