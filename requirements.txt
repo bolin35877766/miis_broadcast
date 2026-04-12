@@ -4,9 +4,19 @@
 livecc-utils==0.0.2
 qwen-vl-utils
 pygrabber  # DirectShow device enumeration (Windows) for OBS Virtual Camera detection
-# ByteTrack tracking
+# ByteTrack tracking — all runtime dependencies
 ultralytics
-lapx
+lapx          # drop-in replacement for lap (Kalman/Hungarian)
+cython        # required to build cython_bbox from source
+cython_bbox   # IoU overlap computations inside BYTETracker
+pycocotools   # COCO evaluation tools (imported by yolox)
+tabulate      # logging tables inside yolox
+motmetrics    # MOT evaluation metrics
+filterpy      # Kalman filter implementation
+h5py          # HDF5 I/O (used by some yolox utilities)
+thop          # model FLOPs / MACs counter
+scikit-image  # image processing utilities used by yolox
+gdown         # download pretrained weights from Google Drive
 # Other dependencies
 absl-py==2.3.1
 accelerate==1.11.0
