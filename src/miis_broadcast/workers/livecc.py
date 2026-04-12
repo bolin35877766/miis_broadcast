@@ -207,6 +207,7 @@ class LiveCCCameraWorker(QtCore.QObject):
     signal_segment = QtCore.Signal(float, float, str)
     signal_finished = QtCore.Signal()
     signal_error = QtCore.Signal(str)
+    signal_log = QtCore.Signal(str, str, str)
 
     def __init__(
         self,
