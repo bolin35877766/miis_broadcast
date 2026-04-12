@@ -26,7 +26,7 @@ MY_API_KEY = os.getenv("OPENAI_API_KEY")
 if not MY_API_KEY:
     raise RuntimeError("[OpenAI TTS] OPENAI_API_KEY not found in environment")
 
-TTS_MODEL_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+TTS_MODEL_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
 TTS_HEADERS = {
     "Authorization": f"Bearer {MY_API_KEY}",
     "OpenAI-Beta": "realtime=v1",
