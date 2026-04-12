@@ -1,5 +1,7 @@
 # Core AI
 torch>=2.5.0
+livecc-utils==0.0.2
+qwen-vl-utils
 # ByteTrack tracking
 ultralytics
 lapx
