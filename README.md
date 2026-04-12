@@ -10,6 +10,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - Video file playback
   - Live camera feed
   - OBS Virtual Camera + ByteTrack subject tracking
+- **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
 - **Real-time commentary generation** via [LiveCC-7B-Instruct](https://huggingface.co/chenjoya/LiveCC-7B-Instruct) (Qwen2VL-based)
 - **Subject-aware tracking mode** — YOLOX + BYTETracker locks onto the dominant person, crops and forwards their region to LiveCC; switches automatically when a larger subject enters the frame
 - **Multiple commentary styles** switchable at runtime:
@@ -57,6 +58,7 @@ Key modules:
 | [src/miis_broadcast/core/models/livecc_transformers.py](src/miis_broadcast/core/models/livecc_transformers.py) | LiveCCInfer — model loading, streaming inference, KV-cache management |
 | [src/miis_broadcast/core/models/openai_tts.py](src/miis_broadcast/core/models/openai_tts.py) | OpenAI Realtime WebSocket TTS engine |
 | [src/miis_broadcast/core/models/chatterbox_tts.py](src/miis_broadcast/core/models/chatterbox_tts.py) | Local ChatterBox TTS engine |
+| [src/miis_broadcast/core/utils/session_logger.py](src/miis_broadcast/core/utils/session_logger.py) | SessionLogger — handles unified logging of system events and commentary |
 | [src/miis_broadcast/core/prompt/prompt_manager.py](src/miis_broadcast/core/prompt/prompt_manager.py) | Loads and builds commentary style prompts from YAML |
 | [configs/livecc_prompts.yml](configs/livecc_prompts.yml) | Commentary style definitions |
 | [configs/models.yml](configs/models.yml) | Model registry — LiveCC and ByteTrack configs |

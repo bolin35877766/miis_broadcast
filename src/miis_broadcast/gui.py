@@ -18,6 +18,7 @@ from .workers.openai_tts import OpenAITTSWorker
 from .workers.obs_input import OBSCameraThread
 from .workers.obs_bytetrack import OBSByteTrackThread
 from .core.prompt.prompt_manager import PromptManager
+from .core.utils.session_logger import SessionLogger
 from collections import deque
 
 # ============================================================
@@ -599,6 +600,9 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__(parent)
         self.configs = configs
         self.parseConfigs()
+
+        self.session_logger = SessionLogger()
+        print(f"[Main] Session log started at: {self.session_logger.get_log_path()}")
 
         self.current_video_path: Optional[str] = None
         self.model_ready: bool = False
@@ -1268,6 +1272,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(float, float, str)
     def on_segment(self, start_t: float, stop_t: float, text: str) -> None:
+        # Log to session file
+        if hasattr(self, 'session_logger'):
+            self.session_logger.log_commentary(text)
+
         # Camera mode：沒有播放器時間軸可排程，所以直接顯示/唸
         if self.mode != "file":
             line = f"[{self._fmt_time(start_t)}] {text}"
@@ -1319,6 +1327,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_start_button_state(self) -> None:
         can_start = self.model_ready and (self.current_video_path is not None)
         self.control_panel.btn_start.setEnabled(bool(can_start))
+        if hasattr(self, 'session_logger'):
+            self.session_logger.log_system("INFO", msg)
 
     def append_text(self, msg: str) -> None:
         self.text_output.appendText(msg)
