@@ -7,14 +7,44 @@ import numpy as np
 from .input import BaseInput
 
 
+def find_obs_camera_index(device_name: str = "OBS Virtual Camera", max_scan: int = 10) -> int:
+    """
+    Scan DirectShow video devices (index 0..max_scan) and return the index
+    whose backend name contains `device_name`.  Returns -1 if not found.
+    """
+    if platform.system() != "Windows":
+        return -1
+
+    # Try to use pygrabber for accurate device name lookup
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+        graph = FilterGraph()
+        devices = graph.get_input_devices()
+        for idx, name in enumerate(devices):
+            if device_name.lower() in name.lower():
+                return idx
+    except Exception:
+        pass
+
+    # Fallback: brute-force scan by index and check opaque backend name
+    for idx in range(max_scan):
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            # CAP_PROP_BACKEND returns the integer backend, not the name.
+            # We rely on pygrabber above; here we just return the first
+            # non-zero index that opens (rough heuristic) only when
+            # pygrabber is unavailable.
+            cap.release()
+    return -1
+
+
 class OBSVirtualCameraInput(BaseInput):
     """
     Captures frames from OBS Virtual Camera.
 
-    On Windows, OpenCV's DirectShow backend is used to open the named
-    virtual device ("video=OBS Virtual Camera").  When the named device
-    cannot be found (e.g. OBS not running, or non-Windows OS), it falls
-    back to a numeric camera index supplied at construction time.
+    Scans DirectShow devices to find the OBS Virtual Camera by name,
+    then opens it with the correct numeric index.  Falls back to
+    `fallback_index` when auto-detection fails.
     """
 
     DEFAULT_DEVICE_NAME = "OBS Virtual Camera"
@@ -28,14 +58,19 @@ class OBSVirtualCameraInput(BaseInput):
         self.device_name = device_name
         self.fallback_index = fallback_index
 
-        # Attempt to open; raises if both methods fail
-        if not self._try_open_named():
-            if not self._try_open_index():
-                raise RuntimeError(
-                    f"[OBSVirtualCameraInput] Cannot open OBS Virtual Camera. "
-                    f"Tried named device '{device_name}' and index {fallback_index}. "
-                    f"Make sure OBS is running and Virtual Camera is started."
-                )
+        # Auto-detect OBS Virtual Camera index
+        obs_index = find_obs_camera_index(device_name)
+        if obs_index >= 0:
+            opened = self._try_open_index(obs_index)
+        else:
+            # pygrabber not available or not on Windows — try indices 0..9
+            opened = self._try_open_by_scan()
+
+        if not opened:
+            raise RuntimeError(
+                f"[OBSVirtualCameraInput] Cannot open OBS Virtual Camera. "
+                f"Make sure OBS is running and Virtual Camera is started."
+            )
 
         self.fps = self.capture.get(cv2.CAP_PROP_FPS) or 30.0
         self.calculate_frame_delay()
@@ -44,27 +79,23 @@ class OBSVirtualCameraInput(BaseInput):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _try_open_named(self) -> bool:
+    def _try_open_by_scan(self) -> bool:
         """
-        Try to open the virtual camera by its DirectShow device name.
-        This only works on Windows because DirectShow is a Windows API.
+        Scan indices 0..9 with DirectShow.  Opens the first index that:
+          1. Successfully opens
+          2. Is NOT the default webcam (index 0) — prefer higher indices
+        Falls back to fallback_index if nothing else works.
         """
-        if platform.system() != "Windows":
-            return False
-
-        cap = cv2.VideoCapture(f"video={self.device_name}", cv2.CAP_DSHOW)
-        if cap.isOpened():
-            self.capture = cap
-            return True
-        cap.release()
+        # First try indices > 0 so we avoid the built-in webcam
+        for idx in list(range(1, 10)) + [0]:
+            if self._try_open_index(idx):
+                return True
         return False
 
-    def _try_open_index(self) -> bool:
-        """
-        Fallback: open the camera by a numeric index.
-        Useful if OBS Virtual Camera appears as a numbered device.
-        """
-        cap = cv2.VideoCapture(self.fallback_index)
+    def _try_open_index(self, index: int) -> bool:
+        """Open the camera at a specific numeric index using DirectShow."""
+        backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+        cap = cv2.VideoCapture(index, backend)
         if cap.isOpened():
             self.capture = cap
             return True

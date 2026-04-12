@@ -3,6 +3,7 @@
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 livecc-utils==0.0.2
 qwen-vl-utils
+pygrabber  # DirectShow device enumeration (Windows) for OBS Virtual Camera detection
 # ByteTrack tracking
 ultralytics
 lapx
