@@ -36,3 +36,8 @@ bytetrack:
   # Subject-mode
   subject_only: true
   subject_pad: 0.15
+  # Subject quality gates
+  min_subject_area_ratio: 0.03   # ignore tracks smaller than 3% of frame area
+  preempt_ratio: 4.0             # switch subject if new track area is 4x larger
+  # LiveCC rate-limit: only push a frame to LiveCC every N seconds
+  livecc_push_interval: 0.5

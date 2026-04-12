@@ -55,6 +55,10 @@ class OBSByteTrackThread(QtCore.QThread):
         min_box_area: float = 10.0,
         subject_only: bool = True,
         subject_pad: float = 0.15,
+        min_subject_area_ratio: float = 0.03,
+        preempt_ratio: float = 4.0,
+        # Rate-limit frames sent to LiveCC (seconds between pushes)
+        livecc_push_interval: float = 0.5,
         # OBS camera arguments
         device_name: str = OBSVirtualCameraInput.DEFAULT_DEVICE_NAME,
         fallback_index: int = 1,
@@ -73,14 +77,18 @@ class OBSByteTrackThread(QtCore.QThread):
         self._match_thresh      = match_thresh
         self._track_buffer      = track_buffer
         self._aspect_ratio_thresh = aspect_ratio_thresh
-        self._min_box_area      = min_box_area
-        self._subject_only      = subject_only
-        self._subject_pad       = subject_pad
+        self._min_box_area           = min_box_area
+        self._subject_only           = subject_only
+        self._subject_pad            = subject_pad
+        self._min_subject_area_ratio = min_subject_area_ratio
+        self._preempt_ratio          = preempt_ratio
+        self._livecc_push_interval   = livecc_push_interval
 
         self._device_name       = device_name
         self._fallback_index    = fallback_index
 
         self._stop_requested    = False
+        self._last_push_time: float = 0.0
 
     # ------------------------------------------------------------------
     # QThread entry point
@@ -103,20 +111,22 @@ class OBSByteTrackThread(QtCore.QThread):
         # ── Build ByteTrackWrapper ────────────────────────────────────
         try:
             tracker = ByteTrackWrapper(
-                ckpt_path          = self._ckpt_path,
-                exp_file           = self._exp_file,
-                bytetrack_repo     = self._bytetrack_repo,
-                device             = self._device,
-                fp16               = self._fp16,
-                fuse               = self._fuse,
-                track_thresh       = self._track_thresh,
-                match_thresh       = self._match_thresh,
-                track_buffer       = self._track_buffer,
-                aspect_ratio_thresh= self._aspect_ratio_thresh,
-                min_box_area       = self._min_box_area,
-                subject_only       = self._subject_only,
-                subject_pad        = self._subject_pad,
-                fps                = int(fps),
+                ckpt_path             = self._ckpt_path,
+                exp_file              = self._exp_file,
+                bytetrack_repo        = self._bytetrack_repo,
+                device                = self._device,
+                fp16                  = self._fp16,
+                fuse                  = self._fuse,
+                track_thresh          = self._track_thresh,
+                match_thresh          = self._match_thresh,
+                track_buffer          = self._track_buffer,
+                aspect_ratio_thresh   = self._aspect_ratio_thresh,
+                min_box_area          = self._min_box_area,
+                subject_only          = self._subject_only,
+                subject_pad           = self._subject_pad,
+                fps                   = int(fps),
+                min_subject_area_ratio= self._min_subject_area_ratio,
+                preempt_ratio         = self._preempt_ratio,
             )
         except Exception as e:
             cam.release()
@@ -149,9 +159,14 @@ class OBSByteTrackThread(QtCore.QThread):
                 self.signal_error.emit(f"[OBSByteTrack] Tracking error on frame {frame_id}: {e}")
                 break
 
-            # Emit annotated preview (BGR) and subject crop (RGB) to GUI / LiveCC
+            # Emit annotated preview (BGR) every frame for smooth GUI display
             self.signal_frame.emit(annotated_bgr)
-            self.signal_subject_frame.emit(subject_crop_rgb)
+
+            # Rate-limit subject crop sent to LiveCC to avoid overwhelming it
+            now = time.time()
+            if now - self._last_push_time >= self._livecc_push_interval:
+                self._last_push_time = now
+                self.signal_subject_frame.emit(subject_crop_rgb)
 
             # Pace loop to match source FPS
             elapsed = time.perf_counter() - t_start

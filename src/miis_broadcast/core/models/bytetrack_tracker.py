@@ -114,6 +114,9 @@ class ByteTrackWrapper:
         subject_only: bool = True,
         subject_pad: float = 0.15,
         fps: int = 30,
+        # Subject quality gates
+        min_subject_area_ratio: float = 0.03,  # ignore tracks smaller than 3% of frame area
+        preempt_ratio: float = 4.0,            # switch subject if new track is X times larger
     ) -> None:
 
         # ── 1. Add ByteTrack_repo to sys.path ──────────────────────────────
@@ -151,6 +154,8 @@ class ByteTrackWrapper:
 
         self.subject_only = subject_only
         self.subject_pad = subject_pad
+        self.min_subject_area_ratio = min_subject_area_ratio
+        self.preempt_ratio = preempt_ratio
 
         # ── 4. Load YOLOX model ────────────────────────────────────────────
         self.device = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
@@ -254,6 +259,25 @@ class ByteTrackWrapper:
         vis_ids   = online_ids
 
         if self.subject_only and online_tlwhs:
+            _frame_area = img_info["width"] * img_info["height"]
+            _im_cx = img_info["width"]  / 2.0
+            _im_cy = img_info["height"] / 2.0
+
+            def _score(i):
+                x, y, bw, bh = online_tlwhs[i]
+                area = bw * bh
+                cx = x + bw / 2.0
+                cy = y + bh / 2.0
+                dist2 = ((cx - _im_cx) / max(_im_cx, 1)) ** 2 + \
+                        ((cy - _im_cy) / max(_im_cy, 1)) ** 2
+                return area / (1.0 + dist2)
+
+            # Filter: only consider tracks large enough to be a real subject
+            _valid_indices = [
+                i for i, (x, y, bw, bh) in enumerate(online_tlwhs)
+                if (bw * bh) / max(_frame_area, 1) >= self.min_subject_area_ratio
+            ]
+
             matched_idx = None
             if self._subject_tid is not None:
                 for _i, _tid in enumerate(online_ids):
@@ -262,27 +286,31 @@ class ByteTrackWrapper:
                         break
 
             if matched_idx is not None:
-                # Locked target still visible — follow it
+                # Locked target still visible
                 self._subject_lost = 0
+
+                # Preemption check: if a MUCH larger valid track appears, switch to it
+                if _valid_indices:
+                    _cur_area = online_tlwhs[matched_idx][2] * online_tlwhs[matched_idx][3]
+                    best_valid = max(_valid_indices, key=_score)
+                    _best_area = online_tlwhs[best_valid][2] * online_tlwhs[best_valid][3]
+                    if (online_ids[best_valid] != self._subject_tid and
+                            _best_area > self.preempt_ratio * _cur_area):
+                        # New dominant subject — preempt
+                        print(f"[ByteTrack] 🔄 主體搶佔: ID {self._subject_tid} → {online_ids[best_valid]} "
+                              f"(面積 {int(_cur_area)} → {int(_best_area)})")
+                        self._subject_tid  = online_ids[best_valid]
+                        matched_idx        = best_valid
+                        self._subject_lost = 0
+
                 vis_tlwhs = [online_tlwhs[matched_idx]]
                 vis_ids   = [online_ids[matched_idx]]
             else:
                 self._subject_lost += 1
                 if self._subject_tid is None or self._subject_lost >= self._RESELECT_PAT:
-                    # Re-select: score by area penalised by distance from frame centre
-                    _im_cx = img_info["width"]  / 2.0
-                    _im_cy = img_info["height"] / 2.0
-
-                    def _score(i):
-                        x, y, bw, bh = online_tlwhs[i]
-                        area = bw * bh
-                        cx = x + bw / 2.0
-                        cy = y + bh / 2.0
-                        dist2 = ((cx - _im_cx) / max(_im_cx, 1)) ** 2 + \
-                                ((cy - _im_cy) / max(_im_cy, 1)) ** 2
-                        return area / (1.0 + dist2)
-
-                    best = max(range(len(online_tlwhs)), key=_score)
+                    # Re-select from valid (large enough) tracks only
+                    candidates = _valid_indices if _valid_indices else list(range(len(online_tlwhs)))
+                    best = max(candidates, key=_score)
                     self._subject_tid  = online_ids[best]
                     self._subject_lost = 0
                     vis_tlwhs = [online_tlwhs[best]]
@@ -333,11 +361,11 @@ class ByteTrackWrapper:
     def reset(self) -> None:
         """Reset tracker state (call when stream restarts)."""
         self.tracker = self._BYTETracker(self._track_args, frame_rate=30)
-        self._subject_tid = None
+        self._subject_tid  = None
         self._subject_lost = 0
         self._total_frames = 0
-        self._wall_start = time.time()
-        self._timer = _Timer()
+        self._wall_start   = time.time()
+        self._timer        = _Timer()
         print("[ByteTrack] 🔄 追蹤狀態已重置")
 
     # -----------------------------------------------------------------------

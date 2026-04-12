@@ -1087,19 +1087,22 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.camera_start_time = time.time()
         self.obs_bytetrack_thread = OBSByteTrackThread(
-            ckpt_path           = ckpt_path,
-            exp_file            = exp_file,
-            bytetrack_repo      = repo_path,
-            device              = bt_cfg.get("device", "cuda"),
-            fp16                = bool(bt_cfg.get("fp16", True)),
-            fuse                = bool(bt_cfg.get("fuse", True)),
-            track_thresh        = float(bt_cfg.get("track_thresh", 0.5)),
-            match_thresh        = float(bt_cfg.get("match_thresh", 0.8)),
-            track_buffer        = int(bt_cfg.get("track_buffer", 30)),
-            aspect_ratio_thresh = float(bt_cfg.get("aspect_ratio_thresh", 1.6)),
-            min_box_area        = float(bt_cfg.get("min_box_area", 10)),
-            subject_only        = bool(bt_cfg.get("subject_only", True)),
-            subject_pad         = float(bt_cfg.get("subject_pad", 0.15)),
+            ckpt_path              = ckpt_path,
+            exp_file               = exp_file,
+            bytetrack_repo         = repo_path,
+            device                 = bt_cfg.get("device", "cuda"),
+            fp16                   = bool(bt_cfg.get("fp16", True)),
+            fuse                   = bool(bt_cfg.get("fuse", True)),
+            track_thresh           = float(bt_cfg.get("track_thresh", 0.5)),
+            match_thresh           = float(bt_cfg.get("match_thresh", 0.8)),
+            track_buffer           = int(bt_cfg.get("track_buffer", 30)),
+            aspect_ratio_thresh    = float(bt_cfg.get("aspect_ratio_thresh", 1.6)),
+            min_box_area           = float(bt_cfg.get("min_box_area", 10)),
+            subject_only           = bool(bt_cfg.get("subject_only", True)),
+            subject_pad            = float(bt_cfg.get("subject_pad", 0.15)),
+            min_subject_area_ratio = float(bt_cfg.get("min_subject_area_ratio", 0.03)),
+            preempt_ratio          = float(bt_cfg.get("preempt_ratio", 4.0)),
+            livecc_push_interval   = float(bt_cfg.get("livecc_push_interval", 0.5)),
         )
         # Annotated BGR preview → GUI video panel
         self.obs_bytetrack_thread.signal_frame.connect(self.on_obs_track_frame)
