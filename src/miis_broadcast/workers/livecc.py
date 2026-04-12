@@ -23,6 +23,8 @@ class LiveCCWorker(QtCore.QObject):
     signal_finished = QtCore.Signal()
     # 出錯
     signal_error = QtCore.Signal(str)
+    # 新增：轉發背景日誌給 GUI 存檔 (source, level, message)
+    signal_log = QtCore.Signal(str, str, str)
 
     def __init__(self, device_id: int = 0, parent: Optional[QtCore.QObject] = None) -> None:
         super().__init__(parent)
@@ -292,11 +294,15 @@ class LiveCCCameraWorker(QtCore.QObject):
                     self.target_fps
                 )
                 if clip is None:
-                    print(f"[LiveCCCameraWorker] ⏳ Buffer too thin (size={len(self._buffer)}) — waiting")
+                    msg = f"⏳ Buffer too thin (size={len(self._buffer)}) — waiting"
+                    self.signal_log.emit("LiveCC", "DEBUG", msg)
+                    print(f"[LiveCCCameraWorker] {msg}")
                     QtCore.QThread.msleep(100)
                     continue
 
-                print(f"[LiveCCCameraWorker] 🎬 Clip built ({len(clip.frames)} frames) — running VLM")
+                msg = f"🎬 Clip built ({len(clip.frames)} frames) — running VLM"
+                self.signal_log.emit("LiveCC", "INFO", msg)
+                print(f"[LiveCCCameraWorker] {msg}")
 
                 last_infer_t = now
 

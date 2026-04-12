@@ -602,8 +602,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.parseConfigs()
 
         self.session_logger = SessionLogger()
-        print(f"[Main] Session log started at: {self.session_logger.get_log_path()}")
-
         self.current_video_path: Optional[str] = None
         self.model_ready: bool = False
         self.mode = "file"
@@ -1142,6 +1140,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_text("模型尚未就緒")
             return
 
+        # Start new log session before inference
+        log_path = self.session_logger.start_new_session(self.mode)
+        print(f"[Main] Session log started: {log_path}")
+
         style_key = self.control_panel.get_selected_style_key()
         style_label = self.control_panel.get_selected_style_label()
 
@@ -1261,6 +1263,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"[GUI] ⚠️  on_obs_track_subject_frame dropped: "
                       f"is_inference_running={self.is_inference_running}, mode='{self.mode}'")
 
+    @QtCore.Slot(str, str, str)
+    def on_backend_log(self, source: str, level: str, msg: str) -> None:
+        """Receive logs from background workers and save to session log."""
+        if hasattr(self, 'session_logger'):
+            self.session_logger.log_system(source, level, msg)
+
     # ---------------- Model callbacks ----------------
 
     @QtCore.Slot()
@@ -1332,6 +1340,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def append_text(self, msg: str) -> None:
         self.text_output.appendText(msg)
+        if hasattr(self, 'session_logger'):
+            self.session_logger.log_system("GUI", "INFO", msg)
 
 
     def _install_text_output_click_handler(self) -> None:
