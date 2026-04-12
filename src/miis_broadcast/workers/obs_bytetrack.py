@@ -167,7 +167,10 @@ class OBSByteTrackThread(QtCore.QThread):
             if now - self._last_push_time >= self._livecc_push_interval:
                 self._last_push_time = now
                 self.signal_subject_frame.emit(subject_crop_rgb)
-
+                
+                # Detailed Log for visibility
+                print(f"[OBS-ByteTrack] 🚀 Pushed to LiveCC | Frame: {frame_id} | Interval: {now - self._last_push_time:.3f}s")
+            
             # Pace loop to match source FPS
             elapsed = time.perf_counter() - t_start
             remaining = frame_delay - elapsed
