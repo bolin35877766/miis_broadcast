@@ -1,3 +1,6 @@
 # Ignore large video files
 examples/*.mp4
 examples/
+
+# Environment variables
+.env
