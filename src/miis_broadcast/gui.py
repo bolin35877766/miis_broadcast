@@ -1102,7 +1102,6 @@ class MainWindow(QtWidgets.QMainWindow):
             subject_pad            = float(bt_cfg.get("subject_pad", 0.15)),
             min_subject_area_ratio = float(bt_cfg.get("min_subject_area_ratio", 0.03)),
             preempt_ratio          = float(bt_cfg.get("preempt_ratio", 4.0)),
-            livecc_push_interval   = float(bt_cfg.get("livecc_push_interval", 0.5)),
         )
         # Annotated BGR preview → GUI video panel
         self.obs_bytetrack_thread.signal_frame.connect(self.on_obs_track_frame)

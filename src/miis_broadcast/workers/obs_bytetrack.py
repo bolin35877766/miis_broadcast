@@ -57,9 +57,6 @@ class OBSByteTrackThread(QtCore.QThread):
         subject_pad: float = 0.15,
         min_subject_area_ratio: float = 0.03,
         preempt_ratio: float = 4.0,
-        # Set short interval (approx 7 FPS) to feed the LiveCC 
-        # sliding window without starvation.
-        livecc_push_interval: float = 0.15,
         # OBS camera arguments
         device_name: str = OBSVirtualCameraInput.DEFAULT_DEVICE_NAME,
         fallback_index: int = 1,
@@ -83,13 +80,11 @@ class OBSByteTrackThread(QtCore.QThread):
         self._subject_pad            = subject_pad
         self._min_subject_area_ratio = min_subject_area_ratio
         self._preempt_ratio          = preempt_ratio
-        self._livecc_push_interval   = livecc_push_interval
 
         self._device_name       = device_name
         self._fallback_index    = fallback_index
 
         self._stop_requested    = False
-        self._last_push_time: float = 0.0
 
     # ------------------------------------------------------------------
     # QThread entry point
@@ -163,22 +158,12 @@ class OBSByteTrackThread(QtCore.QThread):
             # Emit annotated preview (BGR) every frame for smooth GUI display
             self.signal_frame.emit(annotated_bgr)
 
-# Rate-limit + subject guard: only push when a real subject is detected
-        now = time.time()
-        if (
-            subject_crop_rgb is not None
-            and now - self._last_push_time >= self._livecc_push_interval
-        ):
-            actual_interval = now - self._last_push_time
-            self._last_push_time = now
-            self.signal_subject_frame.emit(subject_crop_rgb)
+            # Push subject crop to LiveCC every frame (when a subject is detected).
+            # LiveCCCameraWorker already handles its own infer_interval + sliding
+            # window, so no extra rate-limiting is needed here.
+            if subject_crop_rgb is not None:
+                self.signal_subject_frame.emit(subject_crop_rgb)
 
-            # Detailed Log for visibility
-            print(
-                f"[OBS-ByteTrack] 🚀 Pushed to LiveCC | "
-                f"Frame: {frame_id} | Interval: {actual_interval:.3f}s"
-            )
-            
             # Pace loop to match source FPS
             elapsed = time.perf_counter() - t_start
             remaining = frame_delay - elapsed
