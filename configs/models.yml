@@ -39,7 +39,6 @@ bytetrack:
   # Subject quality gates
   min_subject_area_ratio: 0.03   # ignore tracks smaller than 3% of frame area
   preempt_ratio: 4.0             # switch subject if new track area is 4x larger
-  # LiveCC rate-limit: only push a frame to LiveCC every N seconds.
-  # Should match LiveCCCameraWorker.infer_interval (default 2.0s) to avoid
-  # filling the buffer faster than the VLM can process it.
-  livecc_push_interval: 2.0
+  # LiveCC rate-limit: push frequency should be high enough (e.g. 0.15s)
+  # to ensure the sliding window in LiveCCWorker has enough data.
+  livecc_push_interval: 0.15

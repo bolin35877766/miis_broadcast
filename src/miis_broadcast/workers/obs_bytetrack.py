@@ -57,8 +57,9 @@ class OBSByteTrackThread(QtCore.QThread):
         subject_pad: float = 0.15,
         min_subject_area_ratio: float = 0.03,
         preempt_ratio: float = 4.0,
-        # Rate-limit frames sent to LiveCC (should match LiveCCCameraWorker.infer_interval)
-        livecc_push_interval: float = 2.0,
+        # Set short interval (approx 7 FPS) to feed the LiveCC 
+        # sliding window without starvation.
+        livecc_push_interval: float = 0.15,
         # OBS camera arguments
         device_name: str = OBSVirtualCameraInput.DEFAULT_DEVICE_NAME,
         fallback_index: int = 1,
