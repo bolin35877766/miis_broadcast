@@ -1243,8 +1243,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_obs_track_subject_frame(self, subject_crop_rgb: np.ndarray) -> None:
         """Forward the padded subject crop (RGB) from ByteTrack to LiveCC cam_worker."""
         if self.is_inference_running and self.mode == "obs_track":
+            # Resize to fixed size so np.stack in build_clip_from_buffer never fails
+            # with variable-sized crops from ByteTrack.
+            fixed = cv2.resize(subject_crop_rgb, (640, 480))
             # cam_worker.push_frame expects BGR
-            subject_bgr = cv2.cvtColor(subject_crop_rgb, cv2.COLOR_RGB2BGR)
+            subject_bgr = cv2.cvtColor(fixed, cv2.COLOR_RGB2BGR)
             t_relative = time.time() - self.camera_start_time
             self.cam_worker.push_frame(subject_bgr, t_relative)
         else:
