@@ -228,12 +228,13 @@ class VideoPanel(QtWidgets.QWidget):
         h_label = max(1, self.label_video.height())
 
         h, w, c = frame_rgb.shape
-        # ✅ 用 copy 避免偶發顯示破圖（尤其在多 thread + numpy buffer）
+        # ✅ 使用 .copy() 確保在多執行緒環境下畫面顯示穩定（避免底層 NumPy buffer 同時被複寫導致跳針/破圖）
+        # 同時保持 FastTransformation 以提升渲染 FPS
         qimg = QtGui.QImage(frame_rgb.data, w, h, w * c, QtGui.QImage.Format.Format_RGB888).copy()
         pix = QtGui.QPixmap.fromImage(qimg).scaled(
             w_label, h_label,
             QtCore.Qt.KeepAspectRatio,
-            QtCore.Qt.SmoothTransformation,
+            QtCore.Qt.FastTransformation,
         )
         self.label_video.setPixmap(pix)
 
@@ -1368,9 +1369,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cam_worker.push_frame(frame_bgr, t_relative)
 
     @QtCore.Slot(np.ndarray)
-    def on_obs_track_frame(self, annotated_bgr: np.ndarray) -> None:
-        """Display ByteTrack annotated frame (BGR) in the video panel."""
-        annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+    def on_obs_track_frame(self, annotated_rgb: np.ndarray) -> None:
+        """Display ByteTrack annotated frame (RGB) in the video panel."""
         self.video_panel.update_frame(annotated_rgb)
 
     @QtCore.Slot(np.ndarray)
