@@ -288,28 +288,69 @@ class ControlPanel(QtWidgets.QWidget):
             QPushButton {
                 background-color: #505050;
                 border-radius: 10px;
-                padding: 10px 10px;
+                padding: 10px 18px;
                 font-weight: 650;
+                text-align: left;
             }
             QPushButton:hover { background-color: #606060; }
+            QPushButton::menu-indicator { image: none; }
         """
 
-        self.btn_open = QtWidgets.QPushButton("選擇影片")
-        self.btn_open.setStyleSheet(btn_style)
+        menu_style = """
+            QMenu {
+                background-color: #3a3a3a;
+                color: #f0f0f0;
+                border: 1px solid #555;
+                border-radius: 8px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 8px 24px 8px 16px;
+                border-radius: 6px;
+            }
+            QMenu::item:selected {
+                background-color: #3a86ff;
+                color: white;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #555;
+                margin: 4px 8px;
+            }
+            QMenu::item:disabled {
+                color: #777;
+            }
+        """
 
-        self.btn_camera = QtWidgets.QPushButton("開啟鏡頭")
-        self.btn_camera.setStyleSheet(btn_style)
+        # ── 電腦 button ──────────────────────────────────────────────────
+        self.btn_computer = QtWidgets.QPushButton("💻  電腦  ▾")
+        self.btn_computer.setStyleSheet(btn_style)
 
-        self.btn_obs = QtWidgets.QPushButton("OBS 串流")
-        self.btn_obs.setStyleSheet(btn_style)
+        menu_computer = QtWidgets.QMenu(self.btn_computer)
+        menu_computer.setStyleSheet(menu_style)
+        menu_computer.addAction("🎬  影片上傳",  lambda: self.requestOpenVideo.emit())
+        menu_computer.addAction("📷  Webcam 串流", lambda: self.requestOpenCamera.emit())
+        self.btn_computer.setMenu(menu_computer)
 
-        self.btn_obs_track = QtWidgets.QPushButton("OBS + 追蹤")
-        self.btn_obs_track.setStyleSheet(btn_style)
+        # ── OBS button ───────────────────────────────────────────────────
+        self.btn_obs_main = QtWidgets.QPushButton("🎙  OBS  ▾")
+        self.btn_obs_main.setStyleSheet(btn_style)
 
-        btn_row.addWidget(self.btn_open)
-        btn_row.addWidget(self.btn_camera)
-        btn_row.addWidget(self.btn_obs)
-        btn_row.addWidget(self.btn_obs_track)
+        menu_obs = QtWidgets.QMenu(self.btn_obs_main)
+        menu_obs.setStyleSheet(menu_style)
+        menu_obs.addAction("📡  鏡頭串流", lambda: self.requestOpenOBS.emit())
+
+        menu_obs.addSeparator()
+
+        submenu_virtual = menu_obs.addMenu("🖥  虛擬相機")
+        submenu_virtual.setStyleSheet(menu_style)
+        submenu_virtual.addAction("⬜  純 OBS",    lambda: self.requestOpenOBS.emit())
+        submenu_virtual.addAction("🎯  OBS + 追蹤", lambda: self.requestOpenOBSTrack.emit())
+
+        self.btn_obs_main.setMenu(menu_obs)
+
+        btn_row.addWidget(self.btn_computer)
+        btn_row.addWidget(self.btn_obs_main)
 
         self.lbl_status = QtWidgets.QLabel("目前狀態: 未載入")
         self.lbl_status.setStyleSheet("color: #b5b5b5;")
@@ -491,11 +532,7 @@ class ControlPanel(QtWidgets.QWidget):
 
         layout.addStretch(1)
 
-        # Signals
-        self.btn_open.clicked.connect(self.requestOpenVideo.emit)
-        self.btn_camera.clicked.connect(self.requestOpenCamera.emit)
-        self.btn_obs.clicked.connect(self.requestOpenOBS.emit)
-        self.btn_obs_track.clicked.connect(self.requestOpenOBSTrack.emit)
+        # Signals (source buttons emit directly via menu lambdas)
         self.btn_start.clicked.connect(self.requestStart.emit)
 
         self.slider_speed.valueChanged.connect(lambda v: self.lbl_speed_val.setText(f"{v/100:.1f}x"))
@@ -573,6 +610,9 @@ class ControlPanel(QtWidgets.QWidget):
             self.btn_start.setProperty("active", False)
         self.btn_start.style().unpolish(self.btn_start)
         self.btn_start.style().polish(self.btn_start)
+        # Disable source buttons during inference to prevent switching mid-session
+        self.btn_computer.setEnabled(not running)
+        self.btn_obs_main.setEnabled(not running)
 
 
 # ============================================================
