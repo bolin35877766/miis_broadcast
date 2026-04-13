@@ -180,6 +180,7 @@ class OBSByteTrackThread(QtCore.QThread):
                 break
 
             # Emit annotated preview (BGR) every frame for smooth GUI display
+            # update_frame uses Format_BGR888 so no conversion needed here
             self.signal_frame.emit(annotated_bgr)
 
             # Push subject crop to LiveCC every frame (when a subject is detected).

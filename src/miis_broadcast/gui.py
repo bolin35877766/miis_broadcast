@@ -215,22 +215,24 @@ class VideoPanel(QtWidgets.QWidget):
         self.fps = 30.0
         self.total_time_str = "00:00"
         self._last_frame_rgb: np.ndarray | None = None
+        self._last_frame_is_bgr: bool = False
 
     @QtCore.Slot(int)
     def on_slider_moved(self, value: int) -> None:
         if self.slider.isEnabled():
             self.seekRequested.emit(value)
 
-    def update_frame(self, frame_rgb: np.ndarray) -> None:
-        self._last_frame_rgb = frame_rgb
+    def update_frame(self, frame: np.ndarray, is_bgr: bool = False) -> None:
+        self._last_frame_rgb = frame
+        self._last_frame_is_bgr = is_bgr
 
         w_label = max(1, self.label_video.width())
         h_label = max(1, self.label_video.height())
 
-        h, w, c = frame_rgb.shape
-        # ✅ 使用 .copy() 確保在多執行緒環境下畫面顯示穩定（避免底層 NumPy buffer 同時被複寫導致跳針/破圖）
-        # 同時保持 FastTransformation 以提升渲染 FPS
-        qimg = QtGui.QImage(frame_rgb.data, w, h, w * c, QtGui.QImage.Format.Format_RGB888).copy()
+        h, w, c = frame.shape
+        fmt = QtGui.QImage.Format.Format_BGR888 if is_bgr else QtGui.QImage.Format.Format_RGB888
+        # .copy() ensures the QImage owns its data before the worker overwrites the buffer
+        qimg = QtGui.QImage(frame.data, w, h, w * c, fmt).copy()
         pix = QtGui.QPixmap.fromImage(qimg).scaled(
             w_label, h_label,
             QtCore.Qt.KeepAspectRatio,
@@ -254,7 +256,10 @@ class VideoPanel(QtWidgets.QWidget):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         if self._last_frame_rgb is not None:
-            QtCore.QTimer.singleShot(0, lambda: self.update_frame(self._last_frame_rgb))
+            QtCore.QTimer.singleShot(
+                0,
+                lambda: self.update_frame(self._last_frame_rgb, self._last_frame_is_bgr),
+            )
 
 
 class ControlPanel(QtWidgets.QWidget):
@@ -1343,9 +1348,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cam_worker.push_frame(frame_bgr, t_relative)
 
     @QtCore.Slot(np.ndarray)
-    def on_obs_track_frame(self, annotated_rgb: np.ndarray) -> None:
-        """Display ByteTrack annotated frame (RGB) in the video panel."""
-        self.video_panel.update_frame(annotated_rgb)
+    def on_obs_track_frame(self, annotated_bgr: np.ndarray) -> None:
+        """Display ByteTrack annotated frame (BGR) in the video panel."""
+        self.video_panel.update_frame(annotated_bgr, is_bgr=True)
 
     @QtCore.Slot(np.ndarray)
     def on_obs_track_subject_frame(self, subject_crop_rgb: np.ndarray) -> None:
