@@ -6,13 +6,14 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
 
 ## Features
 
-- **Three input modes**:
+- **Four input modes**:
   - Video file playback
-  - Live camera feed
-  - OBS Virtual Camera + ByteTrack subject tracking
+  - Live camera feed (Auto-detects physical webcams, skips OBS Virtual Camera)
+  - OBS Virtual Camera stream
+  - Integrated ByteTrack subject tracking (Available for both local webcams and OBS Virtual Camera)
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Real-time commentary generation** via [LiveCC-7B-Instruct](https://huggingface.co/chenjoya/LiveCC-7B-Instruct) (Qwen2VL-based)
-- **Subject-aware tracking mode** — YOLOX + BYTETracker locks onto the dominant person, crops and forwards their region to LiveCC; switches automatically when a larger subject enters the frame
+- **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
+- **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs.
 - **Multiple commentary styles** switchable at runtime:
   - 嘴砲型實況主 (Trash-talk / Roast)
   - 熱血沸騰型主播 (High-energy Hype)
@@ -176,23 +177,27 @@ python -m miis_broadcast
 
 ### In the GUI
 
-1. **Select input** — choose one of three modes:
+1. **Select input** — choose one of the available modes:
    - **Video file** — open a local video file
-   - **Camera** — use a connected webcam
-   - **OBS + 追蹤** — use OBS Virtual Camera with YOLOX + BYTETracker subject tracking
+   - **Computer -> Webcam** — use a connected physical webcam (auto-detects real cameras)
+   - **OBS -> Direct Camera** — use a camera source directly without going through OBS software
+   - **OBS -> Virtual Camera** — use the live output from OBS Virtual Camera
+   - **Tracking Modes** — Select "Stream + Track" under any camera source to enable subject-aware commentary
 2. **Choose a commentary style** from the dropdown
-3. **Select TTS backend** — OpenAI Realtime or ChatterBox Local
-4. **Click Start** — the model loads on first run (LiveCC-7B takes ~30–60 s to load)
+3. **Select TTS backend** — OpenAI Realtime or ChatterBox Local (Note: ChatterBox may be disabled in some environments)
+4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s to load)
 5. Commentary text appears in the transcript panel and is read aloud in real time
-6. **Click Stop** to end inference; latency statistics are printed to the console
+6. **Click Stop Broadcasting** to end inference; latency statistics are printed to the console
 
-#### OBS + 追蹤 mode behaviour
+#### Subject Tracking behavior
 
-- YOLOX detects all people in the frame each tick; BYTETracker assigns persistent IDs
-- The subject with the largest weighted score (area / centre distance) is locked as the primary subject
-- The subject's bounding box is padded by 15% and cropped, then resized to 640×480 before being forwarded to LiveCC
-- If a new person enters the frame with more than 4× the current subject's area, tracking switches automatically
-- When no valid subject is detected, frames are not forwarded to LiveCC (prevents empty-scene descriptions)
+- Supports both physical webcams and OBS Virtual Camera sources.
+- YOLOX detects all people in the frame each tick; BYTETracker assigns persistent IDs.
+- The subject with the largest weighted score (area / centre distance) is locked as the primary subject.
+- The subject's bounding box is padded by 15% and cropped, then resized to 640×480 before being forwarded to LiveCC.
+- If a new person enters the frame with more than 4× the current subject's area, tracking switches automatically.
+- When no valid subject is detected, frames are not forwarded to LiveCC (prevents empty-scene descriptions).
+- Automated color space handling ensures correct channel display (no blue faces) during high-speed tracking.
 
 ---
 

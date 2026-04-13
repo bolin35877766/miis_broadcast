@@ -22,7 +22,7 @@ from .core.utils.session_logger import SessionLogger
 from collections import deque
 
 # ============================================================
-# High-DPI / Scaling (必須在 QApplication 建立前設定才最有效)
+# High-DPI / Scaling (Must be configured before QApplication for best effect)
 # ============================================================
 
 def _configure_qt_highdpi() -> None:
@@ -42,14 +42,14 @@ def _configure_qt_highdpi() -> None:
 
 def _find_project_root(start: Path) -> Path:
     """
-    從目前檔案往上找，找到包含 configs/ 的那層當作專案根目錄。
-    這樣你搬路徑也不容易壞。
+    Look up from the current file to find the directory containing configs/ 
+    as the project root. This makes the path robust to moves.
     """
     p = start.resolve()
     for parent in [p] + list(p.parents):
         if (parent / "configs").exists():
             return parent
-    # 兜底：回到 src 的上一層
+    # Fallback: go back to the parent of src
     for parent in p.parents:
         if parent.name == "src":
             return parent.parent
@@ -78,7 +78,7 @@ class CameraThread(QtCore.QThread):
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
         if not cap.isOpened():
-            self.signal_error.emit(f"無法開啟鏡頭 (Index: {self.camera_index})")
+            self.signal_error.emit(f"Failed to open camera (Index: {self.camera_index})")
             return
 
         while not self._stop_requested:
@@ -113,7 +113,7 @@ class VideoThread(QtCore.QThread):
     def run(self) -> None:
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
-            self.signal_invalid_video.emit(f"無法開啟影片：{self.video_path}")
+            self.signal_invalid_video.emit(f"Failed to open video: {self.video_path}")
             return
 
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -175,10 +175,10 @@ class VideoPanel(QtWidgets.QWidget):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
 
-        self.label_video = QtWidgets.QLabel("等待輸入訊號...")
+        self.label_video = QtWidgets.QLabel("Waiting for input...")
         self.label_video.setAlignment(QtCore.Qt.AlignCenter)
 
-        # ✅ 關鍵：用 Ignored 讓 label 不會把 splitter 擠爆（筆電小螢幕比較穩）
+        # Use Ignored so the label doesn't squeeze the splitter (stabler on small screens)
         self.label_video.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
         self.label_video.setMinimumSize(0, 0)
 
@@ -274,7 +274,7 @@ class ControlPanel(QtWidgets.QWidget):
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self.setMinimumWidth(380)
-        self.setMaximumWidth(520)  # ✅ 讓小螢幕不至於被預覽壓扁太多
+        self.setMaximumWidth(520)  # Keep the preview large and prevents the panel from being too squashed
         self.setup_ui()
 
     def setup_ui(self) -> None:
@@ -339,8 +339,8 @@ class ControlPanel(QtWidgets.QWidget):
 
         submenu_webcam = menu_computer.addMenu("📷  Webcam")
         submenu_webcam.setStyleSheet(menu_style)
-        submenu_webcam.addAction("⬜  純串流",       lambda: self.requestOpenCamera.emit())
-        submenu_webcam.addAction("🎯  串流 + 追蹤",  lambda: self.requestOpenCameraTrack.emit())
+        submenu_webcam.addAction("⬜  Plain Stream",       lambda: self.requestOpenCamera.emit())
+        submenu_webcam.addAction("🎯  Stream + Track",  lambda: self.requestOpenCameraTrack.emit())
 
         self.btn_computer.setMenu(menu_computer)
 
@@ -351,26 +351,26 @@ class ControlPanel(QtWidgets.QWidget):
         menu_obs = QtWidgets.QMenu(self.btn_obs_main)
         menu_obs.setStyleSheet(menu_style)
 
-        # OBS 鏡頭串流（實體攝影機直接連接，bypasses OBS Virtual Camera）
-        submenu_camstream = menu_obs.addMenu("📡  鏡頭串流")
+        # OBS camera stream (direct physical camera connection, bypasses OBS Virtual Camera)
+        submenu_camstream = menu_obs.addMenu("📡  Direct Camera")
         submenu_camstream.setStyleSheet(menu_style)
-        submenu_camstream.addAction("⬜  純串流",       lambda: self.requestOpenCamera.emit())
-        submenu_camstream.addAction("🎯  串流 + 追蹤",  lambda: self.requestOpenCameraTrack.emit())
+        submenu_camstream.addAction("⬜  Plain Stream",       lambda: self.requestOpenCamera.emit())
+        submenu_camstream.addAction("🎯  Stream + Track",  lambda: self.requestOpenCameraTrack.emit())
 
         menu_obs.addSeparator()
 
-        # OBS 虛擬相機（OBS Virtual Camera 輸出）
-        submenu_virtual = menu_obs.addMenu("🖥  虛擬相機")
+        # OBS Virtual Camera
+        submenu_virtual = menu_obs.addMenu("🖥  Virtual Camera")
         submenu_virtual.setStyleSheet(menu_style)
-        submenu_virtual.addAction("⬜  純 OBS",       lambda: self.requestOpenOBS.emit())
-        submenu_virtual.addAction("🎯  OBS + 追蹤",   lambda: self.requestOpenOBSTrack.emit())
+        submenu_virtual.addAction("⬜  Plain OBS",       lambda: self.requestOpenOBS.emit())
+        submenu_virtual.addAction("🎯  OBS + Track",   lambda: self.requestOpenOBSTrack.emit())
 
         self.btn_obs_main.setMenu(menu_obs)
 
         btn_row.addWidget(self.btn_computer)
         btn_row.addWidget(self.btn_obs_main)
 
-        self.lbl_status = QtWidgets.QLabel("目前狀態: 未載入")
+        self.lbl_status = QtWidgets.QLabel("Status: Not Loaded")
         self.lbl_status.setStyleSheet("color: #b5b5b5;")
         self.lbl_status.setWordWrap(True)
 
@@ -505,13 +505,13 @@ class ControlPanel(QtWidgets.QWidget):
         self._font_row_widget.setLayout(font_row)
 
         lbl_style = "QLabel { color: #dedede; }"
-        self.l_tts = QtWidgets.QLabel("語音模式:")
-        self.l_style = QtWidgets.QLabel("播報風格:")
+        self.l_tts = QtWidgets.QLabel("TTS Mode:")
+        self.l_style = QtWidgets.QLabel("Style:")
         self.l_voice = QtWidgets.QLabel("Voice:")
-        self.l_speed = QtWidgets.QLabel("語速調整:")
+        self.l_speed = QtWidgets.QLabel("Speed:")
         self.l_exag = QtWidgets.QLabel("Exaggeration:")
         self.l_cfg = QtWidgets.QLabel("CFG:")
-        self.l_ui = QtWidgets.QLabel("介面縮放:")
+        self.l_ui = QtWidgets.QLabel("UI Scaling:")
 
         for x in (self.l_tts, self.l_style, self.l_voice, self.l_speed, self.l_exag, self.l_cfg, self.l_ui):
             x.setStyleSheet(lbl_style)
@@ -580,7 +580,7 @@ class ControlPanel(QtWidgets.QWidget):
         self._cfg_row_widget.setVisible(show_local)
 
     def set_tts_controls_enabled(self, enabled: bool) -> None:
-        # ✅ 推論中鎖定，避免中途改造成狀態錯亂
+        # Lock during inference to prevent state corruption
         self.cmb_tts.setEnabled(enabled)
         self.cmb_style.setEnabled(enabled)
 
@@ -617,14 +617,14 @@ class ControlPanel(QtWidgets.QWidget):
         return float(self.slider_cfg.value()) / 100.0
 
     def set_status(self, text: str) -> None:
-        self.lbl_status.setText(f"目前狀態: {text}")
+        self.lbl_status.setText(f"Status: {text}")
 
     def set_start_button_state(self, running: bool) -> None:
         if running:
-            self.btn_start.setText("停止播報 (Stop)")
+            self.btn_start.setText("Stop Broadcasting")
             self.btn_start.setProperty("active", True)
         else:
-            self.btn_start.setText("開始播報 (Start)")
+            self.btn_start.setText("Start Broadcasting")
             self.btn_start.setProperty("active", False)
         self.btn_start.style().unpolish(self.btn_start)
         self.btn_start.style().polish(self.btn_start)
@@ -642,7 +642,7 @@ class MainWindow(QtWidgets.QMainWindow):
     signal_start_camera_livecc = QtCore.Signal(str)
     
 
-    # ✅ 用 signal 把設定丟到 tts thread，避免你直接 call slot 其實跑在主執行緒
+    # signal to apply settings to tts thread to avoid calling slots directly on the main thread
     signal_tts_apply_settings = QtCore.Signal(str, float)
     signal_tts_stop = QtCore.Signal()
 
@@ -771,16 +771,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def _load_livecc_model(self) -> None:
         try:
             from miis_broadcast.core.models.livecc_transformers import LiveCCInfer
-            print("[Main] 正在主執行緒載入 LiveCC 模型...")
+            print("[Main] Loading LiveCC model in main thread...")
             self.livecc_model = LiveCCInfer(device_id=0)
-            print("[Main] LiveCC 模型載入完成")
+            print("[Main] LiveCC model load complete")
             self.model_ready = True
         except ImportError as e:
-            print(f"[Simulate] livecc 模組載入失敗 (ImportError): {e}")
-            print("[Simulate] 將使用模擬模式 (僅 GUI 測試)。")
+            print(f"[Simulate] LiveCC module load failed (ImportError): {e}")
+            print("[Simulate] Using simulation mode (GUI testing only).")
             self.model_ready = True
         except Exception as e:
-            print(f"[Main] 模型載入失敗: {e}")
+            print(f"[Main] Model load failed: {e}")
             import traceback; traceback.print_exc()
             self.model_ready = False
 
@@ -810,26 +810,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.top_splitter.addWidget(self.video_panel)
         self.top_splitter.addWidget(self.control_panel)
 
-        # ✅ 讓預覽吃更多空間，但控制面板不要被壓扁到很誇張
+        # Make preview take more space, but prevent the control panel from being too squashed
         self.top_splitter.setStretchFactor(0, 10)
         self.top_splitter.setStretchFactor(1, 1)
 
         main_layout.addWidget(self.top_splitter, stretch=4)
 
-        bottom_group = QtWidgets.QGroupBox("即時解說字幕 (Live Commentary Log)")
+        bottom_group = QtWidgets.QGroupBox("Live Commentary Log")
         bottom_layout = QtWidgets.QVBoxLayout(bottom_group)
         bottom_layout.setContentsMargins(14, 18, 14, 12)
 
         self.text_output = TextOutputWidget()
         bottom_layout.addWidget(self.text_output)
 
-        # 點擊字幕行 -> 跳到影片對應時間
+        # Click segment line -> seek to corresponding time in video
         self._install_text_output_click_handler()
 
         main_layout.addWidget(bottom_group, stretch=2)
 
         self.setCentralWidget(central)
-        self.statusBar().showMessage("正在初始化系統...")
+        self.statusBar().showMessage("Initializing system...")
 
         # Signals
         self.control_panel.requestOpenVideo.connect(self.on_open_video_clicked)
@@ -868,9 +868,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.control_panel.cmb_style.blockSignals(False)
 
         except Exception as e:
-            self.append_text(f"載入播報風格設定失敗：{e}")
+            self.append_text(f"Failed to load broadcast style settings: {e}")
             self.control_panel.cmb_style.clear()
-            self.control_panel.cmb_style.addItem("預設 (Fallback)", userData="fallback")
+            self.control_panel.cmb_style.addItem("Default (Fallback)", userData="fallback")
             self.prompt_manager = None
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:
@@ -919,19 +919,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cam_worker_thread.start()
 
     def _initTTSWorker(self) -> None:
-            """初始化所有的 TTS Worker (OpenAI + Local Chatterbox)"""
+            """Initialize all TTS Workers (OpenAI + Local Chatterbox)"""
             
             # ==========================================
-            # 1. OpenAI TTS Worker (雲端)
+            # 1. OpenAI TTS Worker (Cloud)
             # ==========================================
             self.tts_thread = QtCore.QThread(self)
             self.tts_worker = OpenAITTSWorker()
             self.tts_worker.moveToThread(self.tts_thread)
 
-            # Thread 啟動時，自動呼叫 worker.start() 初始化連線
+            # Auto-call worker.start() to initialize connection when thread starts
             self.tts_thread.started.connect(self.tts_worker.start)
 
-            # 連接 OpenAI 專用信號
+            # Connect OpenAI dedicated signals
             self.signal_tts_apply_settings.connect(self.tts_worker.apply_settings, QtCore.Qt.QueuedConnection)
             self.signal_tts_stop.connect(self.tts_worker.stop, QtCore.Qt.QueuedConnection)
             self.signal_tts_speak.connect(self.tts_worker.speak, QtCore.Qt.QueuedConnection)
@@ -955,7 +955,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _tick_subtitle_scheduler(self) -> None:
         """
-        檔案模式：用播放時間決定何時顯示字幕（推論可超前，但顯示必同步）。
+        File mode: Use playback time to decide when to show subtitles 
+        (Inference can be ahead, but display must be synchronized).
         """
         if self.mode != "file":
             return
@@ -968,7 +969,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         cur = float(getattr(self, "_playback_sec", 0.0))
 
-        # 把「已經到時間」的段落全部取出（避免只顯示最後一段造成跳秒/漏段）
+        # Take all segments that have reached their start time
         ready: list[tuple[float, float, str]] = []
         while self._pending_segments and float(self._pending_segments[0][0]) <= cur:
             st, ed, tx = self._pending_segments.popleft()
@@ -985,13 +986,13 @@ class MainWindow(QtWidgets.QMainWindow):
             line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {text}"
             self.text_output.appendText(line)
 
-            # ✅ TTS：在「顯示」時才播，才會跟影片同步
+            # TTS: Only speak when "displaying" to stay in sync with the video
             if self.tts_mode == "openai":
                 self.signal_tts_speak.emit(text)
             # elif self.tts_mode == "local":  # [ChatterBox disabled]
             #     self.signal_local_tts_speak.emit(text)
 
-        # 防止推論超前太多造成 queue 爆掉（保命，非限制模型）
+        # Prevent inference from running too far ahead and blowing up the queue
         MAX_PENDING = 400
         while len(self._pending_segments) > MAX_PENDING:
             self._pending_segments.popleft()
@@ -1003,12 +1004,12 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(int)
     def on_font_scale_request(self, size_pt: int) -> None:
         self.font_size = int(size_pt)
-        self._apply_styles(self.font_size)
-        self.statusBar().showMessage(f"字體大小已調整為: {self.font_size}pt", 2000)
+        self._apply_styles(self.font_siFont size adjusted to: {self.font_size}pt", 2000)
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
+        dlg = QtWidgets.QFileDialog(self, "Select Video
         dlg = QtWidgets.QFileDialog(self, "選擇影片")
         dlg.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
         dlg.setFileMode(QtWidgets.QFileDialog.ExistingFile)
@@ -1034,8 +1035,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._stop_all_source_threads()
 
-        self.current_video_path = path
-        self.control_panel.set_status(f"檔案: {os.path.basename(path)}")
+        self.current_video_path = pathFile: {os.path.basename(path)}")
+        self.append_text(f"Video loaded: atus(f"檔案: {os.path.basename(path)}")
         self.append_text(f"已載入影片：{os.path.basename(path)}")
 
         self._load_video_preview(path)
@@ -1083,14 +1084,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_open_camera_clicked(self) -> None:
         self.stop_inference()
         self.mode = "camera"
-        self.current_video_path = "Live Camera"
-        self.control_panel.set_status("模式: 即時鏡頭")
-        self.append_text("已切換至鏡頭模式")
+        self.current_video_path = "LiveMode: Live Camera")
+        self.append_text("Switched to camera mode")
         self._stop_all_source_threads()
         self.camera_start_time = time.time()
         from .core.io.obs_input import find_physical_camera_index
         cam_idx = find_physical_camera_index()
-        print(f"[Camera] 使用實體攝影機 index {cam_idx}")
+        print(f"[Camera] Using physical camera index {cam_idx}")
         self.camera_thread = CameraThread(camera_index=cam_idx)
         self.camera_thread.signal_frame.connect(self.on_camera_frame)
         self.camera_thread.signal_error.connect(self.on_error)
@@ -1105,8 +1105,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stop_inference()
         self.mode = "obs"
         self.current_video_path = "OBS Virtual Camera"
-        self.control_panel.set_status("模式: OBS 虛擬攝影機")
-        self.append_text("已切換至 OBS 串流模式 — 請確認 OBS 已啟動虛擬攝影機")
+        self.control_panel.set_status("Mode: OBS Virtual Camera")
+        self.append_text("Switched to OBS stream mode - ensure OBS Virtual Camera is active")
         self._stop_all_source_threads()
         self.camera_start_time = time.time()
         self.obs_thread = OBSCameraThread()
@@ -1123,7 +1123,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stop_inference()
         self.mode = "obs_track"
         self.current_video_path = "Camera + ByteTrack"
-        self.control_panel.set_status("模式: 鏡頭 + ByteTrack 追蹤")
+        self.control_panel.set_status("Mode: Camera + ByteTrack")
+        self.append_text("Switched to Camera + ByteTrack tracking modeyteTrack 追蹤")
         self.append_text("已切換至鏡頭 + ByteTrack 追蹤模式")
         self._stop_all_source_threads()
 
@@ -1140,7 +1141,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Auto-detect physical camera index (skip OBS Virtual Camera)
         from .core.io.obs_input import find_physical_camera_index
-        cam_idx = find_physical_camera_index()
+        cam_idx = find_physicaUsing physical cameraa_index()
         print(f"[CameraTrack] 使用實體攝影機 index {cam_idx}")
 
         self.camera_start_time = time.time()
@@ -1174,8 +1175,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Switch to OBS Virtual Camera + ByteTrack subject-tracking mode."""
         self.stop_inference()
         self.mode = "obs_track"
-        self.current_video_path = "OBS + ByteTrack"
-        self.control_panel.set_status("模式: OBS + ByteTrack 追蹤")
+        self.current_video_path = "OBS Mode: OBS + ByteTrack")
+        self.append_text("Switched to OBS + ByteTrack tracking mode - ensure OBS Virtual Camera is active
         self.append_text("已切換至 OBS + ByteTrack 追蹤模式 — 請確認 OBS 已啟動虛擬攝影機")
         self._stop_all_source_threads()
 
@@ -1223,13 +1224,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
 
-    def _apply_tts_settings_before_start(self) -> None:
-        """根據目前模式套用對應設定"""
+    def _apApply correspondence settings according to current mode"""
         self.tts_mode = self.control_panel.get_tts_mode()
 
         if self.tts_mode == "openai":
             voice = self.control_panel.get_openai_voice()
             speed = self.control_panel.get_openai_speed()
+            # Ensure reset of Local (optionaltrol_panel.get_openai_speed()
             # 確保重置 Local (可選)
             self.signal_tts_apply_settings.emit(voice, float(speed))
 
@@ -1244,8 +1245,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_inference()
             return
 
-        if not self.model_ready:
-            self.append_text("模型尚未就緒")
+        if not self.model_readModel not ready yet")
             return
 
         # Start new log session before inference
@@ -1258,17 +1258,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.prompt_manager is not None:
             prompt = self.prompt_manager.build_query(style_key)
         else:
-            prompt = "請使用繁體中文即時播報畫面，不要使用符號表情，不要臆測。"
+            prompt = "Please broadcast the screen in Traditional Chinese in real-time. Do not use emojis, and do not speculate."
 
-        # ✅ Start 前先套用 TTS 設定
+        # Apply TTS settings before start
         self._apply_tts_settings_before_start()
 
         self.is_inference_running = True
         self.control_panel.set_start_button_state(True)
-        self.control_panel.set_tts_controls_enabled(False)  # ✅ 鎖定：推論中不可改
+        self.control_panel.set_tts_controls_enabled(False)  # Lock during inference
         self.text_output.setText("")
         self._obs_drop_logged = False  # reset drop-log flag so it fires again if needed
 
+        self.append_text(f"Starting inference
         self.append_text(f"開始推論 (Style: {style_label}, TTS: {self.tts_mode})")
 
         if self.mode == "file":
@@ -1295,8 +1296,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def stop_inference(self) -> None:
         if not self.is_inference_running:
             return
-
-        self.append_text("停止推論")
+Stopping inference")
         if hasattr(self, "_pending_segments"):
             self._pending_segments.clear()
         if self.tts_mode == "openai":
@@ -1327,6 +1327,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.is_inference_running = False
         self.control_panel.set_start_button_state(False)
+        self.control_panel.set_tts_controls_enabled(True)  # Unlock after stop
         self.control_panel.set_tts_controls_enabled(True)  # ✅ 解鎖：停止後可改
 
     # ---------------- Frame handlers ----------------
@@ -1380,9 +1381,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def on_model_loaded(self) -> None:
-        self.model_ready = True
-        self.statusBar().showMessage("模型就緒")
-        self.control_panel.set_status("模型就緒，請選擇來源")
+        self.model_ready = TrueModel Ready")
+        self.control_panel.set_status("Model ready, please select source")
         self._update_start_button_state()
 
     @QtCore.Slot(float, float, str)
@@ -1391,7 +1391,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, 'session_logger'):
             self.session_logger.log_commentary(text)
 
-        # Camera mode：沒有播放器時間軸可排程，所以直接顯示/唸
+        # Camera mode: No player timeline to schedule, so display and speak immediately
         if self.mode != "file":
             line = f"[{self._fmt_time(start_t)}] {text}"
             self.text_output.appendText(line)
@@ -1404,7 +1404,7 @@ class MainWindow(QtWidgets.QMainWindow):
             #     self.signal_local_tts_speak.emit(text)
             return
 
-        # File mode：先進 queue，等影片播放到對應時間再顯示/唸（避免不同步）
+        # File mode: Enter queue, wait until video playback reaches corresponding time (stay in sync)
         if not hasattr(self, "_pending_segments"):
             self._pending_segments = deque()
 
@@ -1413,7 +1413,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not text.strip():
             return
 
-        # 根據模式分流
+        # Branch according to mode
         if self.tts_mode == "openai":
             self.signal_tts_speak.emit(text)
         # elif self.tts_mode == "local":  # [ChatterBox disabled]
@@ -1421,11 +1421,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def on_finished(self) -> None:
-        self.append_text("播放/推論結束")
+        self.append_text("Playback/Inference finished")
         self.stop_inference()
 
     @QtCore.Slot(str)
     def on_error(self, msg: str) -> None:
+        self.append_text(f"Error: r) -> None:
         self.append_text(f"錯誤：{msg}")
         self.stop_inference()
 
@@ -1450,30 +1451,30 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def _install_text_output_click_handler(self) -> None:
-        '''
-        讓使用者在字幕輸出區「點一下某一行」就跳到影片對應時間。
-        不改 TextOutputWidget 的前提下，嘗試抓到其內部的 QTextEdit/QPlainTextEdit/QTextBrowser。
+        Allow users to click a segment line in the log to seek to the corresponding time in the video.
+        Try to find the internal QTextEdit/QPlainTextEdit/QTextBrowser without modifying TextOutputWidget.
         '''
         self._text_click_widget = None
         self._text_click_viewport = None
 
-        # 先找子元件（TextOutputWidget 可能是包了一層）
+        # Look for child components (TextOutputWidget might wrap it)
         for cls in (QtWidgets.QTextBrowser, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit):
             w = self.text_output.findChild(cls)
             if w is not None:
                 self._text_click_widget = w
                 break
 
-        # 如果本體就是 text widget
+        # If the widget itself is a text widget
         if self._text_click_widget is None and isinstance(
             self.text_output, (QtWidgets.QTextBrowser, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit)
         ):
             self._text_click_widget = self.text_output
 
         if self._text_click_widget is None:
-            self.append_text("[System] 無法掛載字幕點擊跳轉：找不到文字輸出元件（QTextEdit/QPlainTextEdit/QTextBrowser）。")
+            self.append_text("[System] Could not mount click-to-seek: Text output component not found.")
             return
 
+        # Mouse events usually occur on the viewport
         # mouse event 多半在 viewport 上
         self._text_click_viewport = getattr(self._text_click_widget, "viewport", lambda: None)()
         if self._text_click_viewport is None:
@@ -1503,11 +1504,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @staticmethod
     def _parse_seek_time_from_line(line: str) -> float | None:
-        '''
-        支援格式：
+        Support formats:
           [00:07.25-00:09.25] ...
           [00:07.25] ...
-        回傳要 seek 的秒數（預設用 start）。
+        Returns the seconds to seek (defaults to start time).
         '''
         s = line.strip()
 
@@ -1524,7 +1524,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return None
 
     def seek_to_seconds(self, t_sec: float) -> None:
-        '''檔案模式：跳到影片的指定秒數（會換算成 frame idx）。'''
+        '''File mode: seek to specified seconds in video (converts to frame index).'''
         if self.mode != "file":
             return
         if not self.video_thread:
@@ -1539,7 +1539,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             frame_idx = max(0, frame_idx)
 
-        # 更新 slider + 對 video thread 發 seek
+        # Update slider and emit seek request to video thread
         try:
             self.video_panel.slider.setValue(frame_idx)
         except Exception:
@@ -1547,6 +1547,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.video_thread.requestSeek(frame_idx)
         self._playback_sec = float(frame_idx) / fps
+        self.control_panel.set_status(f"Seek tox) / fps
         self.control_panel.set_status(f"跳轉到 {self._fmt_time(self._playback_sec)}")
 
     @QtCore.Slot(int)
@@ -1567,7 +1568,7 @@ class MainWindow(QtWidgets.QMainWindow):
         m, s = divmod(int(max(0, ms) / 1000), 60)
         return f"{m:02d}:{s:02d}"
 
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+    def clStop inference before closingnt(self, event: QtGui.QCloseEvent) -> None:
         # ✅ 先停推論
         self.stop_inference()
 
