@@ -345,11 +345,11 @@ class ControlPanel(QtWidgets.QWidget):
         menu_obs = QtWidgets.QMenu(self.btn_obs_main)
         menu_obs.setStyleSheet(menu_style)
 
-        # OBS 鏡頭串流（實體攝影機直接連接）
+        # OBS 鏡頭串流（實體攝影機直接連接，bypasses OBS Virtual Camera）
         submenu_camstream = menu_obs.addMenu("📡  鏡頭串流")
         submenu_camstream.setStyleSheet(menu_style)
-        submenu_camstream.addAction("⬜  純串流",       lambda: self.requestOpenOBS.emit())
-        submenu_camstream.addAction("🎯  串流 + 追蹤",  lambda: self.requestOpenOBSTrack.emit())
+        submenu_camstream.addAction("⬜  純串流",       lambda: self.requestOpenCamera.emit())
+        submenu_camstream.addAction("🎯  串流 + 追蹤",  lambda: self.requestOpenCameraTrack.emit())
 
         menu_obs.addSeparator()
 
