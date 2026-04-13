@@ -1027,10 +1027,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._pending_segments.clear()
         self._playback_sec = 0.0
 
-        if self.camera_thread:
-            self.camera_thread.requestStop()
-            self.camera_thread.wait()
-            self.camera_thread = None
+        self._stop_all_source_threads()
 
         self.current_video_path = path
         self.control_panel.set_status(f"檔案: {os.path.basename(path)}")
@@ -1040,6 +1037,43 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(True)
         self._update_start_button_state()
 
+    def _stop_all_source_threads(self) -> None:
+        """Stop and clean up all live-source threads before switching sources.
+        Explicitly disconnect signals to prevent residual frame emissions after stop."""
+        if self.video_thread:
+            self.video_thread.requestStop()
+            try:
+                self.video_thread.signal_frame.disconnect()
+            except RuntimeError:
+                pass
+            self.video_thread.wait()
+            self.video_thread = None
+        if self.camera_thread:
+            self.camera_thread.requestStop()
+            try:
+                self.camera_thread.signal_frame.disconnect()
+            except RuntimeError:
+                pass
+            self.camera_thread.wait()
+            self.camera_thread = None
+        if self.obs_thread:
+            self.obs_thread.requestStop()
+            try:
+                self.obs_thread.signal_frame.disconnect()
+            except RuntimeError:
+                pass
+            self.obs_thread.wait()
+            self.obs_thread = None
+        if self.obs_bytetrack_thread:
+            self.obs_bytetrack_thread.requestStop()
+            try:
+                self.obs_bytetrack_thread.signal_frame.disconnect()
+                self.obs_bytetrack_thread.signal_subject_frame.disconnect()
+            except RuntimeError:
+                pass
+            self.obs_bytetrack_thread.wait()
+            self.obs_bytetrack_thread = None
+
     @QtCore.Slot()
     def on_open_camera_clicked(self) -> None:
         self.stop_inference()
@@ -1047,12 +1081,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_video_path = "Live Camera"
         self.control_panel.set_status("模式: 即時鏡頭")
         self.append_text("已切換至鏡頭模式")
-
-        if self.video_thread:
-            self.video_thread.requestStop()
-            self.video_thread.wait()
-            self.video_thread = None
-
+        self._stop_all_source_threads()
         self.camera_start_time = time.time()
         from .core.io.obs_input import find_physical_camera_index
         cam_idx = find_physical_camera_index()
@@ -1073,22 +1102,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_video_path = "OBS Virtual Camera"
         self.control_panel.set_status("模式: OBS 虛擬攝影機")
         self.append_text("已切換至 OBS 串流模式 — 請確認 OBS 已啟動虛擬攝影機")
-
-        # Stop any running video/camera thread
-        if self.video_thread:
-            self.video_thread.requestStop()
-            self.video_thread.wait()
-            self.video_thread = None
-
-        if self.camera_thread:
-            self.camera_thread.requestStop()
-            self.camera_thread.wait()
-            self.camera_thread = None
-
-        if self.obs_thread:
-            self.obs_thread.requestStop()
-            self.obs_thread.wait()
-
+        self._stop_all_source_threads()
         self.camera_start_time = time.time()
         self.obs_thread = OBSCameraThread()
         self.obs_thread.signal_frame.connect(self.on_camera_frame)
@@ -1106,27 +1120,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_video_path = "Camera + ByteTrack"
         self.control_panel.set_status("模式: 鏡頭 + ByteTrack 追蹤")
         self.append_text("已切換至鏡頭 + ByteTrack 追蹤模式")
-
-        # Stop any running threads
-        if self.video_thread:
-            self.video_thread.requestStop()
-            self.video_thread.wait()
-            self.video_thread = None
-
-        if self.camera_thread:
-            self.camera_thread.requestStop()
-            self.camera_thread.wait()
-            self.camera_thread = None
-
-        if self.obs_thread:
-            self.obs_thread.requestStop()
-            self.obs_thread.wait()
-            self.obs_thread = None
-
-        if self.obs_bytetrack_thread:
-            self.obs_bytetrack_thread.requestStop()
-            self.obs_bytetrack_thread.wait()
-            self.obs_bytetrack_thread = None
+        self._stop_all_source_threads()
 
         bt_cfg = self.configs.get("bytetrack", {})
         repo_path = bt_cfg.get("bytetrack_repo") or None
@@ -1178,27 +1172,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_video_path = "OBS + ByteTrack"
         self.control_panel.set_status("模式: OBS + ByteTrack 追蹤")
         self.append_text("已切換至 OBS + ByteTrack 追蹤模式 — 請確認 OBS 已啟動虛擬攝影機")
-
-        # Stop any running camera / obs threads
-        if self.video_thread:
-            self.video_thread.requestStop()
-            self.video_thread.wait()
-            self.video_thread = None
-
-        if self.camera_thread:
-            self.camera_thread.requestStop()
-            self.camera_thread.wait()
-            self.camera_thread = None
-
-        if self.obs_thread:
-            self.obs_thread.requestStop()
-            self.obs_thread.wait()
-            self.obs_thread = None
-
-        if self.obs_bytetrack_thread:
-            self.obs_bytetrack_thread.requestStop()
-            self.obs_bytetrack_thread.wait()
-            self.obs_bytetrack_thread = None
+        self._stop_all_source_threads()
 
         # Read bytetrack config from configs dict
         bt_cfg = self.configs.get("bytetrack", {})
