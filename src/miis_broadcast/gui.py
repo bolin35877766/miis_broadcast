@@ -348,8 +348,8 @@ class ControlPanel(QtWidgets.QWidget):
         # OBS 鏡頭串流（實體攝影機直接連接）
         submenu_camstream = menu_obs.addMenu("📡  鏡頭串流")
         submenu_camstream.setStyleSheet(menu_style)
-        submenu_camstream.addAction("⬜  純串流",       lambda: self.requestOpenCamera.emit())
-        submenu_camstream.addAction("🎯  串流 + 追蹤",  lambda: self.requestOpenCameraTrack.emit())
+        submenu_camstream.addAction("⬜  純串流",       lambda: self.requestOpenOBS.emit())
+        submenu_camstream.addAction("🎯  串流 + 追蹤",  lambda: self.requestOpenOBSTrack.emit())
 
         menu_obs.addSeparator()
 
@@ -828,7 +828,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Signals
         self.control_panel.requestOpenVideo.connect(self.on_open_video_clicked)
         self.control_panel.requestOpenCamera.connect(self.on_open_camera_clicked)
-        self.control_panel.requestOpenCameraTrack.connect(self.on_open_camera_track_clicked)
         self.control_panel.requestOpenOBS.connect(self.on_open_obs_clicked)
         self.control_panel.requestOpenOBSTrack.connect(self.on_open_obs_track_clicked)
         self.control_panel.requestStart.connect(self.on_start_clicked)
@@ -1057,57 +1056,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.camera_thread.signal_frame.connect(self.on_camera_frame)
         self.camera_thread.signal_error.connect(self.on_error)
         self.camera_thread.start()
-
-        self.video_panel.slider.setEnabled(False)
-        self._update_start_button_state()
-
-    @QtCore.Slot()
-    def on_open_camera_track_clicked(self) -> None:
-        """Switch to Webcam + ByteTrack subject-tracking mode."""
-        self.stop_inference()
-        self.mode = "obs_track"
-        self.current_video_path = "Webcam + ByteTrack"
-        self.control_panel.set_status("模式: Webcam + ByteTrack 追蹤")
-        self.append_text("已切換至 Webcam + ByteTrack 追蹤模式")
-
-        # Stop any running threads
-        for attr in ("video_thread", "camera_thread", "obs_thread", "obs_bytetrack_thread"):
-            t = getattr(self, attr, None)
-            if t is not None:
-                t.requestStop()
-                t.wait()
-                setattr(self, attr, None)
-
-        bt_cfg = self.configs.get("bytetrack", {})
-        repo_path = bt_cfg.get("bytetrack_repo") or None
-        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_x_mix_det.py")
-        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_x_mot17.pth.tar")
-
-        import os
-        if repo_path and not os.path.isabs(exp_file):
-            exp_file  = os.path.join(repo_path, exp_file)
-        if repo_path and not os.path.isabs(ckpt_path):
-            ckpt_path = os.path.join(repo_path, ckpt_path)
-
-        self.camera_start_time = time.time()
-        self.obs_bytetrack_thread = OBSByteTrackThread(
-            ckpt_path              = ckpt_path,
-            exp_file               = exp_file,
-            bytetrack_repo         = repo_path,
-            device                 = bt_cfg.get("device", "cuda"),
-            fp16                   = bool(bt_cfg.get("fp16", True)),
-            fuse                   = bool(bt_cfg.get("fuse", True)),
-            track_thresh           = float(bt_cfg.get("track_thresh", 0.5)),
-            match_thresh           = float(bt_cfg.get("match_thresh", 0.8)),
-            track_buffer           = int(bt_cfg.get("track_buffer", 30)),
-            min_subject_area_ratio = float(bt_cfg.get("min_subject_area_ratio", 0.03)),
-            preempt_ratio          = float(bt_cfg.get("preempt_ratio", 4.0)),
-            camera_index           = 0,   # use webcam index 0 directly
-        )
-        self.obs_bytetrack_thread.signal_frame.connect(self.on_obs_track_frame)
-        self.obs_bytetrack_thread.signal_subject_frame.connect(self.on_obs_track_subject_frame)
-        self.obs_bytetrack_thread.signal_error.connect(self.on_error)
-        self.obs_bytetrack_thread.start()
 
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
