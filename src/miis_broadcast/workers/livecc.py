@@ -13,7 +13,7 @@ import time
 from ..core.models.livecc_transformers import LiveCCInfer, print_final_stats
 from ..core.models.openai_tts import print_tts_stats
 
-
+ 
 class LiveCCWorker(QtCore.QObject):
     # 模型載入完成
     signal_model_loaded = QtCore.Signal()
@@ -115,10 +115,18 @@ class LiveCCWorker(QtCore.QObject):
         finally:
             print_final_stats()
             print_tts_stats()
-            # ✅ 新增：推論結束後也清空快取
+            # Clear cached video readers after inference
             if self.livecc is not None:
                 self.livecc._cached_video_readers_with_hw.clear()
                 logging.info("[LiveCCWorker] Cleared cached video readers after inference")
+            # Synchronize and free GPU memory to avoid async CUDA device-side asserts
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     @QtCore.Slot()
     def requestStop(self) -> None:
@@ -328,6 +336,17 @@ class LiveCCCameraWorker(QtCore.QObject):
                     self.signal_error.emit(str(e))
                     break
         finally:
+            # Safely release GPU state before signalling completion.
+            # Without this, orphaned past_key_values tensors can trigger an
+            # async CUDA device-side assert on the next CUDA call after stop.
+            self._state = {}
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
             logging.info("[LiveCCCameraWorker] Camera inference loop finished")
             self.signal_finished.emit()
 
