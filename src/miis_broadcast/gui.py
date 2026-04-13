@@ -1335,8 +1335,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_start_button_state(self) -> None:
         can_start = self.model_ready and (self.current_video_path is not None)
         self.control_panel.btn_start.setEnabled(bool(can_start))
-        if hasattr(self, 'session_logger'):
-            self.session_logger.log_system("INFO", msg)
 
     def append_text(self, msg: str) -> None:
         self.text_output.appendText(msg)
