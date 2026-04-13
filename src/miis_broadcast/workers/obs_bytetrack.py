@@ -60,6 +60,7 @@ class OBSByteTrackThread(QtCore.QThread):
         # OBS camera arguments
         device_name: str = OBSVirtualCameraInput.DEFAULT_DEVICE_NAME,
         fallback_index: int = 1,
+        camera_index: Optional[int] = None,   # when set, bypass OBS detection and open this index directly
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -83,6 +84,7 @@ class OBSByteTrackThread(QtCore.QThread):
 
         self._device_name       = device_name
         self._fallback_index    = fallback_index
+        self._camera_index      = camera_index   # None = use OBS detection
 
         self._stop_requested    = False
 
@@ -91,18 +93,34 @@ class OBSByteTrackThread(QtCore.QThread):
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        # ── Open OBS Virtual Camera ───────────────────────────────────
-        try:
-            cam = OBSVirtualCameraInput(
-                device_name=self._device_name,
-                fallback_index=self._fallback_index,
-            )
-        except RuntimeError as e:
-            self.signal_error.emit(f"[OBSByteTrack] Camera open failed: {e}")
-            return
-
-        fps = cam.fps if cam.fps > 0 else self.DEFAULT_FPS_FALLBACK
-        frame_delay = 1.0 / fps
+        import cv2
+        # ── Open camera source ──────────────────────────────────
+        if self._camera_index is not None:
+            # Direct camera index mode (e.g. webcam index 0)
+            cap = cv2.VideoCapture(self._camera_index)
+            if not cap.isOpened():
+                self.signal_error.emit(f"[ByteTrack] Cannot open camera index {self._camera_index}")
+                return
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            fps_raw = cap.get(cv2.CAP_PROP_FPS)
+            fps = fps_raw if fps_raw and fps_raw > 0 else self.DEFAULT_FPS_FALLBACK
+            frame_delay = 1.0 / fps
+            use_obs_input = False
+            print(f"[ByteTrack] 直接開啟摄影機 index {self._camera_index} @ {fps:.1f} fps")
+        else:
+            # OBS Virtual Camera detection mode
+            try:
+                cam = OBSVirtualCameraInput(
+                    device_name=self._device_name,
+                    fallback_index=self._fallback_index,
+                )
+            except RuntimeError as e:
+                self.signal_error.emit(f"[OBSByteTrack] Camera open failed: {e}")
+                return
+            fps = cam.fps if cam.fps > 0 else self.DEFAULT_FPS_FALLBACK
+            frame_delay = 1.0 / fps
+            use_obs_input = True
 
         # ── Build ByteTrackWrapper ────────────────────────────────────
         try:
@@ -135,15 +153,21 @@ class OBSByteTrackThread(QtCore.QThread):
         while not self._stop_requested:
             t_start = time.perf_counter()
 
-            # Read frame from OBS
+            # Read frame from selected source
             try:
-                frame_rgb = cam.get_frame()   # RGB ndarray
+                if use_obs_input:
+                    frame_rgb = cam.get_frame()   # RGB ndarray
+                else:
+                    ret, frame_bgr_raw = cap.read()
+                    if not ret:
+                        self.signal_error.emit("[ByteTrack] Camera read failed")
+                        break
+                    frame_rgb = cv2.cvtColor(frame_bgr_raw, cv2.COLOR_BGR2RGB)
             except EOFError as e:
                 self.signal_error.emit(f"[OBSByteTrack] Camera read error: {e}")
                 break
 
             # Convert to BGR for YOLOX (OpenCV convention)
-            import cv2
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
             frame_id += 1
