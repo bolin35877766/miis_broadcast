@@ -1052,7 +1052,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread = None
 
         self.camera_start_time = time.time()
-        self.camera_thread = CameraThread(camera_index=0)
+        from .core.io.obs_input import find_physical_camera_index
+        cam_idx = find_physical_camera_index()
+        print(f"[Camera] 使用實體攝影機 index {cam_idx}")
+        self.camera_thread = CameraThread(camera_index=cam_idx)
         self.camera_thread.signal_frame.connect(self.on_camera_frame)
         self.camera_thread.signal_error.connect(self.on_error)
         self.camera_thread.start()

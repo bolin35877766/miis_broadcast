@@ -30,6 +30,70 @@ def list_all_cameras(max_scan: int = 10) -> dict:
     return found
 
 
+def find_physical_camera_index(obs_device_name: str = "OBS Virtual Camera",
+                               max_scan: int = 10) -> int:
+    """
+    Find the first physical (non-OBS) camera index.
+
+    Strategy:
+      1. On Linux, read V4L2 device names; return the lowest index whose
+         name does NOT contain obs_device_name.
+      2. On all platforms, fall back to scanning indices and skipping the
+         index that the OBS Virtual Camera occupies.
+    Returns the camera index, or 0 as a last resort.
+    """
+    system = platform.system()
+
+    # --- Linux: use V4L2 sysfs names ---
+    if system == "Linux":
+        video_dir = "/sys/class/video4linux"
+        if os.path.isdir(video_dir):
+            obs_indices = set()
+            candidate = None
+            for entry in sorted(os.listdir(video_dir)):
+                name_file = os.path.join(video_dir, entry, "name")
+                try:
+                    with open(name_file) as f:
+                        name = f.read().strip()
+                    idx = int(entry.replace("video", ""))
+                    if obs_device_name.lower() in name.lower():
+                        obs_indices.add(idx)
+                        print(f"[Camera] 跳過 OBS 裝置: /dev/video{idx} ({name})")
+                    elif candidate is None:
+                        # Verify it actually opens
+                        cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
+                        if cap.isOpened():
+                            candidate = idx
+                            cap.release()
+                            print(f"[Camera] ✅ 找到實體攝影機 /dev/video{idx} ({name})")
+                        else:
+                            cap.release()
+                except Exception:
+                    continue
+            if candidate is not None:
+                return candidate
+
+    # --- Windows / fallback: scan and skip known OBS index ---
+    backend = cv2.CAP_DSHOW if system == "Windows" else cv2.CAP_ANY
+    obs_index = find_obs_camera_index(obs_device_name)
+    print(f"[Camera] 掃描實體相機（跳過 OBS index {obs_index}）...")
+    for idx in range(max_scan):
+        if idx == obs_index:
+            continue
+        cap = cv2.VideoCapture(idx, backend)
+        if cap.isOpened():
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            print(f"[Camera] ✅ 找到實體攝影機 index {idx} — {w}x{h} @ {fps:.1f} fps")
+            return idx
+        cap.release()
+
+    print("[Camera] ⚠️  找不到實體攝影機，使用 index 0 作為最後手段")
+    return 0
+
+
 def find_obs_camera_index_linux(device_name: str = "OBS Virtual Camera") -> int:
     """
     On Linux, OBS Virtual Camera appears as a V4L2 loopback device.
