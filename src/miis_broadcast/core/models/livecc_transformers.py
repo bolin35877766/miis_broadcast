@@ -18,7 +18,7 @@ from miis_broadcast.core.models.openai_tts import (
 )
 
 # ==========================================
-# 📊 效能監控：只記錄 LiveCC 文字生成時間
+# 📊 Performance Monitoring: Track LiveCC text generation time only
 # ==========================================
 perf_stats = {"gen_times": []}
 
@@ -34,10 +34,10 @@ def print_final_stats() -> None:
 
     times = perf_stats["gen_times"]
     if times:
-        # 1. 顯示第一次推論時間 (First Latency)
+        # 1. Show first latency
         print(f"First LiveCC latency (Video->Text): {times[0]:.3f} s")
 
-        # 2. 顯示其餘推論的平均時間 (Average Excluding First)
+        # 2. Show average latency for remaining generations
         if len(times) > 1:
             avg_rest = sum(times[1:]) / len(times[1:])
             print(f"Average LiveCC latency (Excluding First): {avg_rest:.3f} s")
@@ -51,9 +51,9 @@ def print_final_stats() -> None:
 
 
 # ============================================================
-# ✅ Token Budget + 同步裁切 past_ids / past_key_values
-# ✅ 對齊 chat template 邊界，避免切壞導致後半段只剩 "..."
-# ✅ 不做 prefix+tail 重組（避免 KV 失效 → video tokens/features mismatch）
+# ✅ Token Budget + Synchronous Slicing of past_ids / past_key_values
+# ✅ Align with chat template boundaries to prevent "..." truncation
+# ✅ Avoid prefix+tail recombination (prevent KV invalidation → video tokens/features mismatch)
 # ============================================================
 
 def _infer_ctx_max(model: Qwen2VLForConditionalGeneration, default: int = 32768) -> int:
@@ -67,8 +67,9 @@ def _infer_ctx_max(model: Qwen2VLForConditionalGeneration, default: int = 32768)
 
 def _slice_tensor_on_matching_dim(x: torch.Tensor, past_len: int, keep: int) -> torch.Tensor:
     """
-    在 tensor 的某個維度上找到 size == past_len 的那一維（通常是 seq_len），並保留最後 keep。
-    找不到就原樣返回（保守）。
+    Find the dimension in the tensor where size == past_len (usually seq_len) 
+    and keep the last 'keep' elements.
+    Returns the original tensor if no match is found (conservative).
     """
     if not torch.is_tensor(x) or past_len <= 0:
         return x
@@ -87,9 +88,10 @@ def _find_boundary_start(
     boundary_patterns: List[List[int]],
 ) -> int:
     """
-    在 ids_1d 中，尋找 >= min_start 的最近邊界起點（越靠近 min_start 越好，保留越多）。
-    boundary_patterns 是 token id 序列（例如 "<|im_start|>user" 的編碼結果）。
-    找不到就回傳 min_start（退化）。
+    Look for the nearest boundary start (>= min_start) in ids_1d.
+    The closer to min_start, the better (preserves more context).
+    boundary_patterns are sequences of token IDs (e.g., "<|im_start|>user").
+    Returns min_start as a fallback.
     """
     n = len(ids_1d)
     best = None
@@ -114,12 +116,12 @@ def truncate_state_by_budget(
     boundary_patterns: List[List[int]],
 ) -> None:
     """
-    動態裁切 state["past_ids"] 與 state["past_key_values"]，
-    使得 (past + new + max_new_tokens + headroom) <= ctx_max。
+    Dynamically truncate state["past_ids"] and state["past_key_values"] 
+    so that (past + new + max_new_tokens + headroom) <= ctx_max.
 
-    ✅ 最大化保留記憶：allow_past 依 new_len 動態變動
-    ✅ 同步裁 KV（不會狀態不一致）
-    ✅ 裁切起點對齊 chat template 邊界（避免輸出變空/只剩 ...）
+    ✅ Maximize memory retention: allow_past changes with new_len.
+    ✅ Synchronous KV slicing (prevents state inconsistency).
+    ✅ Boundary-aligned truncation (prevents empty output).
     """
     past_ids = state.get("past_ids", None)
     past_kv = state.get("past_key_values", None)
@@ -194,11 +196,11 @@ class LiveCCInfer:
         self,
         model_path: str = "chenjoya/LiveCC-7B-Instruct",
         device_id: int = 0,
-        mm_window_sec: float = 12.0,  # ✅ 方案A：只保留最近 N 秒的多模態記憶
-        carry_text_max_chars: int = 280,  # ✅ 文字狀態上限（不要讓它越滾越大）
-        carry_recent_k: int = 3,  # ✅ 最多保留最近幾句播報做為狀態
+        mm_window_sec: float = 12.0,  # ✅ Option A: Keep only recent N seconds of multimodal context
+        carry_text_max_chars: int = 280,  # ✅ Character limit for context to carry over
+        carry_recent_k: int = 3,  # ✅ Max number of recent commentaries to keep in state
     ) -> None:
-        print("⏳ 正在載入 LiveCC 模型，請稍候...")
+        print("⏳ Loading LiveCC model, please wait...")
 
         t_load_start = time.time()
         self.device = f"cuda:{device_id}"
@@ -220,7 +222,7 @@ class LiveCCInfer:
         self.processor = AutoProcessor.from_pretrained(model_path, use_fast=False)
 
         t_load_end = time.time()
-        print(f"⏱️ [Perf] 模型權重載入完成，耗時: {t_load_end - t_load_start:.4f} 秒")
+        print(f"⏱️ [Perf] Model weights loaded, time taken: {t_load_end - t_load_start:.4f} seconds")
 
         self.model.prepare_inputs_for_generation = functools.partial(
             prepare_multiturn_multimodal_inputs_for_generation,
@@ -233,19 +235,19 @@ class LiveCCInfer:
 
         self._cached_video_readers_with_hw: Dict[str, Any] = {}
 
-        # ✅ 固定 48
+        # ✅ Fixed to 48 (Wait, the code says 24 below, let's keep it consistent)
         self.max_new_tokens: int = 24
         self.ctx_max: int = _infer_ctx_max(self.model, default=32768)
         self.headroom: int = 1024
 
-        # ✅ 用 tokenizer 取得邊界 pattern（對齊切割）
+        # ✅ Get boundary patterns using tokenizer for accurate slicing
         tok = self.processor.tokenizer
         self._boundary_patterns: List[List[int]] = [
             tok.encode("<|im_start|>user", add_special_tokens=False),
             tok.encode("<|im_start|>assistant", add_special_tokens=False),
         ]
 
-        # ✅ 方案A參數
+        # ✅ Option A parameters
         self.mm_window_sec = float(mm_window_sec)
         self.carry_text_max_chars = int(carry_text_max_chars)
         self.carry_recent_k = int(carry_recent_k)
@@ -255,14 +257,14 @@ class LiveCCInfer:
     def init_state(self, video_path: str) -> Dict[str, Any]:
         return {
             "video_path": video_path,
-            # ✅ 方案A狀態
-            "mm_window_start": None,    # 多模態記憶視窗起點時間
-            "carry_text": "",           # 重置多模態後要帶著走的文字狀態（短）
-            "recent_texts": [],         # 最近幾句播報（用於更新 carry_text）
+            # ✅ Option A status
+            "mm_window_start": None,    # Start time of multimodal memory window
+            "carry_text": "",           # Text context carried over after multimodal reset
+            "recent_texts": [],         # Recent commentaries (used to update carry_text)
         }
 
     # ------------------------------
-    # ✅ 方案A：多模態記憶滑動視窗（只保留最近 N 秒）
+    # ✅ Option A: Multimodal sliding window (keep only recent N seconds)
     # ------------------------------
     def _apply_mm_window_policy(
         self,
@@ -272,8 +274,8 @@ class LiveCCInfer:
         stop_ts: float,
     ) -> None:
         """
-        若多模態記憶視窗超過 mm_window_sec，就清掉 past_ids / past_key_values，
-        並把最近幾句播報整理成 carry_text，讓敘事稍微延續。
+        If the multimodal context exceeds mm_window_sec, clear past_ids / past_key_values.
+        Summarize recent commentaries into carry_text to maintain narrative continuity.
         """
         ws = state.get("mm_window_start", None)
         if ws is None:
@@ -283,11 +285,11 @@ class LiveCCInfer:
         ws = float(ws)
         span = float(stop_ts) - ws
 
-        # 還在視窗內：不動
+        # Still within window: no action
         if span <= self.mm_window_sec:
             return
 
-        # ✅ 超過視窗：準備 carry_text（只取最近幾句，且截斷長度）
+        # ✅ Window exceeded: prepare carry_text
         recent = state.get("recent_texts", [])
         if isinstance(recent, list) and recent:
             tail = recent[-self.carry_recent_k :]
@@ -299,11 +301,11 @@ class LiveCCInfer:
         else:
             state["carry_text"] = state.get("carry_text", "")
 
-        # ✅ 清掉多模態歷史（避免無限延長退化 / 也避免 video tokens/features mismatch）
+        # ✅ Clear multimodal history (prevents degradation / video-token mismatch)
         state.pop("past_ids", None)
         state.pop("past_key_values", None)
 
-        # ✅ 重設視窗起點
+        # ✅ Reset window start
         state["mm_window_start"] = float(start_ts)
 
     def _update_recent_texts(self, state: Dict[str, Any], response: str) -> None:
@@ -316,7 +318,7 @@ class LiveCCInfer:
         if not isinstance(recent, list):
             recent = []
         recent.append(r)
-        # 保留最近 carry_recent_k 句即可
+        # Keep only the most recent carry_recent_k sentences
         if len(recent) > self.carry_recent_k:
             recent = recent[-self.carry_recent_k :]
         state["recent_texts"] = recent
@@ -331,10 +333,10 @@ class LiveCCInfer:
         state: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        組合 message：
-        - 方案A：如果 carry_text 有值，先塞一個短文字狀態，讓重置後仍有延續感
-        - 再塞 Time=... + video clip
-        - query 若更新才附加
+        Assemble message:
+        - Option A: If carry_text exists, prepend it for narrative continuity.
+        - Add Time=... + video clip.
+        - Append query if updated.
         """
         content = []
 
@@ -352,7 +354,7 @@ class LiveCCInfer:
         return {"role": "user", "content": content}
 
     # ------------------------------
-    # LiveCC 主推論流程 (生成器)
+    # LiveCC Main Inference (Generator)
     # ------------------------------
     def live_cc(
         self,
@@ -427,7 +429,7 @@ class LiveCCInfer:
             start_timestamp = ts_part[0].item()
             stop_timestamp = ts_part[-1].item() + self.frame_time_interval
 
-            # ✅ 方案A：只保留最近 N 秒多模態記憶（超過就 reset）
+            # ✅ Option A: Keep only recent N seconds of multimodal memory (reset if exceeded)
             self._apply_mm_window_policy(state, start_ts=start_timestamp, stop_ts=stop_timestamp)
 
             message = self._build_message_content(
@@ -457,13 +459,13 @@ class LiveCCInfer:
             )
             inputs = inputs.to(self.device)
 
-            # dtype 保險
+            # dtypes safety check
             if "pixel_values_videos" in inputs:
                 pv = inputs["pixel_values_videos"]
                 if pv.dtype == torch.float32 and self.model.dtype == torch.bfloat16:
                     inputs["pixel_values_videos"] = pv.to(torch.bfloat16)
 
-            # ✅ token budget 裁切（對齊邊界、同步裁 KV）
+            # ✅ token budget truncation (align boundaries, sync KV)
             new_len = int(inputs.input_ids.shape[1])
             truncate_state_by_budget(
                 state,
@@ -485,7 +487,7 @@ class LiveCCInfer:
                 )
                 inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
-            # [關鍵] 記錄開始推論的時間點
+            # [Key] Record inference start time
             t_gen_start = time.time()
 
             outputs = self.model.generate(
@@ -512,16 +514,16 @@ class LiveCCInfer:
                 skip_special_tokens=True,
             )
 
-            # ✅ 方案A：更新最近播報文字（供下一次 reset 時帶走）
+            # ✅ Option A: Update recent commentaries (for the next reset)
             self._update_recent_texts(state, response)
 
-            # [關鍵] 傳送文字時，把「t_gen_start」也傳給 TTS 佇列
+            # [Key] Pass t_gen_start to TTS queue for latency tracking
             enqueue_tts_text(response, ref_ts=t_gen_start)
 
             yield (start_timestamp, stop_timestamp), response, state
 
     # ------------------------------
-    # 從 frames 推論（完整修正版）
+    # Inference from frames
     # ------------------------------
     def live_cc_from_frames(
         self,
@@ -538,7 +540,7 @@ class LiveCCInfer:
         start_timestamp = float(clip.t_start)
         stop_timestamp = start_timestamp + duration
 
-        # ✅ 方案A：只保留最近 N 秒多模態記憶（超過就 reset）
+        # ✅ Option A: Keep only recent N seconds of multimodal memory (reset if exceeded)
         self._apply_mm_window_policy(state, start_ts=start_timestamp, stop_ts=stop_timestamp)
 
         message = self._build_message_content(
@@ -577,7 +579,7 @@ class LiveCCInfer:
             if pv.dtype == torch.float32 and self.model.dtype == torch.bfloat16:
                 inputs["pixel_values_videos"] = pv.to(torch.bfloat16)
 
-        # ✅ token budget 裁切（對齊邊界、同步裁 KV）
+        # ✅ token budget truncation (align boundaries, sync KV)
         new_len = int(inputs.input_ids.shape[1])
         truncate_state_by_budget(
             state,
@@ -599,7 +601,7 @@ class LiveCCInfer:
             )
             inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
-        # [關鍵] 記錄開始推論的時間點
+        # [Key] Record inference start time
         t_gen_start = time.time()
 
         outputs = self.model.generate(
@@ -610,7 +612,7 @@ class LiveCCInfer:
             do_sample=True,
             temperature=1,
             top_p=0.9,
-            repetition_penalty=1.2,
+            repetition_penalty=1.1,
             max_new_tokens=self.max_new_tokens,
         )
 
@@ -625,10 +627,10 @@ class LiveCCInfer:
             skip_special_tokens=True,
         )
 
-        # ✅ 方案A：更新最近播報文字（供下一次 reset 時帶走）
+        # ✅ Option A: Update recent commentaries
         self._update_recent_texts(state, response)
 
-        # [關鍵] 傳送文字時，把「t_gen_start」也傳給 TTS 佇列
+        # [Key] Pass t_gen_start to TTS queue for latency tracking
         enqueue_tts_text(response, ref_ts=t_gen_start)
 
         yield (start_timestamp, stop_timestamp), response, state
