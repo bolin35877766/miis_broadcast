@@ -6,11 +6,12 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
 
 ## Features
 
-- **Four input modes**:
+- **Five input modes**:
   - Video file playback
   - Live camera feed (Auto-detects physical webcams, skips OBS Virtual Camera)
   - OBS Virtual Camera stream
-  - Integrated ByteTrack subject tracking (Available for both local webcams and OBS Virtual Camera)
+  - VR headset stream — Meta Quest via Quest Link → OBS Virtual Camera (plain stream or with subject tracking)
+  - Integrated ByteTrack subject tracking (Available for webcam, OBS Virtual Camera, and VR sources)
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
@@ -183,7 +184,8 @@ python -m miis_broadcast
    - **Computer -> Webcam** — use a connected physical webcam (auto-detects real cameras)
    - **OBS -> Direct Camera** — use a camera source directly without going through OBS software
    - **OBS -> Virtual Camera** — use the live output from OBS Virtual Camera
-   - **Tracking Modes** — Select "Stream + Track" under any camera source to enable subject-aware commentary
+   - **OBS -> VR** — stream Meta Quest VR footage via Quest Link → OBS Virtual Camera; choose `Plain VR` for raw stream or `VR + Track` for subject tracking
+   - **Tracking Modes** — Select `Stream + Track` or `VR + Track` under any source to enable subject-aware commentary
 2. **Choose a commentary style** from the dropdown
 3. **Select TTS backend** — OpenAI Realtime or ChatterBox Local (Note: ChatterBox may be disabled in some environments)
 4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s to load). The ByteTrack model preloads in the background automatically, so switching to any tracking mode after startup is instant.
