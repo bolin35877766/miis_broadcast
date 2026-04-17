@@ -13,7 +13,8 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - Integrated ByteTrack subject tracking (Available for both local webcams and OBS Virtual Camera)
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
-- **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs.
+- **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
+- **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
 - **Multiple commentary styles** switchable at runtime:
   - 嘴砲型實況主 (Trash-talk / Roast)
   - 熱血沸騰型主播 (High-energy Hype)
@@ -185,7 +186,7 @@ python -m miis_broadcast
    - **Tracking Modes** — Select "Stream + Track" under any camera source to enable subject-aware commentary
 2. **Choose a commentary style** from the dropdown
 3. **Select TTS backend** — OpenAI Realtime or ChatterBox Local (Note: ChatterBox may be disabled in some environments)
-4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s to load)
+4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s to load). The ByteTrack model preloads in the background automatically, so switching to any tracking mode after startup is instant.
 5. Commentary text appears in the transcript panel and is read aloud in real time
 6. **Click Stop Broadcasting** to end inference; latency statistics are printed to the console
 
