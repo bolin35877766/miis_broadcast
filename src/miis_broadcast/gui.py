@@ -1012,13 +1012,13 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(int)
     def on_font_scale_request(self, size_pt: int) -> None:
         self.font_size = int(size_pt)
-        self._apply_styles(self.font_siFont size adjusted to: {self.font_size}pt", 2000)
+        self._apply_styles(self.font_size)
+        self.statusBar().showMessage(f"Font size adjusted to: {self.font_size}pt", 2000)
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
-        dlg = QtWidgets.QFileDialog(self, "Select Video
-        dlg = QtWidgets.QFileDialog(self, "選擇影片")
+        dlg = QtWidgets.QFileDialog(self, "Select Video File")
         dlg.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
         dlg.setFileMode(QtWidgets.QFileDialog.ExistingFile)
         dlg.setNameFilter("Video Files (*.mp4 *.mov *.avi *.mkv);;All Files (*)")
