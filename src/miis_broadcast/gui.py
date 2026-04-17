@@ -365,6 +365,14 @@ class ControlPanel(QtWidgets.QWidget):
         submenu_virtual.addAction("⬜  Plain OBS",       lambda: self.requestOpenOBS.emit())
         submenu_virtual.addAction("🎯  OBS + Track",   lambda: self.requestOpenOBSTrack.emit())
 
+        menu_obs.addSeparator()
+
+        # VR (Meta Quest via OBS Virtual Camera)
+        submenu_vr = menu_obs.addMenu("🥽  VR")
+        submenu_vr.setStyleSheet(menu_style)
+        submenu_vr.addAction("⬜  Plain VR",       lambda: self.requestOpenOBS.emit())
+        submenu_vr.addAction("🎯  VR + Track",     lambda: self.requestOpenOBSTrack.emit())
+
         self.btn_obs_main.setMenu(menu_obs)
 
         btn_row.addWidget(self.btn_computer)
