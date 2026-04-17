@@ -1043,8 +1043,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._stop_all_source_threads()
 
-        self.current_video_path = pathFile: {os.path.basename(path)}")
-        self.append_text(f"Video loaded: atus(f"檔案: {os.path.basename(path)}")
+        self.current_video_path = path
+        self.control_panel.set_status(f"File: {os.path.basename(path)}")
         self.append_text(f"已載入影片：{os.path.basename(path)}")
 
         self._load_video_preview(path)
@@ -1092,7 +1092,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_open_camera_clicked(self) -> None:
         self.stop_inference()
         self.mode = "camera"
-        self.current_video_path = "LiveMode: Live Camera")
+        self.current_video_path = "LiveMode: Live Camera"
         self.append_text("Switched to camera mode")
         self._stop_all_source_threads()
         self.camera_start_time = time.time()
@@ -1149,7 +1149,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Auto-detect physical camera index (skip OBS Virtual Camera)
         from .core.io.obs_input import find_physical_camera_index
-        cam_idx = find_physicaUsing physical cameraa_index()
+        cam_idx = find_physical_camera_index()
+        print(f"[CameraTrack] Using physical camera index {cam_idx}")
         print(f"[CameraTrack] 使用實體攝影機 index {cam_idx}")
 
         self.camera_start_time = time.time()
@@ -1183,8 +1184,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Switch to OBS Virtual Camera + ByteTrack subject-tracking mode."""
         self.stop_inference()
         self.mode = "obs_track"
-        self.current_video_path = "OBS Mode: OBS + ByteTrack")
-        self.append_text("Switched to OBS + ByteTrack tracking mode - ensure OBS Virtual Camera is active
+        self.current_video_path = "OBS Mode: OBS + ByteTrack"
+        self.append_text("Switched to OBS + ByteTrack tracking mode - ensure OBS Virtual Camera is active")
         self.append_text("已切換至 OBS + ByteTrack 追蹤模式 — 請確認 OBS 已啟動虛擬攝影機")
         self._stop_all_source_threads()
 
@@ -1232,7 +1233,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
 
-    def _apApply correspondence settings according to current mode"""
+    def _apply_tts_settings_before_start(self) -> None:
+        """Apply TTS settings according to current mode"""
         self.tts_mode = self.control_panel.get_tts_mode()
 
         if self.tts_mode == "openai":
@@ -1253,7 +1255,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_inference()
             return
 
-        if not self.model_readModel not ready yet")
+        if not self.model_ready:
+            self.append_text("Model not ready yet")
             return
 
         # Start new log session before inference
@@ -1277,7 +1280,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.text_output.setText("")
         self._obs_drop_logged = False  # reset drop-log flag so it fires again if needed
 
-        self.append_text(f"Starting inference
+        self.append_text(f"Starting inference (Style: {style_label}, TTS: {self.tts_mode})")
         self.append_text(f"開始推論 (Style: {style_label}, TTS: {self.tts_mode})")
 
         if self.mode == "file":
@@ -1304,7 +1307,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def stop_inference(self) -> None:
         if not self.is_inference_running:
             return
-Stopping inference")
+        self.append_text("Stopping inference")
         if hasattr(self, "_pending_segments"):
             self._pending_segments.clear()
         if self.tts_mode == "openai":
@@ -1389,7 +1392,8 @@ Stopping inference")
 
     @QtCore.Slot()
     def on_model_loaded(self) -> None:
-        self.model_ready = TrueModel Ready")
+        self.model_ready = True
+        self.statusBar().showMessage("Model Ready")
         self.control_panel.set_status("Model ready, please select source")
         self._update_start_button_state()
 
@@ -1434,7 +1438,7 @@ Stopping inference")
 
     @QtCore.Slot(str)
     def on_error(self, msg: str) -> None:
-        self.append_text(f"Error: r) -> None:
+        self.append_text(f"Error: {msg}")
         self.append_text(f"錯誤：{msg}")
         self.stop_inference()
 
@@ -1459,7 +1463,7 @@ Stopping inference")
 
 
     def _install_text_output_click_handler(self) -> None:
-        Allow users to click a segment line in the log to seek to the corresponding time in the video.
+        '''Allow users to click a segment line in the log to seek to the corresponding time in the video.
         Try to find the internal QTextEdit/QPlainTextEdit/QTextBrowser without modifying TextOutputWidget.
         '''
         self._text_click_widget = None
@@ -1512,7 +1516,7 @@ Stopping inference")
 
     @staticmethod
     def _parse_seek_time_from_line(line: str) -> float | None:
-        Support formats:
+        '''Support formats:
           [00:07.25-00:09.25] ...
           [00:07.25] ...
         Returns the seconds to seek (defaults to start time).
@@ -1555,7 +1559,7 @@ Stopping inference")
 
         self.video_thread.requestSeek(frame_idx)
         self._playback_sec = float(frame_idx) / fps
-        self.control_panel.set_status(f"Seek tox) / fps
+        self.control_panel.set_status(f"Seek to {self._fmt_time(self._playback_sec)}")
         self.control_panel.set_status(f"跳轉到 {self._fmt_time(self._playback_sec)}")
 
     @QtCore.Slot(int)
@@ -1576,7 +1580,8 @@ Stopping inference")
         m, s = divmod(int(max(0, ms) / 1000), 60)
         return f"{m:02d}:{s:02d}"
 
-    def clStop inference before closingnt(self, event: QtGui.QCloseEvent) -> None:
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Stop inference before closing"""
         # ✅ 先停推論
         self.stop_inference()
 
