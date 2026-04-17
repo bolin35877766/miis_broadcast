@@ -685,12 +685,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.livecc_model = None
         self.prompt_manager: Optional[PromptManager] = None
+        self._bytetrack_wrapper = None          # pre-loaded ByteTrackWrapper (set by background thread)
+        self._bytetrack_preload_thread = None   # QThread that loads it
 
         self._load_livecc_model()
 
         self._init_fonts()
         self._initUI()
         self._initTTSWorker()
+
+        # Pre-load ByteTrackWrapper in the background so the first OBS+Track
+        # mode switch is instant instead of freezing the UI for ~5 seconds.
+        QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
 
         self._playback_sec: float = 0.0
         self._pending_segments = deque()  # items: (start_t, stop_t, text)
@@ -791,6 +797,63 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"[Main] Model load failed: {e}")
             import traceback; traceback.print_exc()
             self.model_ready = False
+
+    def _preload_bytetrack_model(self) -> None:
+        """Start a background QThread to pre-load ByteTrackWrapper so mode
+        switching to OBS+Track is instant."""
+        bt_cfg = self.configs.get("bytetrack", {})
+        repo_path = bt_cfg.get("bytetrack_repo") or None
+        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_x_mix_det.py")
+        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_x_mot17.pth.tar")
+
+        import os
+        if repo_path and not os.path.isabs(exp_file):
+            exp_file  = os.path.join(repo_path, exp_file)
+        if repo_path and not os.path.isabs(ckpt_path):
+            ckpt_path = os.path.join(repo_path, ckpt_path)
+
+        # Capture values for closure
+        _repo = repo_path
+        _exp  = exp_file
+        _ckpt = ckpt_path
+        _cfg  = bt_cfg
+        _self = self
+
+        class _PreloadThread(QtCore.QThread):
+            done = QtCore.Signal(object)   # emits ByteTrackWrapper or None
+
+            def run(self):
+                try:
+                    from miis_broadcast.core.models.bytetrack_tracker import ByteTrackWrapper
+                    print("[Preload] ByteTrack model 載入中...")
+                    wrapper = ByteTrackWrapper(
+                        ckpt_path              = _ckpt,
+                        exp_file               = _exp,
+                        bytetrack_repo         = _repo,
+                        device                 = _cfg.get("device", "cuda"),
+                        fp16                   = bool(_cfg.get("fp16", True)),
+                        fuse                   = bool(_cfg.get("fuse", True)),
+                        track_thresh           = float(_cfg.get("track_thresh", 0.5)),
+                        match_thresh           = float(_cfg.get("match_thresh", 0.8)),
+                        track_buffer           = int(_cfg.get("track_buffer", 30)),
+                        aspect_ratio_thresh    = float(_cfg.get("aspect_ratio_thresh", 1.6)),
+                        min_box_area           = float(_cfg.get("min_box_area", 10)),
+                        subject_only           = bool(_cfg.get("subject_only", True)),
+                        subject_pad            = float(_cfg.get("subject_pad", 0.15)),
+                        min_subject_area_ratio = float(_cfg.get("min_subject_area_ratio", 0.03)),
+                        preempt_ratio          = float(_cfg.get("preempt_ratio", 4.0)),
+                    )
+                    print("[Preload] ✅ ByteTrack model 預載完成")
+                    self.done.emit(wrapper)
+                except Exception as e:
+                    print(f"[Preload] ⚠️ ByteTrack 預載失敗：{e}")
+                    self.done.emit(None)
+
+        t = _PreloadThread(self)
+        t.done.connect(lambda w: setattr(_self, '_bytetrack_wrapper', w))
+        t.done.connect(lambda _: setattr(_self, '_bytetrack_preload_thread', None))
+        self._bytetrack_preload_thread = t
+        t.start()
 
     def parseConfigs(self) -> None:
         gui_cfg = self.configs.get("gui_window", {})
@@ -1076,16 +1139,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.obs_thread.signal_frame.disconnect()
             except RuntimeError:
                 pass
-            self.obs_thread.wait()
+            if not self.obs_thread.wait(3000):
+                self.obs_thread.terminate()
+                self.obs_thread.wait(1000)
             self.obs_thread = None
         if self.obs_bytetrack_thread:
-            self.obs_bytetrack_thread.requestStop()
+            self.obs_bytetrack_thread.requestStop()  # also releases DirectShow capture
             try:
                 self.obs_bytetrack_thread.signal_frame.disconnect()
                 self.obs_bytetrack_thread.signal_subject_frame.disconnect()
             except RuntimeError:
                 pass
-            self.obs_bytetrack_thread.wait()
+            # Use a timeout so the GUI main thread never freezes if the worker
+            # thread is still blocked (e.g. DirectShow did not release in time).
+            if not self.obs_bytetrack_thread.wait(3000):
+                self.obs_bytetrack_thread.terminate()
+                self.obs_bytetrack_thread.wait(1000)
             self.obs_bytetrack_thread = None
 
     @QtCore.Slot()
@@ -1171,6 +1240,7 @@ class MainWindow(QtWidgets.QMainWindow):
             min_subject_area_ratio = float(bt_cfg.get("min_subject_area_ratio", 0.03)),
             preempt_ratio          = float(bt_cfg.get("preempt_ratio", 4.0)),
             camera_index           = cam_idx,
+            preloaded_tracker      = self._bytetrack_wrapper,
         )
         self.obs_bytetrack_thread.signal_frame.connect(self.on_obs_track_frame)
         self.obs_bytetrack_thread.signal_subject_frame.connect(self.on_obs_track_subject_frame)
@@ -1222,6 +1292,7 @@ class MainWindow(QtWidgets.QMainWindow):
             subject_pad            = float(bt_cfg.get("subject_pad", 0.15)),
             min_subject_area_ratio = float(bt_cfg.get("min_subject_area_ratio", 0.03)),
             preempt_ratio          = float(bt_cfg.get("preempt_ratio", 4.0)),
+            preloaded_tracker      = self._bytetrack_wrapper,
         )
         # Annotated BGR preview → GUI video panel
         self.obs_bytetrack_thread.signal_frame.connect(self.on_obs_track_frame)
@@ -1328,12 +1399,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self.mode == "obs" and self.obs_thread is not None:
             self.obs_thread.requestStop()
-            self.obs_thread.wait()
+            if not self.obs_thread.wait(3000):
+                self.obs_thread.terminate()
+                self.obs_thread.wait(1000)
             self.obs_thread = None
 
         if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:
             self.obs_bytetrack_thread.requestStop()
-            self.obs_bytetrack_thread.wait()
+            if not self.obs_bytetrack_thread.wait(3000):
+                self.obs_bytetrack_thread.terminate()
+                self.obs_bytetrack_thread.wait(1000)
             self.obs_bytetrack_thread = None
 
         self.is_inference_running = False

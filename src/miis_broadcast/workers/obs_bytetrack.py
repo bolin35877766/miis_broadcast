@@ -61,6 +61,8 @@ class OBSByteTrackThread(QtCore.QThread):
         device_name: str = OBSVirtualCameraInput.DEFAULT_DEVICE_NAME,
         fallback_index: int = 1,
         camera_index: Optional[int] = None,   # when set, bypass OBS detection and open this index directly
+        # Pre-loaded tracker instance (skips model load if provided)
+        preloaded_tracker: Optional["ByteTrackWrapper"] = None,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -85,8 +87,11 @@ class OBSByteTrackThread(QtCore.QThread):
         self._device_name       = device_name
         self._fallback_index    = fallback_index
         self._camera_index      = camera_index   # None = use OBS detection
+        self._preloaded_tracker = preloaded_tracker  # reuse if already loaded
 
         self._stop_requested    = False
+        self._cam: Optional[OBSVirtualCameraInput] = None   # OBS input object (for release on stop)
+        self._cap = None                                     # cv2.VideoCapture (direct index mode)
 
     # ------------------------------------------------------------------
     # QThread entry point
@@ -107,6 +112,7 @@ class OBSByteTrackThread(QtCore.QThread):
             fps = fps_raw if fps_raw and fps_raw > 0 else self.DEFAULT_FPS_FALLBACK
             frame_delay = 1.0 / fps
             use_obs_input = False
+            self._cap = cap  # store ref so requestStop() can release to unblock read
             print(f"[ByteTrack] 直接開啟摄影機 index {self._camera_index} @ {fps:.1f} fps")
         else:
             # OBS Virtual Camera detection mode
@@ -121,31 +127,37 @@ class OBSByteTrackThread(QtCore.QThread):
             fps = cam.fps if cam.fps > 0 else self.DEFAULT_FPS_FALLBACK
             frame_delay = 1.0 / fps
             use_obs_input = True
+            self._cam = cam  # store ref so requestStop() can release to unblock read
 
-        # ── Build ByteTrackWrapper ────────────────────────────────────
-        try:
-            tracker = ByteTrackWrapper(
-                ckpt_path             = self._ckpt_path,
-                exp_file              = self._exp_file,
-                bytetrack_repo        = self._bytetrack_repo,
-                device                = self._device,
-                fp16                  = self._fp16,
-                fuse                  = self._fuse,
-                track_thresh          = self._track_thresh,
-                match_thresh          = self._match_thresh,
-                track_buffer          = self._track_buffer,
-                aspect_ratio_thresh   = self._aspect_ratio_thresh,
-                min_box_area          = self._min_box_area,
-                subject_only          = self._subject_only,
-                subject_pad           = self._subject_pad,
-                fps                   = int(fps),
-                min_subject_area_ratio= self._min_subject_area_ratio,
-                preempt_ratio         = self._preempt_ratio,
-            )
-        except Exception as e:
-            cam.release()
-            self.signal_error.emit(f"[OBSByteTrack] Tracker init failed: {e}")
-            return
+        # ── Build ByteTrackWrapper (or reuse preloaded instance) ─────
+        if self._preloaded_tracker is not None:
+            # Reset tracker state so previous run does not affect the new session
+            self._preloaded_tracker.reset()
+            tracker = self._preloaded_tracker
+            print("[OBSByteTrack] ✅ 使用預載 ByteTrackWrapper，跳過模型載入")
+        else:
+            try:
+                tracker = ByteTrackWrapper(
+                    ckpt_path             = self._ckpt_path,
+                    exp_file              = self._exp_file,
+                    bytetrack_repo        = self._bytetrack_repo,
+                    device                = self._device,
+                    fp16                  = self._fp16,
+                    fuse                  = self._fuse,
+                    track_thresh          = self._track_thresh,
+                    match_thresh          = self._match_thresh,
+                    track_buffer          = self._track_buffer,
+                    aspect_ratio_thresh   = self._aspect_ratio_thresh,
+                    min_box_area          = self._min_box_area,
+                    subject_only          = self._subject_only,
+                    subject_pad           = self._subject_pad,
+                    fps                   = int(fps),
+                    min_subject_area_ratio= self._min_subject_area_ratio,
+                    preempt_ratio         = self._preempt_ratio,
+                )
+            except Exception as e:
+                self.signal_error.emit(f"[OBSByteTrack] Tracker init failed: {e}")
+                return
 
         frame_id = 0
 
@@ -197,7 +209,15 @@ class OBSByteTrackThread(QtCore.QThread):
             if remaining > 0.001:
                 time.sleep(remaining)
 
-        cam.release()
+        # Release camera if requestStop() has not already done so
+        if use_obs_input:
+            if self._cam is not None:
+                self._cam.release()
+                self._cam = None
+        else:
+            if self._cap is not None:
+                self._cap.release()
+                self._cap = None
 
     # ------------------------------------------------------------------
     # Slot
@@ -205,4 +225,7 @@ class OBSByteTrackThread(QtCore.QThread):
 
     @QtCore.Slot()
     def requestStop(self) -> None:
+        # Only set the flag here — do NOT release capture from another thread.
+        # Cross-thread release causes DirectShow buffer corruption (garbled frames).
+        # The GUI caller uses wait(timeout) + terminate() to handle blocked threads.
         self._stop_requested = True
