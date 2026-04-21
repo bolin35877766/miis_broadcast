@@ -4,3 +4,13 @@ examples/
 
 # Environment variables
 .env
+
+# Logs
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Package build artifacts
+*.egg-info/
