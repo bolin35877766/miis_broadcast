@@ -215,7 +215,6 @@ All input-source logic is decoupled from the UI through Qt signals defined on `C
 | `requestOpenCamera` | `on_open_camera_clicked()` | `CameraThread` | `"camera"` |
 | `requestOpenCameraTrack` | `on_open_camera_track_clicked()` | `OBSByteTrackThread` | `"obs_track"` |
 | `requestOpenOBS` | `on_open_obs_clicked()` | `OBSCameraThread` | `"obs"` |
-| ~~`requestOpenOBSTrack`~~ | ~~`on_open_obs_track_clicked()`~~ | ~~`OBSByteTrackThread`~~ | ~~`"obs_track"`~~ — **deprecated, not wired to any UI entry** |
 
 ### Frame emission signals
 
