@@ -16,7 +16,7 @@ from .widgets.text_output import TextOutputWidget
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.openai_tts import OpenAITTSWorker
 from .workers.obs_input import OBSCameraThread
-from .workers.obs_bytetrack import WebcamByteTrackThread
+from .workers.camera_bytetrack import CameraByteTrackThread
 from .workers.dual_source import DualSourceCameraThread
 from .core.prompt.prompt_manager import PromptManager
 from .core.utils.session_logger import SessionLogger
@@ -658,7 +658,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_thread: Optional[VideoThread] = None
         self.camera_thread: Optional[CameraThread] = None
         self.obs_thread: Optional[OBSCameraThread] = None
-        self.obs_bytetrack_thread: Optional[WebcamByteTrackThread] = None
+        self.obs_bytetrack_thread: Optional[CameraByteTrackThread] = None
         self.dual_sync_thread: Optional[DualSourceCameraThread] = None
         self.video_fps: float = 30.0
         self.tts_mode: str = "none"
@@ -1216,7 +1216,7 @@ class MainWindow(QtWidgets.QMainWindow):
         print(f"[CameraTrack] 使用實體攝影機 index {cam_idx}")
 
         self.camera_start_time = time.time()
-        self.obs_bytetrack_thread = WebcamByteTrackThread(
+        self.obs_bytetrack_thread = CameraByteTrackThread(
             ckpt_path              = ckpt_path,
             exp_file               = exp_file,
             bytetrack_repo         = repo_path,

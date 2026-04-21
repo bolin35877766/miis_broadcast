@@ -6,12 +6,13 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
 
 ## Features
 
-- **Five input modes**:
+- **Six input modes**:
   - Video file playback
   - Live camera feed (Auto-detects physical webcams, skips OBS Virtual Camera)
   - OBS Virtual Camera stream
-  - VR headset stream — Meta Quest via Quest Link → OBS Virtual Camera (plain stream or with subject tracking)
-  - Integrated ByteTrack subject tracking (Available for webcam, OBS Virtual Camera, and VR sources)
+  - VR headset stream — Meta Quest via Quest Link → OBS Virtual Camera (plain stream)
+  - Integrated ByteTrack subject tracking (physical webcam only)
+  - **VR & Webcam synchronized dual-source** — side-by-side `1280×480` composite with sub-millisecond frame alignment
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
@@ -35,7 +36,7 @@ Video File  ──────────────────────�
                                               │
 Live Camera ─────────────────────────► CameraThread
                                               │
-WebcamByteTrackThread ────────────────────┤
+CameraByteTrackThread ────────────────────┤
  (YOLOX + BYTETracker)                        │
  (subject crop 640×480) ───────────────────┘
                                               │
@@ -56,7 +57,7 @@ Key modules:
 |---|---|
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel, control widgets |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
-| [src/miis_broadcast/workers/obs_bytetrack.py](src/miis_broadcast/workers/obs_bytetrack.py) | OBS Virtual Camera + YOLOX/BYTETracker subject tracking worker |
+| [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |
 | [src/miis_broadcast/core/models/bytetrack_tracker.py](src/miis_broadcast/core/models/bytetrack_tracker.py) | ByteTrackWrapper — YOLOX inference, BYTETracker association, subject crop extraction |
 | [src/miis_broadcast/core/models/livecc_transformers.py](src/miis_broadcast/core/models/livecc_transformers.py) | LiveCCInfer — model loading, streaming inference, KV-cache management |
 | [src/miis_broadcast/core/models/openai_tts.py](src/miis_broadcast/core/models/openai_tts.py) | OpenAI Realtime WebSocket TTS engine |
@@ -193,51 +194,15 @@ python -m miis_broadcast
 
 #### Subject Tracking behavior
 
-- Supports both physical webcams and OBS Virtual Camera sources.
-- YOLOX detects all people in the frame each tick; BYTETracker assigns persistent IDs.
-- The subject with the largest weighted score (area / centre distance) is locked as the primary subject.
-- The subject's bounding box is padded by 15% and cropped, then resized to 640×480 before being forwarded to LiveCC.
-- If a new person enters the frame with more than 4× the current subject's area, tracking switches automatically.
-- When no valid subject is detected, frames are not forwarded to LiveCC (prevents empty-scene descriptions).
-- Automated color space handling ensures correct channel display (no blue faces) during high-speed tracking.
+See [src/miis_broadcast/workers/README.md](src/miis_broadcast/workers/README.md) for full details.
 
 ---
 
 ## Input Source Interface (For Backend Engineers)
 
-All input-source logic is decoupled from the UI through Qt signals defined on `ControlPanel`. Each signal maps to a dedicated slot in `MainWindow` which starts the corresponding `QThread` worker.
+Full documentation — including signal/slot mapping, frame emission contracts, dual-source sync architecture, subject tracking behaviour, and a step-by-step guide for adding new sources — is in:
 
-### Signal → Slot → Thread mapping
-
-| `ControlPanel` Signal | `MainWindow` Slot | QThread started | Mode string |
-|---|---|---|---|
-| `requestOpenVideo` | `on_open_video_clicked()` | `VideoThread` | `"file"` |
-| `requestOpenCamera` | `on_open_camera_clicked()` | `CameraThread` | `"camera"` |
-| `requestOpenCameraTrack` | `on_open_camera_track_clicked()` | `WebcamByteTrackThread` | `"obs_track"` |
-| `requestOpenOBS` | `on_open_obs_clicked()` | `OBSCameraThread` | `"obs"` |
-
-### Frame emission signals
-
-Each source thread emits one or two frame signals that `MainWindow` connects to:
-
-| Thread | Signal | Payload | Connected to |
-|---|---|---|---|
-| `VideoThread` | `signal_frame` | `(frame_rgb: np.ndarray, frame_idx: int, fps: float)` | `on_video_frame()` |
-| `CameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` |
-| `OBSCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` — used by **VR (OBS Virtual Camera)** mode |
-| `WebcamByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` — used by **Webcam + Tracking** mode |
-| `WebcamByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
-
-### How to add a new input source
-
-1. **Define a new `QThread` subclass** in `src/miis_broadcast/workers/` that emits `signal_frame` (and optionally `signal_subject_frame`) with the same payload convention as the table above.
-2. **Add a `QtCore.Signal()`** to `ControlPanel` (e.g. `requestOpenNewSource = QtCore.Signal()`).
-3. **Wire up the menu action** in `ControlPanel.setup_ui()` to emit the new signal.
-4. **Add a slot** `on_open_new_source_clicked()` in `MainWindow` that calls `_stop_all_source_threads()`, instantiates the new thread, connects its signals, and starts it.
-5. **Register the thread** in `_stop_all_source_threads()` with the same `wait(3000) + terminate()` pattern to ensure clean shutdown on mode switch.
-6. **Connect the new signal** in `MainWindow._initUI()` alongside the existing signal connections.
-
-> **Important:** Always call `_stop_all_source_threads()` before starting a new source thread. This disconnects residual frame signals and prevents ghost frames after switching.
+👉 [src/miis_broadcast/workers/README.md](src/miis_broadcast/workers/README.md)
 
 ---
 
