@@ -17,6 +17,7 @@ from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.openai_tts import OpenAITTSWorker
 from .workers.obs_input import OBSCameraThread
 from .workers.obs_bytetrack import WebcamByteTrackThread
+from .workers.dual_source import DualSourceCameraThread
 from .core.prompt.prompt_manager import PromptManager
 from .core.utils.session_logger import SessionLogger
 from collections import deque
@@ -267,6 +268,7 @@ class ControlPanel(QtWidgets.QWidget):
     requestOpenCamera     = QtCore.Signal()
     requestOpenCameraTrack = QtCore.Signal()   # webcam + ByteTrack
     requestOpenOBS        = QtCore.Signal()
+    requestOpenDualSync   = QtCore.Signal()    # Webcam + VR side-by-side
     requestStart          = QtCore.Signal()
     requestFontScale      = QtCore.Signal(int)
 
@@ -349,6 +351,9 @@ class ControlPanel(QtWidgets.QWidget):
 
         # Mode 3: VR via OBS Virtual Camera (no tracking needed)
         menu_online.addAction("🥽  VR (OBS Virtual Camera)", lambda: self.requestOpenOBS.emit())
+
+        # Mode 4: Dual source sync — Webcam (idx 0) + VR/OBS (idx 5), side-by-side
+        menu_online.addAction("🎮  VR & Webcam (Sync)",      lambda: self.requestOpenDualSync.emit())
 
         self.btn_online.setMenu(menu_online)
 
@@ -614,8 +619,8 @@ class ControlPanel(QtWidgets.QWidget):
         self.btn_start.style().unpolish(self.btn_start)
         self.btn_start.style().polish(self.btn_start)
         # Disable source buttons during inference to prevent switching mid-session
-        self.btn_computer.setEnabled(not running)
-        self.btn_obs_main.setEnabled(not running)
+        self.btn_offline.setEnabled(not running)
+        self.btn_online.setEnabled(not running)
 
 
 # ============================================================
@@ -654,6 +659,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.camera_thread: Optional[CameraThread] = None
         self.obs_thread: Optional[OBSCameraThread] = None
         self.obs_bytetrack_thread: Optional[WebcamByteTrackThread] = None
+        self.dual_sync_thread: Optional[DualSourceCameraThread] = None
         self.video_fps: float = 30.0
         self.tts_mode: str = "none"
 
@@ -884,6 +890,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.requestOpenCamera.connect(self.on_open_camera_clicked)
         self.control_panel.requestOpenCameraTrack.connect(self.on_open_camera_track_clicked)
         self.control_panel.requestOpenOBS.connect(self.on_open_obs_clicked)
+        self.control_panel.requestOpenDualSync.connect(self.on_open_dual_sync_clicked)
         self.control_panel.requestStart.connect(self.on_start_clicked)
         self.control_panel.requestFontScale.connect(self.on_font_scale_request)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
@@ -1132,6 +1139,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.obs_bytetrack_thread.terminate()
                 self.obs_bytetrack_thread.wait(1000)
             self.obs_bytetrack_thread = None
+        if self.dual_sync_thread:
+            self.dual_sync_thread.requestStop()
+            try:
+                self.dual_sync_thread.signal_frame.disconnect()
+            except RuntimeError:
+                pass
+            if not self.dual_sync_thread.wait(3000):
+                self.dual_sync_thread.terminate()
+                self.dual_sync_thread.wait(1000)
+            self.dual_sync_thread = None
 
     @QtCore.Slot()
     def on_open_camera_clicked(self) -> None:
@@ -1226,6 +1243,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
 
+    @QtCore.Slot()
+    def on_open_dual_sync_clicked(self) -> None:
+        """Switch to synchronized dual-source mode: Webcam (idx 0) + VR/OBS (idx 5)."""
+        self.stop_inference()
+        self.mode = "dual_sync"
+        self.current_video_path = "Dual Source: Webcam + VR"
+        self.control_panel.set_status("Mode: VR & Webcam (Sync)")
+        self.append_text("Switched to Dual Source Sync mode (Webcam + VR side-by-side)")
+        self.append_text("已切換至雙路同步模式 (Webcam + VR 左右拼接)")
+        self._stop_all_source_threads()
+
+        self.camera_start_time = time.time()
+        self.dual_sync_thread = DualSourceCameraThread(cam_idx=0, vr_idx=5)
+        self.dual_sync_thread.signal_frame.connect(self.on_camera_frame)
+        self.dual_sync_thread.signal_error.connect(self.on_error)
+        self.dual_sync_thread.start()
+
+        self.video_panel.slider.setEnabled(False)
+        self._update_start_button_state()
+
     def _apply_tts_settings_before_start(self) -> None:
         """Apply TTS settings according to current mode"""
         self.tts_mode = self.control_panel.get_tts_mode()
@@ -1294,7 +1331,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.start()
             self.signal_start_livecc.emit(self.current_video_path, prompt)
 
-        elif self.mode in ("camera", "obs", "obs_track"):
+        elif self.mode in ("camera", "obs", "obs_track", "dual_sync"):
             self.signal_start_camera_livecc.emit(prompt)
 
     def stop_inference(self) -> None:
@@ -1333,6 +1370,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.obs_bytetrack_thread.wait(1000)
             self.obs_bytetrack_thread = None
 
+        if self.mode == "dual_sync" and self.dual_sync_thread is not None:
+            self.dual_sync_thread.requestStop()
+            if not self.dual_sync_thread.wait(3000):
+                self.dual_sync_thread.terminate()
+                self.dual_sync_thread.wait(1000)
+            self.dual_sync_thread = None
+
         self.is_inference_running = False
         self.control_panel.set_start_button_state(False)
         self.control_panel.set_tts_controls_enabled(True)  # Unlock after stop
@@ -1351,7 +1395,7 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
         self.video_panel.update_frame(frame_rgb)
-        if self.is_inference_running and self.mode in ("camera", "obs"):
+        if self.is_inference_running and self.mode in ("camera", "obs", "dual_sync"):
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             t_relative = time.time() - self.camera_start_time
             self.cam_worker.push_frame(frame_bgr, t_relative)

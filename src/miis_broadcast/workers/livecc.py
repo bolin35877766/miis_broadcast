@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from PySide6 import QtCore
 import logging
 
@@ -10,7 +10,17 @@ from typing import Deque, Dict, Any, Tuple
 
 import numpy as np
 import time
-from ..core.models.livecc_transformers import LiveCCInfer, print_final_stats
+
+if TYPE_CHECKING:
+    from ..core.models.livecc_transformers import LiveCCInfer
+
+try:
+    from ..core.models.livecc_transformers import LiveCCInfer, print_final_stats
+    _LIVECC_AVAILABLE = True
+except ImportError:
+    _LIVECC_AVAILABLE = False
+    def print_final_stats(*args, **kwargs): pass  # no-op fallback
+
 from ..core.models.openai_tts import print_tts_stats
 
  
@@ -29,7 +39,7 @@ class LiveCCWorker(QtCore.QObject):
     def __init__(self, device_id: int = 0, parent: Optional[QtCore.QObject] = None) -> None:
         super().__init__(parent)
         self.device_id = device_id
-        self.livecc: Optional[LiveCCInfer] = None
+        self.livecc: Optional[Any] = None
         self._stop_requested = False
 
     @QtCore.Slot()
@@ -143,7 +153,9 @@ class FrameItem:
     t: float           # 收到 frame 的時間（秒）
     frame: np.ndarray  # BGR frame（cv2.VideoCapture 出來的）
 
-from ..core.models.livecc_transformers import VideoClip
+if TYPE_CHECKING:
+    from ..core.models.livecc_transformers import VideoClip
+
 def build_clip_from_buffer(
     buffer: Deque[FrameItem],
     window_sec: float,
@@ -231,7 +243,7 @@ class LiveCCCameraWorker(QtCore.QObject):
         self.target_fps = target_fps
         self.infer_interval = infer_interval
 
-        self.livecc: Optional[LiveCCInfer] = None
+        self.livecc: Optional[Any] = None
         self._stop_requested = False
 
         self._buffer: Deque[FrameItem] = deque(maxlen=180)
