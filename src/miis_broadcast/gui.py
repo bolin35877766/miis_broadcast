@@ -329,54 +329,32 @@ class ControlPanel(QtWidgets.QWidget):
             }
         """
 
-        # ── 電腦 button ──────────────────────────────────────────────────
-        self.btn_computer = QtWidgets.QPushButton("💻  電腦  ▾")
-        self.btn_computer.setStyleSheet(btn_style)
+        # ── Button 1: Offline video input ────────────────────────────────
+        self.btn_offline = QtWidgets.QPushButton("📁  Offline")
+        self.btn_offline.setStyleSheet(btn_style)
+        self.btn_offline.clicked.connect(lambda: self.requestOpenVideo.emit())
 
-        menu_computer = QtWidgets.QMenu(self.btn_computer)
-        menu_computer.setStyleSheet(menu_style)
-        menu_computer.addAction("🎬  影片上傳",    lambda: self.requestOpenVideo.emit())
+        # ── Button 2: Online live input (dropdown with 3 sub-modes) ──────
+        self.btn_online = QtWidgets.QPushButton("🌐  Online  ▾")
+        self.btn_online.setStyleSheet(btn_style)
 
-        submenu_webcam = menu_computer.addMenu("📷  Webcam")
-        submenu_webcam.setStyleSheet(menu_style)
-        submenu_webcam.addAction("⬜  Plain Stream",       lambda: self.requestOpenCamera.emit())
-        submenu_webcam.addAction("🎯  Stream + Track",  lambda: self.requestOpenCameraTrack.emit())
+        menu_online = QtWidgets.QMenu(self.btn_online)
+        menu_online.setStyleSheet(menu_style)
 
-        self.btn_computer.setMenu(menu_computer)
+        # Mode 1: Webcam without tracking
+        menu_online.addAction("📷  Webcam",             lambda: self.requestOpenCamera.emit())
+        # Mode 2: Webcam with ByteTrack subject tracking
+        menu_online.addAction("🎯  Webcam + Tracking",  lambda: self.requestOpenCameraTrack.emit())
 
-        # ── OBS button ───────────────────────────────────────────────────
-        self.btn_obs_main = QtWidgets.QPushButton("🎙  OBS  ▾")
-        self.btn_obs_main.setStyleSheet(btn_style)
+        menu_online.addSeparator()
 
-        menu_obs = QtWidgets.QMenu(self.btn_obs_main)
-        menu_obs.setStyleSheet(menu_style)
+        # Mode 3: VR via OBS Virtual Camera (no tracking needed)
+        menu_online.addAction("🥽  VR (OBS Virtual Camera)", lambda: self.requestOpenOBS.emit())
 
-        # OBS camera stream (direct physical camera connection, bypasses OBS Virtual Camera)
-        submenu_camstream = menu_obs.addMenu("📡  Direct Camera")
-        submenu_camstream.setStyleSheet(menu_style)
-        submenu_camstream.addAction("⬜  Plain Stream",       lambda: self.requestOpenCamera.emit())
-        submenu_camstream.addAction("🎯  Stream + Track",  lambda: self.requestOpenCameraTrack.emit())
+        self.btn_online.setMenu(menu_online)
 
-        menu_obs.addSeparator()
-
-        # OBS Virtual Camera
-        submenu_virtual = menu_obs.addMenu("🖥  Virtual Camera")
-        submenu_virtual.setStyleSheet(menu_style)
-        submenu_virtual.addAction("⬜  Plain OBS",       lambda: self.requestOpenOBS.emit())
-        submenu_virtual.addAction("🎯  OBS + Track",   lambda: self.requestOpenOBSTrack.emit())
-
-        menu_obs.addSeparator()
-
-        # VR (Meta Quest via OBS Virtual Camera)
-        submenu_vr = menu_obs.addMenu("🥽  VR")
-        submenu_vr.setStyleSheet(menu_style)
-        submenu_vr.addAction("⬜  Plain VR",       lambda: self.requestOpenOBS.emit())
-        submenu_vr.addAction("🎯  VR + Track",     lambda: self.requestOpenOBSTrack.emit())
-
-        self.btn_obs_main.setMenu(menu_obs)
-
-        btn_row.addWidget(self.btn_computer)
-        btn_row.addWidget(self.btn_obs_main)
+        btn_row.addWidget(self.btn_offline)
+        btn_row.addWidget(self.btn_online)
 
         self.lbl_status = QtWidgets.QLabel("Status: Not Loaded")
         self.lbl_status.setStyleSheet("color: #b5b5b5;")
