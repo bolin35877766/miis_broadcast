@@ -215,7 +215,7 @@ All input-source logic is decoupled from the UI through Qt signals defined on `C
 | `requestOpenCamera` | `on_open_camera_clicked()` | `CameraThread` | `"camera"` |
 | `requestOpenCameraTrack` | `on_open_camera_track_clicked()` | `OBSByteTrackThread` | `"obs_track"` |
 | `requestOpenOBS` | `on_open_obs_clicked()` | `OBSCameraThread` | `"obs"` |
-| `requestOpenOBSTrack` | `on_open_obs_track_clicked()` | `OBSByteTrackThread` | `"obs_track"` |
+| ~~`requestOpenOBSTrack`~~ | ~~`on_open_obs_track_clicked()`~~ | ~~`OBSByteTrackThread`~~ | ~~`"obs_track"`~~ — **deprecated, not wired to any UI entry** |
 
 ### Frame emission signals
 
@@ -225,8 +225,8 @@ Each source thread emits one or two frame signals that `MainWindow` connects to:
 |---|---|---|---|
 | `VideoThread` | `signal_frame` | `(frame_rgb: np.ndarray, frame_idx: int, fps: float)` | `on_video_frame()` |
 | `CameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` |
-| `OBSCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` |
-| `OBSByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` |
+| `OBSCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` — used by **VR (OBS Virtual Camera)** mode |
+| `OBSByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` — used by **Webcam + Tracking** mode |
 | `OBSByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
 
 ### How to add a new input source
