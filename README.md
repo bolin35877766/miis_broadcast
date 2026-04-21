@@ -179,13 +179,12 @@ python -m miis_broadcast
 
 ### In the GUI
 
-1. **Select input** — choose one of the available modes:
-   - **Video file** — open a local video file
-   - **Computer -> Webcam** — use a connected physical webcam (auto-detects real cameras)
-   - **OBS -> Direct Camera** — use a camera source directly without going through OBS software
-   - **OBS -> Virtual Camera** — use the live output from OBS Virtual Camera
-   - **OBS -> VR** — stream Meta Quest VR footage via Quest Link → OBS Virtual Camera; choose `Plain VR` for raw stream or `VR + Track` for subject tracking
-   - **Tracking Modes** — Select `Stream + Track` or `VR + Track` under any source to enable subject-aware commentary
+1. **Select input** — two buttons in the Source panel:
+   - **📁 Offline** — click to open a local video file
+   - **🌐 Online ▾** — dropdown with three live input modes:
+     - **📷 Webcam** — physical webcam, plain stream (auto-skips OBS Virtual Camera)
+     - **🎯 Webcam + Tracking** — physical webcam with ByteTrack subject tracking
+     - **🥽 VR (OBS Virtual Camera)** — Meta Quest via Quest Link → OBS Virtual Camera, plain stream
 2. **Choose a commentary style** from the dropdown
 3. **Select TTS backend** — OpenAI Realtime or ChatterBox Local (Note: ChatterBox may be disabled in some environments)
 4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s to load). The ByteTrack model preloads in the background automatically, so switching to any tracking mode after startup is instant.
@@ -201,6 +200,45 @@ python -m miis_broadcast
 - If a new person enters the frame with more than 4× the current subject's area, tracking switches automatically.
 - When no valid subject is detected, frames are not forwarded to LiveCC (prevents empty-scene descriptions).
 - Automated color space handling ensures correct channel display (no blue faces) during high-speed tracking.
+
+---
+
+## Input Source Interface (For Backend Engineers)
+
+All input-source logic is decoupled from the UI through Qt signals defined on `ControlPanel`. Each signal maps to a dedicated slot in `MainWindow` which starts the corresponding `QThread` worker.
+
+### Signal → Slot → Thread mapping
+
+| `ControlPanel` Signal | `MainWindow` Slot | QThread started | Mode string |
+|---|---|---|---|
+| `requestOpenVideo` | `on_open_video_clicked()` | `VideoThread` | `"file"` |
+| `requestOpenCamera` | `on_open_camera_clicked()` | `CameraThread` | `"camera"` |
+| `requestOpenCameraTrack` | `on_open_camera_track_clicked()` | `OBSByteTrackThread` | `"obs_track"` |
+| `requestOpenOBS` | `on_open_obs_clicked()` | `OBSCameraThread` | `"obs"` |
+| `requestOpenOBSTrack` | `on_open_obs_track_clicked()` | `OBSByteTrackThread` | `"obs_track"` |
+
+### Frame emission signals
+
+Each source thread emits one or two frame signals that `MainWindow` connects to:
+
+| Thread | Signal | Payload | Connected to |
+|---|---|---|---|
+| `VideoThread` | `signal_frame` | `(frame_rgb: np.ndarray, frame_idx: int, fps: float)` | `on_video_frame()` |
+| `CameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` |
+| `OBSCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` |
+| `OBSByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` |
+| `OBSByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
+
+### How to add a new input source
+
+1. **Define a new `QThread` subclass** in `src/miis_broadcast/workers/` that emits `signal_frame` (and optionally `signal_subject_frame`) with the same payload convention as the table above.
+2. **Add a `QtCore.Signal()`** to `ControlPanel` (e.g. `requestOpenNewSource = QtCore.Signal()`).
+3. **Wire up the menu action** in `ControlPanel.setup_ui()` to emit the new signal.
+4. **Add a slot** `on_open_new_source_clicked()` in `MainWindow` that calls `_stop_all_source_threads()`, instantiates the new thread, connects its signals, and starts it.
+5. **Register the thread** in `_stop_all_source_threads()` with the same `wait(3000) + terminate()` pattern to ensure clean shutdown on mode switch.
+6. **Connect the new signal** in `MainWindow._initUI()` alongside the existing signal connections.
+
+> **Important:** Always call `_stop_all_source_threads()` before starting a new source thread. This disconnects residual frame signals and prevents ghost frames after switching.
 
 ---
 
