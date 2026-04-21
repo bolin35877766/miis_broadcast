@@ -21,9 +21,9 @@ from ..core.io.obs_input import OBSVirtualCameraInput
 from ..core.models.bytetrack_tracker import ByteTrackWrapper
 
 
-class OBSByteTrackThread(QtCore.QThread):
+class WebcamByteTrackThread(QtCore.QThread):
     """
-    QThread: OBS Virtual Camera → YOLOX + BYTETracker → LiveCC-ready crop.
+    QThread: Physical Webcam → YOLOX + BYTETracker → LiveCC-ready crop.
 
     Two output signals
     ------------------

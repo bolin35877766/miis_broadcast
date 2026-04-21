@@ -35,9 +35,9 @@ Video File  ──────────────────────�
                                               │
 Live Camera ─────────────────────────► CameraThread
                                               │
-OBS Virtual Camera ─► OBSByteTrackThread      │
-                       (YOLOX + BYTETracker)   │
-                       subject crop (640×480) ─┘
+WebcamByteTrackThread ────────────────────┤
+ (YOLOX + BYTETracker)                        │
+ (subject crop 640×480) ───────────────────┘
                                               │
                                               ▼
                              LiveCCWorker / LiveCCCameraWorker
@@ -213,7 +213,7 @@ All input-source logic is decoupled from the UI through Qt signals defined on `C
 |---|---|---|---|
 | `requestOpenVideo` | `on_open_video_clicked()` | `VideoThread` | `"file"` |
 | `requestOpenCamera` | `on_open_camera_clicked()` | `CameraThread` | `"camera"` |
-| `requestOpenCameraTrack` | `on_open_camera_track_clicked()` | `OBSByteTrackThread` | `"obs_track"` |
+| `requestOpenCameraTrack` | `on_open_camera_track_clicked()` | `WebcamByteTrackThread` | `"obs_track"` |
 | `requestOpenOBS` | `on_open_obs_clicked()` | `OBSCameraThread` | `"obs"` |
 
 ### Frame emission signals
@@ -225,8 +225,8 @@ Each source thread emits one or two frame signals that `MainWindow` connects to:
 | `VideoThread` | `signal_frame` | `(frame_rgb: np.ndarray, frame_idx: int, fps: float)` | `on_video_frame()` |
 | `CameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` |
 | `OBSCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` — used by **VR (OBS Virtual Camera)** mode |
-| `OBSByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` — used by **Webcam + Tracking** mode |
-| `OBSByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
+| `WebcamByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` — used by **Webcam + Tracking** mode |
+| `WebcamByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
 
 ### How to add a new input source
 
