@@ -283,7 +283,23 @@ class ControlPanel(QtWidgets.QWidget):
         self.setup_ui()
 
     def setup_ui(self) -> None:
-        layout = QtWidgets.QVBoxLayout(self)
+        # Outer layout holds only the scroll area so content never clips
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        # Inner container that holds all the GroupBoxes
+        _inner = QtWidgets.QWidget()
+        scroll.setWidget(_inner)
+
+        layout = QtWidgets.QVBoxLayout(_inner)
         layout.setSpacing(16)
         layout.setContentsMargins(14, 14, 14, 14)
 
@@ -613,6 +629,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.lbl_remote_status.setVisible(False)
 
         layout.addStretch(1)
+        # End of inner scroll container
 
         # Signals (source buttons emit directly via menu lambdas)
         self.btn_start.clicked.connect(self.requestStart.emit)
