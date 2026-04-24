@@ -1,3 +1,7 @@
+# Bootstrap: install these first in a fresh venv (required to build some sdists from requirements below)
+setuptools>=65
+wheel
+
 # Core AI (torch/torchvision/torchaudio must be pre-installed on the server)
 # Server uses torch==2.8.0+cu129 — install manually via:
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
