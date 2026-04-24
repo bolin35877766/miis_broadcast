@@ -380,12 +380,32 @@ class ControlPanel(QtWidgets.QWidget):
         btn_row.addWidget(self.btn_offline)
         btn_row.addWidget(self.btn_online)
 
-        self.lbl_status = QtWidgets.QLabel("Status: Not Loaded")
-        self.lbl_status.setStyleSheet("color: #b5b5b5;")
-        self.lbl_status.setWordWrap(True)
-
         v_src.addLayout(btn_row)
-        v_src.addWidget(self.lbl_status)
+
+        # Remote: entry button in Source; host/port/enable live in a dialog
+        self.btn_open_remote = QtWidgets.QPushButton("連線遠端伺服器")
+        self.btn_open_remote.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: 700;
+                border-radius: 10px;
+                padding: 12px 14px;
+            }
+            QPushButton:hover { background-color: #388e3c; }
+            QPushButton:disabled { background-color: #555; color: #999; }
+        """)
+        v_src.addWidget(self.btn_open_remote)
+
+        self.lbl_source_sub = QtWidgets.QLabel("Status: —")
+        self.lbl_source_sub.setStyleSheet("color: #b5b5b5; font-size: 12px;")
+        self.lbl_source_sub.setWordWrap(True)
+        v_src.addWidget(self.lbl_source_sub)
+
+        self.lbl_remote_badge = QtWidgets.QLabel("● 未連線")
+        self.lbl_remote_badge.setStyleSheet("color: #888; font-size: 12px;")
+        v_src.addWidget(self.lbl_remote_badge)
+
         layout.addWidget(grp_source)
 
         # Settings
@@ -558,18 +578,39 @@ class ControlPanel(QtWidgets.QWidget):
         v_act.addWidget(self.btn_start)
         layout.addWidget(grp_action)
 
-        # Remote Server GroupBox
-        grp_remote = QtWidgets.QGroupBox("遠端伺服器 (Remote Server)")
-        v_remote = QtWidgets.QVBoxLayout(grp_remote)
-        v_remote.setSpacing(10)
-        v_remote.setContentsMargins(14, 18, 14, 12)
+        self._init_remote_server_dialog()
+        layout.addStretch(1)
+        # End of inner scroll container
 
-        # Toggle checkbox
+        # Signals (source buttons emit directly via menu lambdas)
+        self.btn_start.clicked.connect(self.requestStart.emit)
+
+        self.slider_speed.valueChanged.connect(lambda v: self.lbl_speed_val.setText(f"{v/100:.1f}x"))
+        self.slider_exag.valueChanged.connect(lambda v: self.lbl_exag_val.setText(f"{v/100:.1f}"))
+        self.slider_cfg.valueChanged.connect(lambda v: self.lbl_cfg_val.setText(f"{v/100:.1f}"))
+        self.slider_ui_scale.valueChanged.connect(self.on_font_scale_changed)
+
+        # 模式切換顯示/隱藏
+        self.cmb_tts.currentIndexChanged.connect(self._refresh_tts_controls_visibility)
+        self._refresh_tts_controls_visibility()
+
+        self.btn_open_remote.clicked.connect(self._show_remote_dialog)
+
+    def _init_remote_server_dialog(self) -> None:
+        # Host/port/enable/connection controls (no spin arrows on port)
+        self._remote_dialog = QtWidgets.QDialog(self)
+        self._remote_dialog.setWindowTitle("遠端伺服器 (Remote server)")
+        self._remote_dialog.setWindowModality(QtCore.Qt.NonModal)
+        self._remote_dialog.setMinimumWidth(380)
+
+        dlay = QtWidgets.QVBoxLayout(self._remote_dialog)
+        dlay.setContentsMargins(16, 16, 16, 16)
+        dlay.setSpacing(10)
+
         self.chk_remote = QtWidgets.QCheckBox("啟用遠端推論 (Use Remote Inference)")
         self.chk_remote.setStyleSheet("color: #dedede;")
-        v_remote.addWidget(self.chk_remote)
+        dlay.addWidget(self.chk_remote)
 
-        # Host / Port row
         self._remote_settings_widget = QtWidgets.QWidget()
         remote_form = QtWidgets.QFormLayout(self._remote_settings_widget)
         remote_form.setSpacing(8)
@@ -586,19 +627,17 @@ class ControlPanel(QtWidgets.QWidget):
         lbl_host.setStyleSheet(lbl_host_style)
         remote_form.addRow(lbl_host, self.edit_remote_host)
 
-        self.spin_remote_port = QtWidgets.QSpinBox()
-        self.spin_remote_port.setRange(1, 65535)
-        self.spin_remote_port.setValue(9000)
-        self.spin_remote_port.setStyleSheet(
-            "QSpinBox { background:#333; border-radius:6px; padding:4px 8px; }"
+        self.edit_remote_port = QtWidgets.QLineEdit("9000")
+        self.edit_remote_port.setValidator(QtGui.QIntValidator(1, 65535, self))
+        self.edit_remote_port.setStyleSheet(
+            "QLineEdit { background:#333; border-radius:6px; padding:4px 8px; }"
         )
         lbl_port = QtWidgets.QLabel("Port:")
         lbl_port.setStyleSheet(lbl_host_style)
-        remote_form.addRow(lbl_port, self.spin_remote_port)
+        remote_form.addRow(lbl_port, self.edit_remote_port)
 
-        v_remote.addWidget(self._remote_settings_widget)
+        dlay.addWidget(self._remote_settings_widget)
 
-        # Connect / Disconnect button
         self.btn_remote_connect = QtWidgets.QPushButton("連線 (Connect)")
         self.btn_remote_connect.setStyleSheet("""
             QPushButton {
@@ -615,37 +654,25 @@ class ControlPanel(QtWidgets.QWidget):
             }
             QPushButton[connected="true"]:hover { background-color: #c62828; }
         """)
-        v_remote.addWidget(self.btn_remote_connect)
+        dlay.addWidget(self.btn_remote_connect)
 
         self.lbl_remote_status = QtWidgets.QLabel("● 未連線")
         self.lbl_remote_status.setStyleSheet("color: #888; font-size: 11px;")
-        v_remote.addWidget(self.lbl_remote_status)
+        dlay.addWidget(self.lbl_remote_status)
 
-        layout.addWidget(grp_remote)
-
-        # Initially hide settings until checkbox is checked
         self._remote_settings_widget.setVisible(False)
         self.btn_remote_connect.setVisible(False)
         self.lbl_remote_status.setVisible(False)
 
-        layout.addStretch(1)
-        # End of inner scroll container
-
-        # Signals (source buttons emit directly via menu lambdas)
-        self.btn_start.clicked.connect(self.requestStart.emit)
-
-        self.slider_speed.valueChanged.connect(lambda v: self.lbl_speed_val.setText(f"{v/100:.1f}x"))
-        self.slider_exag.valueChanged.connect(lambda v: self.lbl_exag_val.setText(f"{v/100:.1f}"))
-        self.slider_cfg.valueChanged.connect(lambda v: self.lbl_cfg_val.setText(f"{v/100:.1f}"))
-        self.slider_ui_scale.valueChanged.connect(self.on_font_scale_changed)
-
-        # 模式切換顯示/隱藏
-        self.cmb_tts.currentIndexChanged.connect(self._refresh_tts_controls_visibility)
-        self._refresh_tts_controls_visibility()
-
-        # Remote toggle
         self.chk_remote.toggled.connect(self._on_remote_toggle)
         self.btn_remote_connect.clicked.connect(self._on_remote_connect_clicked)
+
+    @QtCore.Slot()
+    def _show_remote_dialog(self) -> None:
+        if self._remote_dialog is not None:
+            self._remote_dialog.show()
+            self._remote_dialog.raise_()
+            self._remote_dialog.activateWindow()
 
     # ---------------- ControlPanel Helpers ----------------
 
@@ -662,7 +689,7 @@ class ControlPanel(QtWidgets.QWidget):
             self.requestRemoteDisconnect.emit()
         else:
             host = self.edit_remote_host.text().strip() or "127.0.0.1"
-            port = self.spin_remote_port.value()
+            port = self.get_remote_port()
             self.requestRemoteConnect.emit(host, port)
 
     def set_remote_connected(self, connected: bool, status_text: str = "") -> None:
@@ -671,13 +698,25 @@ class ControlPanel(QtWidgets.QWidget):
             self.btn_remote_connect.setProperty("connected", True)
             self.lbl_remote_status.setText(f"● {status_text or '已連線'}")
             self.lbl_remote_status.setStyleSheet("color: #66bb6a; font-size: 11px;")
+            st = f"{self.get_remote_host()}:{self.get_remote_port()}"
+            self.lbl_remote_badge.setText(f"● 已連線  {st}")
+            self.lbl_remote_badge.setStyleSheet("color: #66bb6a; font-size: 12px;")
         else:
             self.btn_remote_connect.setText("連線 (Connect)")
             self.btn_remote_connect.setProperty("connected", False)
             self.lbl_remote_status.setText(f"● {status_text or '未連線'}")
             self.lbl_remote_status.setStyleSheet("color: #888; font-size: 11px;")
+            t = status_text or "未連線"
+            self.lbl_remote_badge.setText(f"● {t}")
+            self.lbl_remote_badge.setStyleSheet("color: #888; font-size: 12px;")
         self.btn_remote_connect.style().unpolish(self.btn_remote_connect)
         self.btn_remote_connect.style().polish(self.btn_remote_connect)
+
+    def set_remote_connecting(self) -> None:
+        self.lbl_remote_status.setText("● 連線中…")
+        self.lbl_remote_status.setStyleSheet("color: #ffa726; font-size: 11px;")
+        self.lbl_remote_badge.setText("● 連線中…")
+        self.lbl_remote_badge.setStyleSheet("color: #ffa726; font-size: 12px;")
 
     def is_remote_mode(self) -> bool:
         return self.chk_remote.isChecked()
@@ -686,7 +725,12 @@ class ControlPanel(QtWidgets.QWidget):
         return self.edit_remote_host.text().strip() or "127.0.0.1"
 
     def get_remote_port(self) -> int:
-        return self.spin_remote_port.value()
+        try:
+            t = (self.edit_remote_port.text() or "9000").strip()
+            v = int(t)
+        except ValueError:
+            v = 9000
+        return max(1, min(65535, v))
 
     def _refresh_tts_controls_visibility(self) -> None:
         mode = self.get_tts_mode()
@@ -741,7 +785,7 @@ class ControlPanel(QtWidgets.QWidget):
         return float(self.slider_cfg.value()) / 100.0
 
     def set_status(self, text: str) -> None:
-        self.lbl_status.setText(f"Status: {text}")
+        self.lbl_source_sub.setText(f"Status: {text}")
 
     def set_start_button_state(self, running: bool) -> None:
         if running:
@@ -755,6 +799,7 @@ class ControlPanel(QtWidgets.QWidget):
         # Disable source buttons during inference to prevent switching mid-session
         self.btn_offline.setEnabled(not running)
         self.btn_online.setEnabled(not running)
+        self.btn_open_remote.setEnabled(not running)
 
 
 # ============================================================
@@ -834,13 +879,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.control_panel.chk_remote.setChecked(True)
             self.control_panel.chk_remote.setEnabled(False)
             self.control_panel.edit_remote_host.setText(host)
-            self.control_panel.spin_remote_port.setValue(port)
+            self.control_panel.edit_remote_port.setText(str(port))
         elif remote_cfg.get("enabled", False):
             host = str(remote_cfg.get("host", "127.0.0.1"))
             port = int(remote_cfg.get("port", 9000))
             self.control_panel.chk_remote.setChecked(True)
             self.control_panel.edit_remote_host.setText(host)
-            self.control_panel.spin_remote_port.setValue(port)
+            self.control_panel.edit_remote_port.setText(str(port))
 
         # Pre-load ByteTrack on this machine only when local inference is allowed
         if not self._client_only and not self._remote_mode:
@@ -1070,7 +1115,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.livecc_worker.signal_model_loaded.emit()
         else:
             self.statusBar().showMessage("遠端推論用戶端：請先連線遠端伺服器後再開始播報", 0)
-            self.control_panel.set_status("請連線遠端伺服器 (Connect to remote server)")
+            self.control_panel.set_status("請點「連線遠端伺服器」按鈕設定 Host/Port 並連線")
 
         # Remote control panel signals
         self.control_panel.requestRemoteConnect.connect(self.on_remote_connect_clicked)
@@ -1155,8 +1200,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._socket_runner = None
 
         self.append_text(f"[Remote] 正在連線至 {host}:{port}…")
-        self.control_panel.lbl_remote_status.setText("● 連線中…")
-        self.control_panel.lbl_remote_status.setStyleSheet("color: #ffa726; font-size: 11px;")
+        self.control_panel.set_remote_connecting()
 
         runner = SocketClientRunner(host, port, parent=self)
         runner.signal_connected.connect(self.on_remote_connected)
