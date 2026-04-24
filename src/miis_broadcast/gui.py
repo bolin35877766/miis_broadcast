@@ -20,6 +20,7 @@ from .workers.camera_bytetrack import CameraByteTrackThread
 from .workers.dual_source import DualSourceCameraThread
 from .core.prompt.prompt_manager import PromptManager
 from .core.utils.session_logger import SessionLogger
+from .network.client import SocketClientRunner
 from collections import deque
 
 # ============================================================
@@ -264,13 +265,15 @@ class VideoPanel(QtWidgets.QWidget):
 
 
 class ControlPanel(QtWidgets.QWidget):
-    requestOpenVideo      = QtCore.Signal()
-    requestOpenCamera     = QtCore.Signal()
+    requestOpenVideo       = QtCore.Signal()
+    requestOpenCamera      = QtCore.Signal()
     requestOpenCameraTrack = QtCore.Signal()   # webcam + ByteTrack
-    requestOpenOBS        = QtCore.Signal()
-    requestOpenDualSync   = QtCore.Signal()    # Webcam + VR side-by-side
-    requestStart          = QtCore.Signal()
-    requestFontScale      = QtCore.Signal(int)
+    requestOpenOBS         = QtCore.Signal()
+    requestOpenDualSync    = QtCore.Signal()   # Webcam + VR side-by-side
+    requestStart           = QtCore.Signal()
+    requestFontScale       = QtCore.Signal(int)
+    requestRemoteConnect   = QtCore.Signal(str, int)  # host, port
+    requestRemoteDisconnect = QtCore.Signal()
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -538,6 +541,76 @@ class ControlPanel(QtWidgets.QWidget):
         v_act.addWidget(self.btn_start)
         layout.addWidget(grp_action)
 
+        # Remote Server GroupBox
+        grp_remote = QtWidgets.QGroupBox("遠端伺服器 (Remote Server)")
+        v_remote = QtWidgets.QVBoxLayout(grp_remote)
+        v_remote.setSpacing(10)
+        v_remote.setContentsMargins(14, 18, 14, 12)
+
+        # Toggle checkbox
+        self.chk_remote = QtWidgets.QCheckBox("啟用遠端推論 (Use Remote Inference)")
+        self.chk_remote.setStyleSheet("color: #dedede;")
+        v_remote.addWidget(self.chk_remote)
+
+        # Host / Port row
+        self._remote_settings_widget = QtWidgets.QWidget()
+        remote_form = QtWidgets.QFormLayout(self._remote_settings_widget)
+        remote_form.setSpacing(8)
+        remote_form.setContentsMargins(0, 0, 0, 0)
+        remote_form.setLabelAlignment(QtCore.Qt.AlignRight)
+
+        lbl_host_style = "QLabel { color: #dedede; }"
+
+        self.edit_remote_host = QtWidgets.QLineEdit("127.0.0.1")
+        self.edit_remote_host.setStyleSheet(
+            "QLineEdit { background:#333; border-radius:6px; padding:4px 8px; }"
+        )
+        lbl_host = QtWidgets.QLabel("Host:")
+        lbl_host.setStyleSheet(lbl_host_style)
+        remote_form.addRow(lbl_host, self.edit_remote_host)
+
+        self.spin_remote_port = QtWidgets.QSpinBox()
+        self.spin_remote_port.setRange(1, 65535)
+        self.spin_remote_port.setValue(9000)
+        self.spin_remote_port.setStyleSheet(
+            "QSpinBox { background:#333; border-radius:6px; padding:4px 8px; }"
+        )
+        lbl_port = QtWidgets.QLabel("Port:")
+        lbl_port.setStyleSheet(lbl_host_style)
+        remote_form.addRow(lbl_port, self.spin_remote_port)
+
+        v_remote.addWidget(self._remote_settings_widget)
+
+        # Connect / Disconnect button
+        self.btn_remote_connect = QtWidgets.QPushButton("連線 (Connect)")
+        self.btn_remote_connect.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: 700;
+                border-radius: 8px;
+                padding: 8px 10px;
+            }
+            QPushButton:hover { background-color: #388e3c; }
+            QPushButton:disabled { background-color: #555; color: #999; }
+            QPushButton[connected="true"] {
+                background-color: #b71c1c;
+            }
+            QPushButton[connected="true"]:hover { background-color: #c62828; }
+        """)
+        v_remote.addWidget(self.btn_remote_connect)
+
+        self.lbl_remote_status = QtWidgets.QLabel("● 未連線")
+        self.lbl_remote_status.setStyleSheet("color: #888; font-size: 11px;")
+        v_remote.addWidget(self.lbl_remote_status)
+
+        layout.addWidget(grp_remote)
+
+        # Initially hide settings until checkbox is checked
+        self._remote_settings_widget.setVisible(False)
+        self.btn_remote_connect.setVisible(False)
+        self.lbl_remote_status.setVisible(False)
+
         layout.addStretch(1)
 
         # Signals (source buttons emit directly via menu lambdas)
@@ -552,7 +625,50 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_tts.currentIndexChanged.connect(self._refresh_tts_controls_visibility)
         self._refresh_tts_controls_visibility()
 
+        # Remote toggle
+        self.chk_remote.toggled.connect(self._on_remote_toggle)
+        self.btn_remote_connect.clicked.connect(self._on_remote_connect_clicked)
+
     # ---------------- ControlPanel Helpers ----------------
+
+    def _on_remote_toggle(self, checked: bool) -> None:
+        self._remote_settings_widget.setVisible(checked)
+        self.btn_remote_connect.setVisible(checked)
+        self.lbl_remote_status.setVisible(checked)
+        if not checked:
+            self.requestRemoteDisconnect.emit()
+
+    def _on_remote_connect_clicked(self) -> None:
+        connected = self.btn_remote_connect.property("connected") == True
+        if connected:
+            self.requestRemoteDisconnect.emit()
+        else:
+            host = self.edit_remote_host.text().strip() or "127.0.0.1"
+            port = self.spin_remote_port.value()
+            self.requestRemoteConnect.emit(host, port)
+
+    def set_remote_connected(self, connected: bool, status_text: str = "") -> None:
+        if connected:
+            self.btn_remote_connect.setText("中斷連線 (Disconnect)")
+            self.btn_remote_connect.setProperty("connected", True)
+            self.lbl_remote_status.setText(f"● {status_text or '已連線'}")
+            self.lbl_remote_status.setStyleSheet("color: #66bb6a; font-size: 11px;")
+        else:
+            self.btn_remote_connect.setText("連線 (Connect)")
+            self.btn_remote_connect.setProperty("connected", False)
+            self.lbl_remote_status.setText(f"● {status_text or '未連線'}")
+            self.lbl_remote_status.setStyleSheet("color: #888; font-size: 11px;")
+        self.btn_remote_connect.style().unpolish(self.btn_remote_connect)
+        self.btn_remote_connect.style().polish(self.btn_remote_connect)
+
+    def is_remote_mode(self) -> bool:
+        return self.chk_remote.isChecked()
+
+    def get_remote_host(self) -> str:
+        return self.edit_remote_host.text().strip() or "127.0.0.1"
+
+    def get_remote_port(self) -> int:
+        return self.spin_remote_port.value()
 
     def _refresh_tts_controls_visibility(self) -> None:
         mode = self.get_tts_mode()
@@ -671,15 +787,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bytetrack_wrapper = None          # pre-loaded ByteTrackWrapper (set by background thread)
         self._bytetrack_preload_thread = None   # QThread that loads it
 
-        self._load_livecc_model()
+        # Remote inference state
+        self._remote_mode: bool = False
+        self._socket_runner: Optional[SocketClientRunner] = None
+
+        # Only load local model when remote mode is disabled
+        remote_cfg = configs.get("remote", {})
+        if not remote_cfg.get("enabled", False):
+            self._load_livecc_model()
+        else:
+            # Remote mode pre-configured: mark as remote, model_ready = False until connected
+            self._remote_mode = True
+            print("[Main] Remote mode enabled via config, skipping local model load")
 
         self._init_fonts()
         self._initUI()
         self._initTTSWorker()
 
-        # Pre-load ByteTrackWrapper in the background so the first OBS+Track
-        # mode switch is instant instead of freezing the UI for ~5 seconds.
-        QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
+        # Apply remote defaults from config if present
+        if remote_cfg.get("enabled", False):
+            host = str(remote_cfg.get("host", "127.0.0.1"))
+            port = int(remote_cfg.get("port", 9000))
+            self.control_panel.chk_remote.setChecked(True)
+            self.control_panel.edit_remote_host.setText(host)
+            self.control_panel.spin_remote_port.setValue(port)
+
+        # Pre-load ByteTrackWrapper in the background (only in local mode)
+        if not self._remote_mode:
+            QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
 
         self._playback_sec: float = 0.0
         self._pending_segments = deque()  # items: (start_t, stop_t, text)
@@ -904,6 +1039,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.livecc_model is not None:
             self.livecc_worker.signal_model_loaded.emit()
 
+        # Remote control panel signals
+        self.control_panel.requestRemoteConnect.connect(self.on_remote_connect_clicked)
+        self.control_panel.requestRemoteDisconnect.connect(self.on_remote_disconnect_clicked)
+
     def _init_prompt_manager_and_fill_styles(self) -> None:
         try:
             project_root = _find_project_root(Path(__file__))
@@ -971,6 +1110,74 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cam_worker.signal_error.connect(self.on_error)
         self.signal_start_camera_livecc.connect(self.cam_worker.runCameraInference)
         self.cam_worker_thread.start()
+
+    # ---------------- Remote Socket ----------------
+
+    @QtCore.Slot(str, int)
+    def on_remote_connect_clicked(self, host: str, port: int) -> None:
+        if self._socket_runner is not None:
+            self._socket_runner.disconnect_and_quit()
+            self._socket_runner = None
+
+        self.append_text(f"[Remote] 正在連線至 {host}:{port}…")
+        self.control_panel.lbl_remote_status.setText("● 連線中…")
+        self.control_panel.lbl_remote_status.setStyleSheet("color: #ffa726; font-size: 11px;")
+
+        runner = SocketClientRunner(host, port, parent=self)
+        runner.signal_connected.connect(self.on_remote_connected)
+        runner.signal_disconnected.connect(self.on_remote_disconnected)
+        runner.signal_connect_error.connect(self.on_remote_connect_error)
+        runner.signal_segment.connect(self.on_segment)
+        runner.signal_status.connect(self.on_remote_status)
+        runner.signal_error.connect(self.on_remote_server_error)
+        self._socket_runner = runner
+        self._remote_mode = True
+        runner.start()
+
+    @QtCore.Slot()
+    def on_remote_disconnect_clicked(self) -> None:
+        if self._socket_runner is not None:
+            self.append_text("[Remote] 中斷連線")
+            self._socket_runner.disconnect_and_quit()
+            self._socket_runner = None
+        self._remote_mode = self.control_panel.is_remote_mode()
+        self.model_ready = not self._remote_mode and (self.livecc_model is not None)
+        self.control_panel.set_remote_connected(False, "未連線")
+        self._update_start_button_state()
+
+    @QtCore.Slot()
+    def on_remote_connected(self) -> None:
+        self.append_text(f"[Remote] 已連線至 {self.control_panel.get_remote_host()}:{self.control_panel.get_remote_port()}")
+        self.control_panel.set_remote_connected(True, "已連線")
+        self.model_ready = True
+        self._update_start_button_state()
+
+    @QtCore.Slot(str)
+    def on_remote_disconnected(self, reason: str) -> None:
+        self.append_text(f"[Remote] 連線中斷: {reason}")
+        self.control_panel.set_remote_connected(False, "連線中斷")
+        self._socket_runner = None
+        self.model_ready = not self._remote_mode and (self.livecc_model is not None)
+        if self.is_inference_running:
+            self.stop_inference()
+        self._update_start_button_state()
+
+    @QtCore.Slot(str)
+    def on_remote_connect_error(self, msg: str) -> None:
+        self.append_text(f"[Remote] 連線失敗: {msg}")
+        self.control_panel.set_remote_connected(False, "連線失敗")
+        self._socket_runner = None
+        self._update_start_button_state()
+
+    @QtCore.Slot(str)
+    def on_remote_status(self, msg: str) -> None:
+        self.statusBar().showMessage(f"[Remote] {msg}", 3000)
+
+    @QtCore.Slot(str)
+    def on_remote_server_error(self, msg: str) -> None:
+        self.append_text(f"[Remote Error] {msg}")
+        if self.is_inference_running:
+            self.stop_inference()
 
     def _initTTSWorker(self) -> None:
             """Initialize all TTS Workers (OpenAI + Local Chatterbox)"""
@@ -1329,10 +1536,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.signal_video_ended.connect(self.on_finished)
             self.video_thread.signal_invalid_video.connect(self.on_error)
             self.video_thread.start()
-            self.signal_start_livecc.emit(self.current_video_path, prompt)
+
+            if self._remote_mode and self._socket_runner is not None:
+                # File mode remote: not yet fully supported (live camera only in v1)
+                self.append_text("[Remote] 注意：遠端模式目前僅支援即時鏡頭來源，檔案模式使用本機推論")
+                self.signal_start_livecc.emit(self.current_video_path, prompt)
+            else:
+                self.signal_start_livecc.emit(self.current_video_path, prompt)
 
         elif self.mode in ("camera", "obs", "obs_track", "dual_sync"):
-            self.signal_start_camera_livecc.emit(prompt)
+            if self._remote_mode and self._socket_runner is not None:
+                # Tell server to begin inference
+                self._socket_runner.start_inference(self.mode, prompt)
+            else:
+                self.signal_start_camera_livecc.emit(prompt)
 
     def stop_inference(self) -> None:
         if not self.is_inference_running:
@@ -1343,9 +1560,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.tts_mode == "openai":
             try: self.signal_tts_interrupt.emit()
             except: pass
-        # elif self.tts_mode == "local":  # [ChatterBox disabled]
-        #     try: self.signal_local_tts_interrupt.emit()
-        #     except: pass
+
+        # Remote: tell server to stop
+        if self._remote_mode and self._socket_runner is not None:
+            try:
+                self._socket_runner.stop_inference()
+            except Exception:
+                pass
+
         if hasattr(self, "livecc_worker"):
             self.livecc_worker.requestStop()
         if hasattr(self, "cam_worker"):
@@ -1380,7 +1602,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.is_inference_running = False
         self.control_panel.set_start_button_state(False)
         self.control_panel.set_tts_controls_enabled(True)  # Unlock after stop
-        self.control_panel.set_tts_controls_enabled(True)  # ✅ 解鎖：停止後可改
 
     # ---------------- Frame handlers ----------------
 
@@ -1395,9 +1616,19 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
         self.video_panel.update_frame(frame_rgb)
-        if self.is_inference_running and self.mode in ("camera", "obs", "dual_sync"):
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-            t_relative = time.time() - self.camera_start_time
+        if not self.is_inference_running:
+            return
+        if self.mode not in ("camera", "obs", "dual_sync"):
+            return
+
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        t_relative = time.time() - self.camera_start_time
+
+        if self._remote_mode and self._socket_runner is not None:
+            # Remote mode: send compressed frame to server
+            self._socket_runner.send_frame(frame_bgr, t_relative)
+        else:
+            # Local mode: push directly into inference worker
             self.cam_worker.push_frame(frame_bgr, t_relative)
 
     @QtCore.Slot(np.ndarray)
@@ -1407,21 +1638,24 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(np.ndarray)
     def on_obs_track_subject_frame(self, subject_crop_rgb: np.ndarray) -> None:
-        """Forward the padded subject crop (RGB) from ByteTrack to LiveCC cam_worker."""
-        if self.is_inference_running and self.mode == "obs_track":
-            # Resize to fixed size so np.stack in build_clip_from_buffer never fails
-            # with variable-sized crops from ByteTrack.
-            fixed = cv2.resize(subject_crop_rgb, (640, 480))
-            # cam_worker.push_frame expects BGR
-            subject_bgr = cv2.cvtColor(fixed, cv2.COLOR_RGB2BGR)
-            t_relative = time.time() - self.camera_start_time
-            self.cam_worker.push_frame(subject_bgr, t_relative)
-        else:
-            # Diagnostic: print why frames are being dropped
+        """Forward the padded subject crop (RGB) to LiveCC inference (local or remote)."""
+        if not self.is_inference_running or self.mode != "obs_track":
             if not hasattr(self, '_obs_drop_logged'):
                 self._obs_drop_logged = True
                 print(f"[GUI] ⚠️  on_obs_track_subject_frame dropped: "
                       f"is_inference_running={self.is_inference_running}, mode='{self.mode}'")
+            return
+
+        fixed = cv2.resize(subject_crop_rgb, (640, 480))
+        subject_bgr = cv2.cvtColor(fixed, cv2.COLOR_RGB2BGR)
+        t_relative = time.time() - self.camera_start_time
+
+        if self._remote_mode and self._socket_runner is not None:
+            # In remote mode: server handles ByteTrack; send raw frame instead
+            # (obs_track local ByteTrack still runs for preview; server re-tracks)
+            self._socket_runner.send_frame(subject_bgr, t_relative)
+        else:
+            self.cam_worker.push_frame(subject_bgr, t_relative)
 
     @QtCore.Slot(str, str, str)
     def on_backend_log(self, source: str, level: str, msg: str) -> None:
@@ -1494,7 +1728,8 @@ class MainWindow(QtWidgets.QMainWindow):
         cap.release()
 
     def _update_start_button_state(self) -> None:
-        can_start = self.model_ready and (self.current_video_path is not None)
+        remote_ok = self._remote_mode and self._socket_runner is not None
+        can_start = (self.model_ready or remote_ok) and (self.current_video_path is not None)
         self.control_panel.btn_start.setEnabled(bool(can_start))
 
     def append_text(self, msg: str) -> None:
@@ -1623,7 +1858,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         """Stop inference before closing"""
-        # ✅ 先停推論
+        # Stop remote socket first
+        if self._socket_runner is not None:
+            try:
+                self._socket_runner.stop_inference()
+            except Exception:
+                pass
+            self._socket_runner.disconnect_and_quit()
+            self._socket_runner = None
+
+        # 先停推論
         self.stop_inference()
 
         # ✅ 停 camera thread

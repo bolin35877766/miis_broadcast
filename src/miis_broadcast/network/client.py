@@ -1,0 +1,194 @@
+"""
+SocketClientRunner: QThread-based TCP client that sends compressed frames to
+the remote inference server and receives SEGMENT / STATUS / ERROR messages back.
+
+Usage from main thread:
+    runner = SocketClientRunner("127.0.0.1", 9000)
+    runner.signal_connected.connect(...)
+    runner.signal_segment.connect(on_segment_slot)
+    runner.start()                          # connects and begins recv loop
+    runner.send_frame(frame_bgr, t)         # thread-safe, call anytime
+    runner.start_inference("camera", query) # tell server to begin
+    runner.stop_inference()                 # tell server to stop
+    runner.disconnect_and_quit()            # graceful shutdown
+"""
+from __future__ import annotations
+
+import logging
+import socket
+import threading
+from typing import Optional
+
+import cv2
+import numpy as np
+from PySide6 import QtCore
+
+from .protocol import (
+    MSG_ACK, MSG_ERROR, MSG_FRAME, MSG_HELLO,
+    MSG_PING, MSG_PONG, MSG_SEGMENT, MSG_START,
+    MSG_STATUS, MSG_STOP,
+    PROTOCOL_VERSION, pack_message, read_message,
+)
+
+log = logging.getLogger(__name__)
+
+
+class SocketClientRunner(QtCore.QThread):
+    """
+    Connects to the inference server and runs the receive loop in a background
+    QThread.  All outgoing sends (frames, control messages) are thread-safe
+    via an internal lock.
+
+    Signals (emitted from the background thread, delivered via Qt queued
+    connection to the main/GUI thread automatically):
+        signal_connected        — TCP handshake + HELLO/ACK succeeded
+        signal_disconnected(str)— server closed or error after connected
+        signal_connect_error(str)— could not establish connection at all
+        signal_segment(f, f, s) — start_t, stop_t, text from server
+        signal_status(str)      — informational message from server
+        signal_error(str)       — error message from server
+    """
+
+    signal_connected     = QtCore.Signal()
+    signal_disconnected  = QtCore.Signal(str)
+    signal_connect_error = QtCore.Signal(str)
+    signal_segment       = QtCore.Signal(float, float, str)
+    signal_status        = QtCore.Signal(str)
+    signal_error         = QtCore.Signal(str)
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 9000,
+        parent: Optional[QtCore.QObject] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._host = host
+        self._port = port
+        self._sock: Optional[socket.socket] = None
+        self._stop_requested = False
+        self._frame_id = 0
+        self._send_lock = threading.Lock()
+
+    # ------------------------------------------------------------------ #
+    # QThread entry point
+    # ------------------------------------------------------------------ #
+
+    def run(self) -> None:
+        self._stop_requested = False
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10.0)
+            sock.connect((self._host, self._port))
+            sock.settimeout(None)
+            self._sock = sock
+        except Exception as e:
+            self.signal_connect_error.emit(f"無法連線 {self._host}:{self._port} — {e}")
+            return
+
+        # HELLO handshake
+        self._send_raw(pack_message({"type": MSG_HELLO, "protocol_version": PROTOCOL_VERSION}))
+
+        self.signal_connected.emit()
+        log.info("[SocketClient] Connected to %s:%d", self._host, self._port)
+
+        # Receive loop
+        while not self._stop_requested:
+            try:
+                result = read_message(self._sock)
+            except Exception as e:
+                if not self._stop_requested:
+                    self.signal_disconnected.emit(str(e))
+                break
+            if result is None:
+                if not self._stop_requested:
+                    self.signal_disconnected.emit("伺服器關閉連線")
+                break
+            self._handle_message(*result)
+
+        # Cleanup
+        with self._send_lock:
+            if self._sock:
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+                self._sock = None
+
+    # ------------------------------------------------------------------ #
+    # Outgoing API (safe to call from any thread)
+    # ------------------------------------------------------------------ #
+
+    def send_frame(self, frame_bgr: np.ndarray, t: float) -> None:
+        """Compress frame to JPEG and send FRAME message to server."""
+        if self._sock is None:
+            return
+        try:
+            ret, jpeg_buf = cv2.imencode(
+                ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
+            )
+            if not ret:
+                return
+            jpeg_bytes = jpeg_buf.tobytes()
+            msg = {
+                "type": MSG_FRAME,
+                "frame_id": self._frame_id,
+                "t": float(t),
+            }
+            self._frame_id += 1
+            self._send_raw(pack_message(msg, jpeg_bytes))
+        except Exception as e:
+            log.warning("[SocketClient] send_frame: %s", e)
+
+    def start_inference(self, mode: str, query: str) -> None:
+        """Tell server to begin inference with given mode and query prompt."""
+        self._send_raw(
+            pack_message({"type": MSG_START, "mode": mode, "query": query})
+        )
+
+    def stop_inference(self) -> None:
+        """Tell server to stop current inference session."""
+        self._send_raw(pack_message({"type": MSG_STOP}))
+
+    def disconnect_and_quit(self) -> None:
+        """Gracefully close socket and stop the QThread."""
+        self._stop_requested = True
+        with self._send_lock:
+            if self._sock:
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+                self._sock = None
+        self.quit()
+        self.wait(2000)
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers
+    # ------------------------------------------------------------------ #
+
+    def _send_raw(self, data: bytes) -> None:
+        with self._send_lock:
+            if self._sock is None:
+                return
+            try:
+                self._sock.sendall(data)
+            except Exception as e:
+                log.warning("[SocketClient] send failed: %s", e)
+
+    def _handle_message(self, msg: dict, binary: bytes) -> None:
+        t = msg.get("type")
+        if t == MSG_SEGMENT:
+            self.signal_segment.emit(
+                float(msg.get("start_t", 0.0)),
+                float(msg.get("stop_t", 0.0)),
+                str(msg.get("text", "")),
+            )
+        elif t == MSG_ACK:
+            self.signal_status.emit("伺服器就緒 (Server Ready)")
+        elif t == MSG_STATUS:
+            self.signal_status.emit(str(msg.get("msg", "")))
+        elif t == MSG_ERROR:
+            self.signal_error.emit(str(msg.get("msg", "")))
+        elif t == MSG_PING:
+            self._send_raw(pack_message({"type": MSG_PONG}))

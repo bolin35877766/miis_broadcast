@@ -3,6 +3,15 @@ gui_window:
   min_width: 1200
   min_height: 500
   default_open_dir: ./
+
 model:
   classifier_name: livecc_7b
-  
+
+# Remote inference server settings
+# Set enabled: true to skip loading the local LiveCC model and use the remote server instead.
+# The client GUI will pre-fill host/port from these values.
+remote:
+  enabled: false
+  host: 127.0.0.1
+  port: 9000
+
