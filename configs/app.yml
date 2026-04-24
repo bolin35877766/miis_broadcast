@@ -7,11 +7,12 @@ gui_window:
 model:
   classifier_name: livecc_7b
 
-# Remote inference server settings
-# Set enabled: true to skip loading the local LiveCC model and use the remote server instead.
-# The client GUI will pre-fill host/port from these values.
+# Remote inference (this GUI is a thin client — no local LiveCC / VLM on this machine).
+# Set client_only: false to restore the legacy path that loads LiveCC and runs inference locally
+# (requires a powerful GPU and full requirements).
 remote:
-  enabled: false
+  enabled: true
+  client_only: true
   host: 127.0.0.1
   port: 9000
 
