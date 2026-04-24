@@ -76,8 +76,8 @@ jiter==0.12.0
 joblib==1.5.2
 jsonschema==4.25.1
 jsonschema-specifications==2025.9.1
-# Optional TTS/kokoro stack: 0.9.x not on PyPI; 0.7.16 requires misaki>=0.7.16 (unpublished). Use matched pair:
-kokoro==0.7.4
+# kokoro: optional local TTS stack, not imported by current codebase (ChatterBox disabled)
+# kokoro==0.7.4
 language-tags==1.2.0
 lazy_loader==0.4
 librosa==0.11.0
@@ -88,8 +88,8 @@ Markdown==3.10
 markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
-# PyPI: 0.9.x not published; keep in sync with kokoro usage
-misaki==0.7.4
+# misaki: optional phoneme lib for kokoro TTS, not used directly
+# misaki==0.7.4
 ml_dtypes==0.5.4
 mpmath==1.3.0
 msgpack==1.1.2
