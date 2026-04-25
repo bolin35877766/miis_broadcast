@@ -1,18 +1,18 @@
 # Input Source Workers
 
-This directory contains all `QThread` worker classes responsible for ingesting video frames and forwarding them to the LiveCC inference pipeline.
+This directory contains all `QThread` worker classes responsible for ingesting video frames and forwarding them to the LiveCC inference pipeline (local or remote).
 
 ---
 
 ## Available Input Sources
 
-| Mode | Worker Class | File |
+| Mode string | Worker Class | File |
 |---|---|---|
-| Video file playback | `VideoThread` | `input.py` |
-| Physical webcam (plain stream) | `CameraThread` | `input.py` |
-| Physical webcam + ByteTrack tracking | `CameraByteTrackThread` | `camera_bytetrack.py` |
-| OBS Virtual Camera / VR headset (plain stream) | `OBSCameraThread` | `obs_input.py` |
-| **VR + Webcam synchronized dual-source** | `DualSourceCameraThread` | `dual_source.py` |
+| `"file"` | `VideoThread` | `input.py` |
+| `"camera"` | `CameraThread` | `input.py` |
+| `"obs_track"` | `CameraByteTrackThread` | `camera_bytetrack.py` |
+| `"obs"` | `OBSCameraThread` | `obs_input.py` |
+| `"dual_sync"` | `DualSourceCameraThread` | `dual_source.py` |
 
 ---
 
@@ -42,6 +42,30 @@ Each source thread emits one or two frame signals that `MainWindow` connects to:
 | `CameraByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` |
 | `CameraByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
 | `DualSourceCameraThread` | `signal_frame` | `combined_rgb: np.ndarray` | `on_camera_frame()` |
+
+---
+
+## Inference Backend: Local vs Remote
+
+When the GUI is connected to a remote server (`SocketClientRunner` active), every input
+mode routes frames to the server instead of the local LiveCC worker:
+
+```
+on_camera_frame / on_video_frame
+        │
+        ├── remote connected? ──► SocketClientRunner.send_frame()
+        │                               └── _frame_sender_loop (background thread)
+        │                                       └── TCP → server LiveCC + ByteTrack
+        └── local model?      ──► cam_worker.push_frame() / signal_start_livecc
+                                        └── local LiveCC GPU inference
+```
+
+`obs_track` has two paths depending on whether a remote server is connected:
+
+| Condition | Tracking runs on | Preview frames |
+|-----------|-----------------|----------------|
+| Remote connected | Server (ByteTrack inside `ClientSession`) | Server sends `MSG_PREVIEW` JPEG back (~15 fps) |
+| Local only | `CameraByteTrackThread` on client GPU | `signal_frame` emits annotated BGR directly |
 
 ---
 
@@ -79,12 +103,6 @@ Proc (hstack): 1–2 ms
 Gap (Δt):      ~0.004 ms
 ```
 
-A live performance log is written to `logs/dual_sync_live.log` in the format:
-
-```
-[HH:MM:SS] TotalFPS:29.10 | Cam:29.10 | Vr:29.10 | Dec:8.0ms | Proc:1.2ms | Gap:0.004ms | (Normal)
-```
-
 ### Camera Index Configuration
 
 By default:
@@ -92,6 +110,29 @@ By default:
 - `vr_idx = 5` — OBS Virtual Camera
 
 Both values are configurable at construction time. If the VR index fails to open with MSMF, the worker automatically retries with DSHOW.
+
+### Terminal output
+
+The worker prints a session banner and one stats line per second to stdout:
+
+```
+============================================================
+DualSource Live Session  |  HH:MM:SS
+CAM idx=0  |  VR idx=5  |  Target: 30 FPS
+============================================================
+[Timestamp]  TotalFPS | CamFPS | VrFPS | Dec | Proc | Gap | (reason)
+
+[HH:MM:SS] TotalFPS:29.10 | Cam:29.10 | Vr:29.10 | Dec: 8.0ms | Proc: 1.2ms | Gap:0.004ms | (Normal)
+```
+
+| Field | Meaning |
+|-------|---------|
+| `TotalFPS` | Composite frames emitted per second |
+| `Cam` / `Vr` | Successful `grab()` count/s for each source |
+| `Dec` | `retrieve()` decode time (both sources combined) |
+| `Proc` | `hstack` + BGR→RGB conversion time |
+| `Gap` | Δt between the two `grab()` calls (sync quality indicator) |
+| `(reason)` | `Normal` when FPS ≥ 80 % of target; otherwise `Heavy-Decode`, `Heavy-Proc`, `Bus-Congestion`, or `System-Lag` |
 
 ---
 
@@ -103,6 +144,105 @@ Both values are configurable at construction time. If the VR index fails to open
 - If a new person enters the frame with more than **4×** the current subject's area, tracking switches automatically.
 - When no valid subject is detected, frames are **not** forwarded to LiveCC (prevents empty-scene descriptions).
 - Color space handling ensures correct BGR/RGB channel display during high-speed tracking.
+
+Every 20 frames, a stats line is printed to stdout:
+
+```
+[ByteTrack] Frame   160 | Infer FPS: 61.9 | Wall FPS: 10.7 | Tracks: 1 | Subject ID: 1
+```
+
+| Field | Meaning |
+|-------|---------|
+| `Frame` | Frame counter since tracker was created |
+| `Infer FPS` | `1 / average_single_frame_time` — pure YOLOX+ByteTracker throughput |
+| `Wall FPS` | `total_frames / elapsed_wall_time` — actual end-to-end stream rate |
+| `Tracks` | Number of active bounding boxes drawn this frame |
+| `Subject ID` | BYTETracker ID currently locked as the primary subject (`None` if no subject) |
+
+`Infer FPS` is typically much higher than `Wall FPS` because the camera capture loop,
+Qt signal overhead, and inter-thread latency dominate the wall time.
+
+---
+
+## Server-side Log Reference
+
+When using remote inference, the server (`python -m miis_broadcast.server`) emits
+`logging.INFO` lines to stderr.  Format:
+
+```
+[HH:MM:SS] INFO miis_broadcast.server.session — message
+```
+
+### Startup (once per server process)
+
+| Log line | Meaning |
+|----------|---------|
+| `Loaded model config from …` | `configs/models.yml` parsed successfully |
+| `Loading LiveCC model on device=0 …` | Model loading started |
+| `LiveCC model loaded ✓` | Ready to accept clients |
+| `Listening on 0.0.0.0:9000 — waiting for clients…` | TCP server socket open |
+
+### Per client connection
+
+| Log line | Meaning |
+|----------|---------|
+| `New client connected: ('ip', port)` | TCP accept |
+| `[Session …] HELLO ok, mode=camera` | Handshake complete (mode from HELLO, defaults to `camera`) |
+| `[Session …] Disconnected` | Client closed connection or error |
+
+### Per broadcast session (`MSG_START` → `MSG_STOP`)
+
+| Log line | Meaning |
+|----------|---------|
+| `MSG_START mode=obs query_len=N` | Client clicked Start; `mode` is the input source |
+| `Inference START mode=obs` | Inference loop thread started |
+| `ByteTrack loaded for mode=obs_track` | ByteTrack model loaded successfully (**obs_track only**) |
+| `obs_track but ByteTrack not loaded — …` | ByteTrack load failed; preview will be raw frames (**obs_track only**) |
+| `First FRAME decoded shape=… t=…` | First frame successfully decoded from client |
+| `FRAME stats rx=120 tx_previews=0 buffer_len=119 mode=obs` | Periodic stats every 120 received frames |
+| `LiveCC run #N buffer_size=M clip_ok` | Background inference cycle started (≈ every 2 s) |
+| `SEGMENT out #N t=[s,e] text…` | Commentary sent to client (logged on #1 and every 10th; others at DEBUG) |
+| `MSG_STOP rx_frames=N tx_previews=M tx_segments=K` | Client clicked Stop |
+| `Inference STOP rx_frames=N tx_previews=M tx_segments=K infer_cycles=J` | Session totals |
+
+**`FRAME stats` field meanings**
+
+| Field | Meaning |
+|-------|---------|
+| `rx` | Total frames decoded from client since last reset |
+| `tx_previews` | `MSG_PREVIEW` frames sent back (tracking overlay); `0` for non-tracking modes |
+| `buffer_len` | Frames currently in the LiveCC clip buffer (max 180) |
+| `mode` | Input mode from `MSG_START` — confirms which source the client is using |
+
+**`tx_previews = 0` is normal** for `camera`, `obs`, `file`, and `dual_sync` because
+`MSG_PREVIEW` is only sent in `obs_track` mode.
+
+---
+
+## Session Log Files (client-side)
+
+Every broadcast writes a file to `logs/sessions/{mode}_{YYYYMMDD_HHMMSS}.log`:
+
+```
+==================================================
+Session Started: YYYY-MM-DD HH:MM:SS
+Input Mode: obs_track
+Inference: remote
+==================================================
+
+[HH:MM:SS] [GUI] [INFO] Starting inference (Style: …, TTS: …)
+[HH:MM:SS] [COMMENTARY] AI-generated commentary text…
+[HH:MM:SS] [GUI] [INFO] [Remote] 連線中斷: …
+[HH:MM:SS] [GUI] [INFO] Stopping inference
+```
+
+**All five input modes produce this same structure.**
+The `Input Mode:` header and `[COMMENTARY]` content differ; everything else is identical.
+
+| Header field | Values |
+|---|---|
+| `Input Mode` | `camera` / `obs` / `obs_track` / `file` / `dual_sync` |
+| `Inference` | `remote` (server TCP) / `local` (on-device LiveCC) / `unknown` |
 
 ---
 

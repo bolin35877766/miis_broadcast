@@ -31,25 +31,86 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
 
 ## Architecture
 
+Two deployment modes share the same GUI; the inference backend is selected at connection time.
+
+### Local inference (offline)
+
 ```
-Video File  ──────────────────────────► VideoThread
-                                              │
-Live Camera ─────────────────────────► CameraThread
-                                              │
-CameraByteTrackThread ────────────────────┤
- (YOLOX + BYTETracker)                        │
- (subject crop 640×480) ───────────────────┘
-                                              │
-                                              ▼
-                             LiveCCWorker / LiveCCCameraWorker
-                             (LiveCC-7B-Instruct, GPU inference)
-                                              │ commentary text
-                                              ▼
-                             TTS Engine (OpenAI Realtime or ChatterBox)
-                                              │ PCM audio
-                                              ▼
-                                         ffplay (audio output)
+Video File / Camera / OBS / DualSync
+        │  RGB frames (30 fps)
+        ▼
+VideoThread / CameraThread / OBSCameraThread / DualSourceCameraThread
+        │
+  (obs_track only)
+CameraByteTrackThread  ──  YOLOX + BYTETracker
+  • annotated BGR  → video panel
+  • subject crop (640×480 RGB)
+        │
+        ▼
+LiveCCWorker / LiveCCCameraWorker
+  (LiveCC-7B-Instruct, GPU, local)
+        │ commentary text
+        ▼
+TTS Engine (OpenAI Realtime WebSocket or ChatterBox local)
+        │ PCM 24 kHz
+        ▼
+ffplay (audio output)
 ```
+
+### Remote inference (online / thin-client)
+
+```
+Camera / OBS / DualSync / File
+        │  RGB frames (GUI thread, 30 fps raw)
+        ▼
+on_camera_frame / on_video_frame
+        │  BGR JPEG (75%, async encode)
+        ▼  non-blocking enqueue (max 30 frames)
+SocketClientRunner._frame_queue
+        │
+_frame_sender_loop (background thread)
+        │  TCP sendall  ─────────────────────────────────────────────►  Remote server
+        │                                                               │
+        │  ◄── MSG_SEGMENT (text) ◄── LiveCC inference (GPU)  ◄────────┤
+        │  ◄── MSG_PREVIEW (JPEG) ◄── ByteTrack overlay ───────────────┘
+        │                               (obs_track mode only, ~15 fps)
+        ▼
+on_segment → text panel + OpenAI TTS (local audio)
+on_remote_track_preview → video panel (annotated frames with tracking boxes)
+```
+
+#### Why the frame sender is in a dedicated thread
+
+`sock.sendall()` blocks the caller until the TCP send buffer is drained.  At 30 fps the
+client produces ~90 KB/s of JPEG data; if the server GPU is busy the kernel buffer fills
+and `sendall` stalls for tens of milliseconds — long enough to freeze the Qt event loop
+and make the GUI unresponsive.
+
+The fix: `send_frame()` JPEG-encodes the frame (on the calling thread) and drops it
+into a `queue.Queue(maxsize=30)`.  A second background thread (`_frame_sender_loop`)
+drains the queue and calls `sendall`.  The GUI thread is never blocked by TCP I/O.
+If the queue is full the newest frame is silently dropped (`put_nowait`), keeping
+memory bounded and backpressure natural.
+
+#### Why 15 fps for the client send rate
+
+The server's LiveCC model runs at ~2 s per inference cycle regardless of how many
+frames it receives; sending faster than the model can process only wastes bandwidth
+and fills the server-side buffer.  15 fps (≈ 67 ms/frame) provides:
+
+- Smooth enough ByteTrack tracking boxes on the remote preview (~15 PREVIEW/s back)
+- Less than half the camera's 30 fps, so the send queue stays near-empty under normal conditions
+- Sufficient temporal density for the LiveCC clip builder (`window_sec=2.0, target_fps=2.0`)
+
+#### Why the PREVIEW display threshold is 400 ms
+
+The camera thread emits raw frames at 30 fps (~33 ms).  Server PREVIEW frames arrive at
+~67 ms intervals (15 fps).  Without a hold-off, the next raw camera frame would overwrite
+the annotated PREVIEW within 33 ms — the tracking boxes would flash and disappear.
+
+A 400 ms threshold means: after the last server PREVIEW arrives, raw frames are suppressed
+for 400 ms.  This safely covers two missed PREVIEWs (134 ms) plus typical network/GPU
+jitter, keeping the boxes visible continuously.
 
 Key modules:
 
@@ -206,6 +267,102 @@ Full documentation — including signal/slot mapping, frame emission contracts, 
 
 ---
 
+## Remote Inference Server
+
+The server is a standalone headless Python process that loads LiveCC once and serves
+multiple successive client connections.
+
+### Starting the server
+
+```bash
+# From project root on the remote machine:
+python -m miis_broadcast.server                        # default: 0.0.0.0:9000, CUDA:0
+python -m miis_broadcast.server --host 0.0.0.0 --port 9000 --device 0
+```
+
+### Connecting from a local machine over SSH
+
+```bash
+# On the local machine — forward port 9000 through SSH tunnel:
+ssh -p 2225 -L 9000:127.0.0.1:9000 miislab-server3@10.50.0.103
+
+# Then in the GUI, set Remote Host = 127.0.0.1, Port = 9000 and click Connect.
+```
+
+### TCP protocol (wire format)
+
+Every message on the socket is framed as:
+
+```
+[4B total_len (BE uint32)] [4B json_len (BE uint32)] [json_bytes] [binary_payload]
+```
+
+`total_len = json_len + len(binary)`.  If there is no binary, `total_len == json_len`.
+
+| Message | Direction | JSON fields | Binary |
+|---------|-----------|-------------|--------|
+| `HELLO` | C → S | `protocol_version` | — |
+| `ACK` | S → C | `protocol_version` | — |
+| `START` | C → S | `mode`, `query` | — |
+| `FRAME` | C → S | `frame_id`, `t` | JPEG bytes |
+| `PREVIEW` | S → C | `t` | JPEG bytes (annotated BGR) |
+| `SEGMENT` | S → C | `start_t`, `stop_t`, `text` | — |
+| `STATUS` | S → C | `msg` | — |
+| `ERROR` | S → C | `msg` | — |
+| `STOP` | C → S | — | — |
+| `PING` / `PONG` | bidirectional | — | — |
+
+### Server logging
+
+The server uses Python `logging` at `INFO` level, written to `stderr` with forced line
+buffering so output appears immediately in SSH / tmux sessions.  Format:
+
+```
+[HH:MM:SS] LEVEL miis_broadcast.server.session — message
+```
+
+See **Server-side log reference** in `src/miis_broadcast/workers/README.md` for a
+full table of every log line and what it means.
+
+---
+
+## Session Log Files
+
+Every time you click **Start Broadcasting**, a new file is created at:
+
+```
+logs/sessions/{mode}_{YYYYMMDD_HHMMSS}.log
+```
+
+where `{mode}` is the active input source (`camera`, `obs`, `obs_track`, `file`,
+`dual_sync`).
+
+### File format
+
+```
+==================================================
+Session Started: YYYY-MM-DD HH:MM:SS
+Input Mode: obs_track
+Inference: remote
+==================================================
+
+[HH:MM:SS] [GUI] [INFO] Starting inference (Style: …, TTS: …)
+[HH:MM:SS] [COMMENTARY] AI-generated commentary text…
+[HH:MM:SS] [GUI] [INFO] Stopping inference
+```
+
+| Line type | Meaning |
+|-----------|---------|
+| `[GUI] [INFO]` | System events from the GUI (start, stop, remote connection changes, errors) |
+| `[COMMENTARY]` | Every segment of AI commentary as it arrives from LiveCC (remote or local) |
+| `Inference: remote` | LiveCC ran on the remote server (thin-client mode) |
+| `Inference: local` | LiveCC ran on the local GPU |
+
+All five input modes produce the same file structure.  The only differences per mode are
+the `Input Mode:` header line and the content of the `[COMMENTARY]` entries.
+
+---
+
 ## Latency
 
 The system measures and reports three metrics at the end of each session:
@@ -225,20 +382,27 @@ The system measures and reports three metrics at the end of each session:
 miis_broadcast/
 ├── configs/
 │   ├── app.yml               # GUI / model settings
-│   ├── models.yml            # Model registry
+│   ├── models.yml            # Model registry (LiveCC + ByteTrack paths)
 │   └── livecc_prompts.yml    # Commentary style prompts
 ├── logs/
-│   └── app_error.log
+│   ├── app_error.log
+│   └── sessions/             # Per-broadcast session logs ({mode}_{timestamp}.log)
 ├── src/miis_broadcast/
 │   ├── app.py                # Entry point
 │   ├── gui.py                # Main window
+│   ├── network/
+│   │   ├── protocol.py       # TCP wire format (pack/read message)
+│   │   └── client.py         # SocketClientRunner — non-blocking frame sender
+│   ├── server/
+│   │   ├── __main__.py       # Headless server entry point
+│   │   └── session.py        # ClientSession — per-connection handler
 │   ├── core/
 │   │   ├── io/               # Input helpers (camera, OBS virtual camera)
 │   │   ├── models/           # LiveCC, OpenAI TTS, ChatterBox TTS, ByteTrackWrapper
 │   │   ├── prompt/           # Prompt management
-│   │   └── utils/            # Config, formatting, latency monitor
+│   │   └── utils/            # Config, session_logger, latency monitor
 │   ├── widgets/              # Custom Qt widgets
-│   └── workers/              # QThread workers (LiveCC, TTS, input, OBS+ByteTrack)
+│   └── workers/              # QThread workers (LiveCC, TTS, input, OBS+ByteTrack, DualSync)
 ├── requirements.txt
 ├── environment.yml
 └── pyproject.toml
