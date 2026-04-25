@@ -1635,6 +1635,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.append_text(f"Starting inference (Style: {style_label}, TTS: {self.tts_mode})")
         self.append_text(f"開始推論 (Style: {style_label}, TTS: {self.tts_mode})")
+        if self.tts_mode == "none":
+            self.append_text(
+                "提示：TTS 為「不啟用 (Mute)」— 不會播出語音。需要朗讀請選 OpenAI TTS。"
+            )
+            self.statusBar().showMessage("TTS: 靜音（不播語音）", 5000)
 
         if self.mode == "file":
             if hasattr(self, "_pending_segments"):

@@ -138,6 +138,12 @@ Key modules:
 - OpenAI API key (if using the OpenAI TTS backend)
 - [ByteTrack_repo](https://github.com/ifzhang/ByteTrack) — required for OBS + tracking mode (set path in `configs/models.yml` or via `BYTETRACK_REPO` env var)
 
+**No TTS sound?**  Check these in order:
+
+1. TTS combobox is **OpenAI TTS**, not **不啟用 (Mute)**.
+2. `ffplay` is on your **PATH** (install [FFmpeg](https://ffmpeg.org) for Windows, then open a *new* terminal and run `ffplay -version`). Without `ffplay`, the app will print a startup error in the console and there will be no audio even if commentary text appears.
+3. `OPENAI_API_KEY` is valid; invalid keys stop the TTS WebSocket and also yield no sound.
+
 ### Python dependencies
 
 Install via pip:

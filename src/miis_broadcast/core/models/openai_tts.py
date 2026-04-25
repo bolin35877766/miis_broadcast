@@ -393,6 +393,7 @@ async def _openai_realtime_worker():
 # ==========================================
 def _audio_player_worker():
     if not shutil.which("ffplay"):
+        # Defensive: start_tts_system() already warns; audio thread no-ops
         return
     cmd = [
         "ffplay", "-f", "s16le", "-ar", "24000", "-ac", "1", "-nodisp",
@@ -439,6 +440,15 @@ def _audio_player_worker():
 def start_tts_system() -> None:
     global _tts_threads_started
     if _tts_threads_started: return
+    if not shutil.which("ffplay"):
+        _log.error(
+            "ffplay not found on PATH. Install FFmpeg and add the bin directory "
+            "to your system PATH; audio playback uses ffplay (PCM pipe)."
+        )
+        print(
+            "❌ [TTS] 找不到 ffplay（需安裝 FFmpeg 並把 bin 加入系統 PATH）。\n"
+            "   有收到解說文字也仍不會有聲音。下載: https://ffmpeg.org/download.html"
+        )
     _stop_event.clear()
     t1 = threading.Thread(target=lambda: asyncio.run(_openai_realtime_worker()), daemon=True)
     t1.start()
