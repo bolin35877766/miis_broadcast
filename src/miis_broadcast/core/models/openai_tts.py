@@ -237,16 +237,18 @@ def interrupt_tts(clear_text: bool = True) -> None:
 async def _openai_realtime_worker():
     print("🎙️ [TTS Worker] 啟動連線...")
 
-    while not _stop_event.is_set():
+    # Stop reconnecting once we know the API key is wrong
+    while not _stop_event.is_set() and not _tts_invalid_api_key_logged:
         is_response_active = False
         warmed_up = False
         doing_warmup = False
-        # 新增：確保取消已被伺服器確認
-        awaiting_cancel_ack = False 
+        awaiting_cancel_ack = False
 
         try:
             async with websockets.connect(TTS_MODEL_URL, additional_headers=TTS_HEADERS) as websocket:
-                print("✅ [TTS Worker] 連線成功！")
+                # Don't print repeated "connected" messages after a known key rejection
+                if not _tts_invalid_api_key_logged:
+                    print("✅ [TTS Worker] 連線成功！")
                 cfg = _get_tts_cfg_snapshot()
 
                 # 1. Session Update
@@ -368,15 +370,20 @@ async def _openai_realtime_worker():
 
                     except asyncio.TimeoutError:
                         continue
-                    except websockets.exceptions.ConnectionClosed:
-                        break 
+                    except websockets.exceptions.ConnectionClosed as _cc_exc:
+                        # Server may close with code 3000 + invalid_api_key reason
+                        _cc_msg = str(_cc_exc)
+                        if _looks_like_openai_api_key_rejection(_cc_msg):
+                            _log_openai_tts_rejection_once("connection_closed", _cc_msg)
+                        break  # exit inner recv loop; outer while checks the flag
 
         except Exception as e:
-            if _stop_event.is_set():
+            if _stop_event.is_set() or _tts_invalid_api_key_logged:
                 break
             es = str(e)
             if _looks_like_openai_api_key_rejection(es):
                 _log_openai_tts_rejection_once("websocket", es)
+                break  # don't sleep-and-retry for a known bad key
             else:
                 print(f"❌ [TTS Error] {e}")
             await asyncio.sleep(2)
