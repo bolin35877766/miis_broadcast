@@ -1852,11 +1852,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not text.strip():
             return
 
-        # Branch according to mode
-        if self.tts_mode == "openai":
-            self.signal_tts_speak.emit(text)
-        # elif self.tts_mode == "local":  # [ChatterBox disabled]
-        #     self.signal_local_tts_speak.emit(text)
+        # TTS: only when _tick_subtitle_scheduler displays the line (stays in sync with video time).
+        # Do not speak here, or OpenAI TTS will fire early / replace queue and desync from on-screen text.
 
     @QtCore.Slot()
     def on_finished(self) -> None:
