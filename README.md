@@ -144,6 +144,8 @@ Key modules:
 2. `ffplay` is on your **PATH** (install [FFmpeg](https://ffmpeg.org) for Windows, then open a *new* terminal and run `ffplay -version`). Without `ffplay`, the app will print a startup error in the console and there will be no audio even if commentary text appears.
 3. `OPENAI_API_KEY` is valid; invalid keys stop the TTS WebSocket and also yield no sound.
 
+**Remote inference:** OpenAI TTS and `ffplay` playback run on the **client machine** (where you run the GUI) — not on the headless `miis_broadcast.server` host. The server only needs GPU for LiveCC + ByteTrack.
+
 ### Python dependencies
 
 Install via pip:

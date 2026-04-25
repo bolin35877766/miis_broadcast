@@ -12,7 +12,6 @@ from livecc_utils import (
     get_smart_resized_video_reader,
 )
 from miis_broadcast.core.models.openai_tts import (
-    start_tts_system,
     enqueue_tts_text,
     print_tts_stats,
 )
@@ -251,8 +250,6 @@ class LiveCCInfer:
         self.mm_window_sec = float(mm_window_sec)
         self.carry_text_max_chars = int(carry_text_max_chars)
         self.carry_recent_k = int(carry_recent_k)
-
-        start_tts_system()
 
     def init_state(self, video_path: str) -> Dict[str, Any]:
         return {
