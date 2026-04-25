@@ -1260,6 +1260,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not self.is_inference_running:
             return
+        # First PREVIEW arrival — confirm ByteTrack is active on server
+        if self._last_track_preview_mono == 0.0:
+            self.statusBar().showMessage("[Remote] ByteTrack tracking active ✓", 3000)
+            print("[Remote] First tracking PREVIEW received — ByteTrack is running on server")
         self._last_track_preview_mono = time.monotonic()
         self.video_panel.update_frame(frame_bgr, is_bgr=True)
 
@@ -1730,13 +1734,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
-        # obs_track + remote + infer: raw 30fps camera must not overwrite 15fps PREVIEW (boxes)
+        # obs_track + remote + infer: raw 30fps camera must not overwrite server PREVIEW (boxes).
+        # Threshold = 400 ms — safely covers the 67 ms PREVIEW interval (15 fps) even when the
+        # GPU or network introduces occasional jitter.
         if (
             self.mode == "obs_track"
             and self._socket_runner is not None
             and self.is_inference_running
         ):
-            if time.monotonic() - self._last_track_preview_mono < 0.22:
+            if time.monotonic() - self._last_track_preview_mono < 0.40:
                 pass  # keep last PREVIEW visible
             else:
                 self.video_panel.update_frame(frame_rgb)

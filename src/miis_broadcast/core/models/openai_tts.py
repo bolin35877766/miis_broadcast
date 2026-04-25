@@ -34,8 +34,11 @@ _tts_invalid_api_key_logged: bool = False
 
 def _looks_like_openai_api_key_rejection(msg: str) -> bool:
     s = (msg or "").lower()
-    return "invalid_api_key" in s or (
-        "3000" in s and "invalid_request_error" in s
+    return (
+        "invalid_api_key" in s
+        or "incorrect api key" in s
+        or "invalid api key" in s
+        or ("3000" in s and ("invalid_request_error" in s or "registered" in s))
     )
 
 

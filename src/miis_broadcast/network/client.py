@@ -36,9 +36,8 @@ log = logging.getLogger(__name__)
 
 # Maximum frames buffered for sending; excess are dropped to avoid memory growth.
 _FRAME_QUEUE_MAX = 30
-# Maximum frame send rate to the server (fps).  LiveCC runs at ~0.5 fps so 6fps
-# is more than enough and keeps the TCP buffer from overwhelming the main thread.
-_FRAME_SEND_FPS_MAX = 6.0
+# Maximum frame send rate to the server (fps).
+_FRAME_SEND_FPS_MAX = 15.0
 
 
 class SocketClientRunner(QtCore.QThread):
