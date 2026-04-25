@@ -62,12 +62,17 @@ class ClientSession:
         self.sock = sock
         self.addr = addr
         self.livecc_model = livecc_model
-        self.bytetrack_cfg = bytetrack_cfg
+        self.bytetrack_cfg = bytetrack_cfg or {}
 
         self._stop = False
         self._mode = "camera"
         self._bt_frame_id: int = 0
         self._last_preview_mono: float = 0.0
+        self._infer_mode: str = "camera"
+        self._rx_frames: int = 0
+        self._tx_previews: int = 0
+        self._tx_segments: int = 0
+        self._infer_cycles: int = 0
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -121,6 +126,10 @@ class ClientSession:
             if msg.get("type") == MSG_START:
                 mode  = msg.get("mode",  self._mode)
                 query = msg.get("query", "")
+                log.info(
+                    "[Session %s] MSG_START mode=%s query_len=%d",
+                    self.addr, mode, len(query or ""),
+                )
                 self._run_inference_session(mode, query)
             elif msg.get("type") == MSG_STOP:
                 break
@@ -137,12 +146,27 @@ class ClientSession:
 
         self._bt_frame_id = 0
         self._last_preview_mono = 0.0
+        self._infer_mode = mode
+        self._rx_frames = 0
+        self._tx_previews = 0
+        self._tx_segments = 0
+        self._infer_cycles = 0
 
         buffer: deque[_FrameItem] = deque(maxlen=180)
         stop_event = threading.Event()
 
         # Load ByteTrack if needed
         bt = self._maybe_load_bytetrack(mode)
+        if mode == "obs_track" and bt is None:
+            log.warning(
+                "[Session %s] obs_track but ByteTrack not loaded — "
+                "check configs/models.yml bytetrack paths; preview will be raw frames only",
+                self.addr,
+            )
+            self._send({
+                "type": MSG_STATUS,
+                "msg": "ByteTrack unavailable: using full frame (no boxes). Check server bytetrack config.",
+            })
 
         # Inference loop runs in a separate thread so the main thread can
         # keep receiving frames without blocking.
@@ -162,6 +186,13 @@ class ClientSession:
                 msg, binary = result
 
                 if msg.get("type") == MSG_STOP:
+                    log.info(
+                        "[Session %s] MSG_STOP  rx_frames=%d tx_previews=%d tx_segments=%d",
+                        self.addr,
+                        self._rx_frames,
+                        self._tx_previews,
+                        self._tx_segments,
+                    )
                     break
                 elif msg.get("type") == MSG_FRAME:
                     self._handle_frame(msg, binary, buffer, bt)
@@ -170,7 +201,14 @@ class ClientSession:
         finally:
             stop_event.set()
             infer_thread.join(timeout=5.0)
-            log.info("[Session %s] Inference STOP", self.addr)
+            log.info(
+                "[Session %s] Inference STOP  rx_frames=%d tx_previews=%d tx_segments=%d infer_cycles=%d",
+                self.addr,
+                self._rx_frames,
+                self._tx_previews,
+                self._tx_segments,
+                self._infer_cycles,
+            )
 
     # ------------------------------------------------------------------ #
     # Frame handling
@@ -192,20 +230,39 @@ class ClientSession:
         if frame_bgr is None:
             return
 
+        self._rx_frames += 1
+        if self._rx_frames == 1:
+            log.info(
+                "[Session %s] First FRAME decoded  shape=%s t=%.3f",
+                self.addr,
+                getattr(frame_bgr, "shape", "?"),
+                t,
+            )
+        elif self._rx_frames % 120 == 0:
+            log.info(
+                "[Session %s] FRAME stats  rx=%d tx_previews=%d buffer_len=%d mode=%s",
+                self.addr,
+                self._rx_frames,
+                self._tx_previews,
+                len(buffer),
+                self._infer_mode,
+            )
+
         if bt is not None:
             # ByteTrack: process() returns annotated BGR (boxes) + subject crop (RGB) for LiveCC
             try:
                 self._bt_frame_id += 1
                 annotated_bgr, subject_rgb = bt.process(frame_bgr, self._bt_frame_id)
 
-                # Throttle preview to ~12 fps so the thin-client UI can show boxes
+                # Throttle preview to ~15 fps so the thin-client UI can show boxes
                 _now = time.monotonic()
-                if _now - self._last_preview_mono >= (1.0 / 12.0):
+                if _now - self._last_preview_mono >= (1.0 / 15.0):
                     self._last_preview_mono = _now
                     ret, jbuf = cv2.imencode(
-                        ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 72]
+                        ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 78]
                     )
                     if ret:
+                        self._tx_previews += 1
                         self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
 
                 if subject_rgb is not None:
@@ -215,9 +272,20 @@ class ClientSession:
                     )
                     buffer.append(_FrameItem(t=t, frame=subject_bgr))
             except Exception as e:
-                log.debug("[Session] ByteTrack error: %s", e)
+                log.warning("[Session] ByteTrack error: %s", e)
         else:
             buffer.append(_FrameItem(t=t, frame=frame_bgr))
+            # obs_track without ByteTrack: still stream a throttled preview so the GUI is not blank
+            if self._infer_mode == "obs_track":
+                _now = time.monotonic()
+                if _now - self._last_preview_mono >= (1.0 / 15.0):
+                    self._last_preview_mono = _now
+                    ret, jbuf = cv2.imencode(
+                        ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                    )
+                    if ret:
+                        self._tx_previews += 1
+                        self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
 
     # ------------------------------------------------------------------ #
     # Inference loop (background thread)
@@ -256,6 +324,13 @@ class ClientSession:
 
             last_infer_t = now
             inference_count += 1
+            self._infer_cycles += 1
+            log.info(
+                "[Session %s] LiveCC run #%d  buffer_size=%d clip_ok",
+                self.addr,
+                self._infer_cycles,
+                len(buffer),
+            )
 
             # Periodic state reset to avoid repetition loops
             if inference_count % 5 == 0:
@@ -268,6 +343,27 @@ class ClientSession:
                 ):
                     if stop_event.is_set():
                         break
+                    self._tx_segments += 1
+                    tprev = (text or "").replace("\n", " ")[:100]
+                    nseg = self._tx_segments
+                    if nseg == 1 or nseg % 10 == 0:
+                        log.info(
+                            "[Session %s] SEGMENT out #%d  t=[%.2f,%.2f]  %s%s",
+                            self.addr,
+                            nseg,
+                            float(start_ts),
+                            float(stop_ts),
+                            tprev,
+                            "…" if (text and len(text) > 100) else "",
+                        )
+                    else:
+                        log.debug(
+                            "[Session %s] SEGMENT out #%d  t=[%.2f,%.2f]  (truncated log)",
+                            self.addr,
+                            nseg,
+                            float(start_ts),
+                            float(stop_ts),
+                        )
                     self._send({
                         "type":    MSG_SEGMENT,
                         "start_t": float(start_ts),
@@ -284,7 +380,13 @@ class ClientSession:
     # ------------------------------------------------------------------ #
 
     def _maybe_load_bytetrack(self, mode: str) -> Optional[Any]:
-        if mode != "obs_track" or not self.bytetrack_cfg:
+        if mode != "obs_track":
+            return None
+        if not self.bytetrack_cfg:
+            log.warning(
+                "[Session] bytetrack section missing or empty in model config — "
+                "cannot load ByteTrack for obs_track"
+            )
             return None
         try:
             from ..core.models.bytetrack_tracker import ByteTrackWrapper
@@ -309,7 +411,7 @@ class ClientSession:
             log.info("[Session] ByteTrack loaded for mode=obs_track")
             return bt
         except Exception as e:
-            log.warning("[Session] ByteTrack load failed: %s", e)
+            log.warning("[Session] ByteTrack load failed: %s", e, exc_info=True)
             return None
 
     # ------------------------------------------------------------------ #

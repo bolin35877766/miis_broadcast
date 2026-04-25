@@ -200,4 +200,5 @@ class SocketClientRunner(QtCore.QThread):
             nparr = np.frombuffer(binary, dtype=np.uint8)
             bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if bgr is not None:
-                self.signal_preview.emit(bgr)
+                # copy(): recv buffer may be reused; GUI thread must own the array
+                self.signal_preview.emit(bgr.copy())

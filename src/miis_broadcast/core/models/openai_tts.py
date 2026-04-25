@@ -10,6 +10,7 @@ import base64
 import re
 import subprocess
 import shutil
+import logging
 from typing import Optional
 
 import numpy as np
@@ -25,6 +26,32 @@ load_dotenv(find_dotenv(usecwd=False, raise_error_if_not_found=False))
 MY_API_KEY = os.getenv("OPENAI_API_KEY")
 if not MY_API_KEY:
     raise RuntimeError("[OpenAI TTS] OPENAI_API_KEY not found in environment")
+
+_log = logging.getLogger(__name__)
+# Avoid spamming the console when the key is wrong (reconnect every ~2s)
+_tts_invalid_api_key_logged: bool = False
+
+
+def _looks_like_openai_api_key_rejection(msg: str) -> bool:
+    s = (msg or "").lower()
+    return "invalid_api_key" in s or (
+        "3000" in s and "invalid_request_error" in s
+    )
+
+
+def _log_openai_tts_rejection_once(source: str, msg: str) -> None:
+    global _tts_invalid_api_key_logged
+    if not _looks_like_openai_api_key_rejection(msg):
+        return
+    if _tts_invalid_api_key_logged:
+        return
+    _tts_invalid_api_key_logged = True
+    _log.warning(
+        "OpenAI TTS: API key rejected (%s). Further identical errors are not printed; "
+        "set OPENAI_API_KEY and restart. Detail: %s",
+        source,
+        (msg or "")[:220],
+    )
 
 TTS_MODEL_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
 TTS_HEADERS = {
@@ -329,7 +356,11 @@ async def _openai_realtime_worker():
                             # 如果錯誤是因為 active response，同步一下狀態
                             if "active response" in msg:
                                 is_response_active = True
-                            if err.get("code") != "response_cancel_not_active":
+                            if err.get("code") == "response_cancel_not_active":
+                                pass
+                            elif _looks_like_openai_api_key_rejection(str(msg) + " " + str(err.get("type", ""))):
+                                _log_openai_tts_rejection_once("server_event", str(msg))
+                            else:
                                 print(f"❌ [OpenAI Error] {msg}")
 
                     except asyncio.TimeoutError:
@@ -338,8 +369,13 @@ async def _openai_realtime_worker():
                         break 
 
         except Exception as e:
-            if _stop_event.is_set(): break
-            print(f"❌ [TTS Error] {e}")
+            if _stop_event.is_set():
+                break
+            es = str(e)
+            if _looks_like_openai_api_key_rejection(es):
+                _log_openai_tts_rejection_once("websocket", es)
+            else:
+                print(f"❌ [TTS Error] {e}")
             await asyncio.sleep(2)
 
 # ==========================================

@@ -601,6 +601,14 @@ class ControlPanel(QtWidgets.QWidget):
         self._remote_dialog = QtWidgets.QDialog(self)
         self._remote_dialog.setWindowTitle("遠端伺服器 (Remote server)")
         self._remote_dialog.setWindowModality(QtCore.Qt.NonModal)
+        # Minimize/close in title bar so the panel can be tucked away without blocking the main view
+        _flags = (
+            QtCore.Qt.Window
+            | QtCore.Qt.WindowMinimizeButtonHint
+            | QtCore.Qt.WindowCloseButtonHint
+        )
+        _flags &= ~QtCore.Qt.WindowContextHelpButtonHint
+        self._remote_dialog.setWindowFlags(_flags)
         self._remote_dialog.setMinimumWidth(380)
 
         dlay = QtWidgets.QVBoxLayout(self._remote_dialog)
@@ -852,6 +860,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Remote inference state — use _socket_runner is not None to check active connection
         self._socket_runner: Optional[SocketClientRunner] = None
+        # When remote sends PREVIEW (boxes), avoid raw camera overwriting it for ~one frame period
+        self._last_track_preview_mono: float = 0.0
 
         # client_only: only controls whether local LiveCC/ByteTrack are loaded at startup.
         # All GUI behavior is identical once connected; default = True (don't load 7B locally).
@@ -1196,7 +1206,9 @@ class MainWindow(QtWidgets.QMainWindow):
         runner.signal_segment.connect(self.on_segment)
         runner.signal_status.connect(self.on_remote_status)
         runner.signal_error.connect(self.on_remote_server_error)
-        runner.signal_preview.connect(self.on_remote_track_preview)
+        runner.signal_preview.connect(
+            self.on_remote_track_preview, QtCore.Qt.QueuedConnection
+        )
         self._socket_runner = runner
         runner.start()
 
@@ -1248,6 +1260,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not self.is_inference_running:
             return
+        self._last_track_preview_mono = time.monotonic()
         self.video_panel.update_frame(frame_bgr, is_bgr=True)
 
     @QtCore.Slot(str)
@@ -1696,6 +1709,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dual_sync_thread = None
 
         self.is_inference_running = False
+        self._last_track_preview_mono = 0.0
         self.control_panel.set_start_button_state(False)
         self.control_panel.set_tts_controls_enabled(True)  # Unlock after stop
 
@@ -1716,12 +1730,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
-        # obs_track + remote: preview with boxes is driven by on_remote_track_preview
-        if not (
+        # obs_track + remote + infer: raw 30fps camera must not overwrite 15fps PREVIEW (boxes)
+        if (
             self.mode == "obs_track"
             and self._socket_runner is not None
             and self.is_inference_running
         ):
+            if time.monotonic() - self._last_track_preview_mono < 0.22:
+                pass  # keep last PREVIEW visible
+            else:
+                self.video_panel.update_frame(frame_rgb)
+        else:
             self.video_panel.update_frame(frame_rgb)
         if not self.is_inference_running:
             return

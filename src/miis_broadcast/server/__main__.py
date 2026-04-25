@@ -56,7 +56,8 @@ def main() -> None:
     try:
         from miis_broadcast.core.utils.config import parse_configs
         model_cfg = parse_configs(args.config)
-        bytetrack_cfg = model_cfg.get("bytetrack", {})
+        # YAML null or missing key must not leave None (breaks "if not bytetrack_cfg")
+        bytetrack_cfg = model_cfg.get("bytetrack") or {}
         log.info("Loaded model config from %s", args.config)
     except Exception as e:
         log.warning("Could not load model config %s: %s", args.config, e)
