@@ -850,45 +850,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bytetrack_wrapper = None          # pre-loaded ByteTrackWrapper (set by background thread)
         self._bytetrack_preload_thread = None   # QThread that loads it
 
-        # Remote inference state
-        self._remote_mode: bool = False
+        # Remote inference state — use _socket_runner is not None to check active connection
         self._socket_runner: Optional[SocketClientRunner] = None
 
-        # Thin client: no local LiveCC/VLM. Optional legacy: client_only: false for full local stack.
+        # client_only: only controls whether local LiveCC/ByteTrack are loaded at startup.
+        # All GUI behavior is identical once connected; default = True (don't load 7B locally).
         remote_cfg = configs.get("remote", {})
         self._client_only = bool(remote_cfg.get("client_only", True))
         if self._client_only:
-            self._remote_mode = bool(remote_cfg.get("enabled", True))
-            print("[Main] client_only: local VLM disabled; use remote server for LiveCC/tracking.")
+            print("[Main] client_only: local VLM not loaded; connect to remote server.")
         else:
-            if remote_cfg.get("enabled", False):
-                self._remote_mode = True
-                print("[Main] remote.enabled: skipping local model load (hybrid / remote from config).")
-            else:
-                self._load_livecc_model()
-                self._remote_mode = False
+            self._load_livecc_model()
 
         self._init_fonts()
         self._initUI()
         self._initTTSWorker()
 
-        # Pre-fill and lock remote panel when using thin client
+        # Pre-fill remote panel host/port from config
+        host = str(remote_cfg.get("host", "127.0.0.1"))
+        port = int(remote_cfg.get("port", 9000))
+        self.control_panel.chk_remote.setChecked(True)
+        self.control_panel.edit_remote_host.setText(host)
+        self.control_panel.edit_remote_port.setText(str(port))
         if self._client_only:
-            host = str(remote_cfg.get("host", "127.0.0.1"))
-            port = int(remote_cfg.get("port", 9000))
-            self.control_panel.chk_remote.setChecked(True)
             self.control_panel.chk_remote.setEnabled(False)
-            self.control_panel.edit_remote_host.setText(host)
-            self.control_panel.edit_remote_port.setText(str(port))
-        elif remote_cfg.get("enabled", False):
-            host = str(remote_cfg.get("host", "127.0.0.1"))
-            port = int(remote_cfg.get("port", 9000))
-            self.control_panel.chk_remote.setChecked(True)
-            self.control_panel.edit_remote_host.setText(host)
-            self.control_panel.edit_remote_port.setText(str(port))
 
-        # Pre-load ByteTrack on this machine only when local inference is allowed
-        if not self._client_only and not self._remote_mode:
+        # Pre-load local ByteTrack only when running locally (non-client_only)
+        if not self._client_only:
             QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
 
         self._playback_sec: float = 0.0
@@ -1108,13 +1096,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # 載入 prompts.yml 並填入下拉式選單
         self._init_prompt_manager_and_fill_styles()
 
-        if not self._client_only:
+        if self.livecc_model is not None:
             self._initLiveCCWorker()
             self._initCameraWorker()
-            if self.livecc_model is not None:
-                self.livecc_worker.signal_model_loaded.emit()
+            self.livecc_worker.signal_model_loaded.emit()
         else:
-            self.statusBar().showMessage("遠端推論用戶端：請先連線遠端伺服器後再開始播報", 0)
+            self.statusBar().showMessage("請連線遠端伺服器後開始播報", 0)
             self.control_panel.set_status("請點「連線遠端伺服器」按鈕設定 Host/Port 並連線")
 
         # Remote control panel signals
@@ -1210,7 +1197,6 @@ class MainWindow(QtWidgets.QMainWindow):
         runner.signal_status.connect(self.on_remote_status)
         runner.signal_error.connect(self.on_remote_server_error)
         self._socket_runner = runner
-        self._remote_mode = True
         runner.start()
 
     @QtCore.Slot()
@@ -1219,9 +1205,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_text("[Remote] 中斷連線")
             self._socket_runner.disconnect_and_quit()
             self._socket_runner = None
-        if not self._client_only:
-            self._remote_mode = self.control_panel.is_remote_mode()
-        self.model_ready = (not self._client_only) and (self.livecc_model is not None)
+        self.model_ready = (self.livecc_model is not None)
         self.control_panel.set_remote_connected(False, "未連線")
         self._update_start_button_state()
 
@@ -1237,10 +1221,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text(f"[Remote] 連線中斷: {reason}")
         self.control_panel.set_remote_connected(False, "連線中斷")
         self._socket_runner = None
-        if not self._client_only:
-            self.model_ready = not self._remote_mode and (self.livecc_model is not None)
-        else:
-            self.model_ready = False
+        self.model_ready = (self.livecc_model is not None)
         if self.is_inference_running:
             self.stop_inference()
         self._update_start_button_state()
@@ -1250,8 +1231,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text(f"[Remote] 連線失敗: {msg}")
         self.control_panel.set_remote_connected(False, "連線失敗")
         self._socket_runner = None
-        if self._client_only:
-            self.model_ready = False
+        self.model_ready = (self.livecc_model is not None)
         self._update_start_button_state()
 
     @QtCore.Slot(str)
@@ -1490,8 +1470,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text("已切換至「鏡頭 + 追蹤」；追蹤在遠端執行，本機只送畫面")
         self._stop_all_source_threads()
 
-        if self._client_only:
-            # No local ByteTrack: plain camera; server uses mode=obs_track for its own ByteTrack
+        use_remote_track = self._socket_runner is not None or self._client_only
+        if use_remote_track:
+            # Remote path: plain camera; server receives raw frames and runs ByteTrack there.
             from .core.io.obs_input import find_physical_camera_index
             self.camera_start_time = time.time()
             cam_idx = find_physical_camera_index()
@@ -1590,19 +1571,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_inference()
             return
 
-        if self._client_only and self.mode == "file":
-            QtWidgets.QMessageBox.information(
-                self,
-                "遠端用戶端",
-                "此安裝僅在遠端主機上推論 LiveCC。請使用即時影像來源（攝影機等），並先連線遠端伺服器。"
-                "\n\nOffline 檔案僅能預覽，不會在遠端執行推論。",
-            )
-            return
-
         if not self.model_ready:
-            self.append_text(
-                "請先連線遠端伺服器" if self._client_only else "Model not ready yet"
-            )
+            self.append_text("請先連線遠端伺服器，或等待本機模型載入完成")
             return
 
         # Start new log session before inference
@@ -1624,7 +1594,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.set_start_button_state(True)
         self.control_panel.set_tts_controls_enabled(False)  # Lock during inference
         self.text_output.setText("")
-        self._obs_drop_logged = False  # reset drop-log flag so it fires again if needed
+        self._obs_drop_logged = False
 
         self.append_text(f"Starting inference (Style: {style_label}, TTS: {self.tts_mode})")
         self.append_text(f"開始推論 (Style: {style_label}, TTS: {self.tts_mode})")
@@ -1645,24 +1615,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.signal_video_ended.connect(self.on_finished)
             self.video_thread.signal_invalid_video.connect(self.on_error)
             self.video_thread.start()
-            # Local file + LiveCC only in legacy (non client_only) mode
-            if not self._client_only:
+
+            if self._socket_runner is not None:
+                # Remote: frames are streamed via on_video_frame → send_frame
+                self._socket_runner.start_inference(self.mode, prompt)
+            elif self.livecc_model is not None:
+                # Local: pass file path directly to local LiveCC worker
                 self.signal_start_livecc.emit(self.current_video_path, prompt)
-            # client_only: blocked above; this branch is legacy-only for playback+local infer
 
         elif self.mode in ("camera", "obs", "obs_track", "dual_sync"):
-            if self._client_only:
-                if self._socket_runner is None:
-                    self.append_text("未連線遠端，無法開始。請先按 Connect。")
-                    self.is_inference_running = False
-                    self.control_panel.set_start_button_state(False)
-                    self.control_panel.set_tts_controls_enabled(True)
-                    return
+            if self._socket_runner is not None:
                 self._socket_runner.start_inference(self.mode, prompt)
-            elif self._remote_mode and self._socket_runner is not None:
-                self._socket_runner.start_inference(self.mode, prompt)
-            else:
+            elif self.livecc_model is not None:
                 self.signal_start_camera_livecc.emit(prompt)
+            else:
+                self.append_text("未連線遠端，無法開始。請先按「連線遠端伺服器」。")
+                self.is_inference_running = False
+                self.control_panel.set_start_button_state(False)
+                self.control_panel.set_tts_controls_enabled(True)
+                return
 
     def stop_inference(self) -> None:
         if not self.is_inference_running:
@@ -1675,17 +1646,16 @@ class MainWindow(QtWidgets.QMainWindow):
             except: pass
 
         # Remote: tell server to stop
-        if self._remote_mode and self._socket_runner is not None:
+        if self._socket_runner is not None:
             try:
                 self._socket_runner.stop_inference()
             except Exception:
                 pass
 
-        if not self._client_only:
-            if hasattr(self, "livecc_worker") and self.livecc_worker is not None:
-                self.livecc_worker.requestStop()
-            if hasattr(self, "cam_worker") and self.cam_worker is not None:
-                self.cam_worker.requestStop()
+        if hasattr(self, "livecc_worker") and self.livecc_worker is not None:
+            self.livecc_worker.requestStop()
+        if hasattr(self, "cam_worker") and self.cam_worker is not None:
+            self.cam_worker.requestStop()
 
         if self.mode == "file" and self.video_thread:
             self.video_thread.requestStop()
@@ -1727,22 +1697,28 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.mode == "file" and fps and fps > 0:
             self._playback_sec = float(frame_idx) / float(fps)
 
+        # Stream video frames to remote server for file-mode inference
+        if self.mode == "file" and self.is_inference_running and self._socket_runner is not None:
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            self._socket_runner.send_frame(frame_bgr, self._playback_sec)
+
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
         self.video_panel.update_frame(frame_rgb)
         if not self.is_inference_running:
             return
-        if self.mode not in ("camera", "obs", "dual_sync"):
+        # obs_track on thin client: frames come from plain CameraThread and
+        # must be forwarded to the remote server so it can run ByteTrack there.
+        # Include obs_track here for remote-only (client_only) path.
+        if self.mode not in ("camera", "obs", "dual_sync", "obs_track"):
             return
 
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         t_relative = time.time() - self.camera_start_time
 
         if self._socket_runner is not None:
-            # Remote inference: send compressed frame to server
             self._socket_runner.send_frame(frame_bgr, t_relative)
-        elif not self._client_only and hasattr(self, "cam_worker") and self.cam_worker is not None:
-            # Legacy local-inference only
+        elif hasattr(self, "cam_worker") and self.cam_worker is not None:
             self.cam_worker.push_frame(frame_bgr, t_relative)
 
     @QtCore.Slot(np.ndarray)
@@ -1766,7 +1742,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self._socket_runner is not None:
             self._socket_runner.send_frame(subject_bgr, t_relative)
-        elif not self._client_only and hasattr(self, "cam_worker") and self.cam_worker is not None:
+        elif hasattr(self, "cam_worker") and self.cam_worker is not None:
             self.cam_worker.push_frame(subject_bgr, t_relative)
 
     @QtCore.Slot(str, str, str)
@@ -1840,18 +1816,9 @@ class MainWindow(QtWidgets.QMainWindow):
         cap.release()
 
     def _update_start_button_state(self) -> None:
-        if self._client_only:
-            # Thin client: only after remote TCP is up; no file-based remote infer in v1
-            has_path = self.current_video_path is not None
-            not_file = self.mode != "file"
-            can_start = bool(
-                self._socket_runner is not None and has_path and not_file
-            )
-        else:
-            remote_ok = self._remote_mode and self._socket_runner is not None
-            can_start = (self.model_ready or remote_ok) and (
-                self.current_video_path is not None
-            )
+        # Allow start when: remote connected OR local model ready, and a source is selected
+        ready = self._socket_runner is not None or self.model_ready
+        can_start = ready and (self.current_video_path is not None)
         self.control_panel.btn_start.setEnabled(bool(can_start))
 
     def append_text(self, msg: str) -> None:
@@ -2007,14 +1974,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tts_thread.quit()
             self.tts_thread.wait(2000)
 
-        # Stop LiveCC worker threads (not created in client_only mode)
-        if not self._client_only:
-            if hasattr(self, "cam_worker_thread") and self.cam_worker_thread:
-                self.cam_worker_thread.quit()
-                self.cam_worker_thread.wait(2000)
-            if hasattr(self, "livecc_thread") and self.livecc_thread:
-                self.livecc_thread.quit()
-                self.livecc_thread.wait(2000)
+        # Stop local LiveCC worker threads (only exist when model was loaded locally)
+        if hasattr(self, "cam_worker_thread") and self.cam_worker_thread:
+            self.cam_worker_thread.quit()
+            self.cam_worker_thread.wait(2000)
+        if hasattr(self, "livecc_thread") and self.livecc_thread:
+            self.livecc_thread.quit()
+            self.livecc_thread.wait(2000)
         try:
             self.signal_local_tts_stop.emit()
         except: pass
