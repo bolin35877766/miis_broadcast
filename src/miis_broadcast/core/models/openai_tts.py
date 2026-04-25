@@ -391,47 +391,112 @@ async def _openai_realtime_worker():
 # ==========================================
 # 🔊 播放 Worker
 # ==========================================
-def _audio_player_worker():
-    if not shutil.which("ffplay"):
-        # Defensive: start_tts_system() already warns; audio thread no-ops
-        return
+def _apply_audio_chunk_latency_stats() -> None:
+    """First audio chunk per utterance: record TTS and E2E latency stats."""
+    if _perf_stats["last_text_sent_ts"] > 0:
+        latency = time.time() - _perf_stats["last_text_sent_ts"]
+        _log_tts_latency(latency)
+        _perf_stats["last_text_sent_ts"] = 0.0
+    if _perf_stats["current_ref_ts"] > 0:
+        e2e_latency = time.time() - _perf_stats["current_ref_ts"]
+        _perf_stats["e2e_latencies"].append(e2e_latency)
+        _perf_stats["current_ref_ts"] = 0.0
+
+
+def _audio_player_worker_sounddevice() -> None:
+    """Play PCM int16 @ 24 kHz mono via PortAudio (works on Windows without ffplay)."""
+    import sounddevice as sd
+
+    stream = sd.OutputStream(
+        samplerate=24000,
+        channels=1,
+        dtype="int16",
+        latency="low",
+    )
+    stream.start()
+    print("🔊 [TTS] 使用 sounddevice 播放（預設音訊輸出裝置）")
+
+    while not _stop_event.is_set():
+        try:
+            audio_chunk = _audio_output_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        _apply_audio_chunk_latency_stats()
+        try:
+            if audio_chunk is not None and getattr(audio_chunk, "size", 0) > 0:
+                x = np.ascontiguousarray(audio_chunk, dtype=np.int16).reshape(-1, 1)
+                stream.write(x)
+        except Exception as e:
+            _log.debug("sounddevice write: %s", e)
+
+    try:
+        stream.stop()
+        stream.close()
+    except Exception:
+        pass
+
+
+def _audio_player_worker_ffplay() -> None:
+    """Play via ffplay raw PCM pipe (legacy path)."""
     cmd = [
         "ffplay", "-f", "s16le", "-ar", "24000", "-ac", "1", "-nodisp",
         "-i", "pipe:0", "-loglevel", "quiet", "-fflags", "nobuffer",
         "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0",
     ]
-    process = None
-    
+    process: Optional[subprocess.Popen] = None
+
     while not _stop_event.is_set():
         try:
             audio_chunk = _audio_output_queue.get(timeout=0.1)
-            
-            # --- 計算 TTS Latency (API 反應時間) ---
-            if _perf_stats["last_text_sent_ts"] > 0:
-                latency = time.time() - _perf_stats["last_text_sent_ts"]
-                _log_tts_latency(latency)
-                _perf_stats["last_text_sent_ts"] = 0.0
+        except queue.Empty:
+            continue
 
-            # --- 計算 E2E Latency (新增: 視覺+傳輸+語音) ---
-            if _perf_stats["current_ref_ts"] > 0:
-                e2e_latency = time.time() - _perf_stats["current_ref_ts"]
-                _perf_stats["e2e_latencies"].append(e2e_latency)
-                _perf_stats["current_ref_ts"] = 0.0  # 重置，避免同一句重複計算
+        _apply_audio_chunk_latency_stats()
 
-            if process is None or process.poll() is not None:
-                try:
-                    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
-                except: pass
+        if process is None or process.poll() is not None:
+            try:
+                process = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0
+                )
+            except OSError as e:
+                _log.debug("ffplay Popen: %s", e)
+                process = None
 
-            if process:
-                try:
-                    process.stdin.write(audio_chunk.tobytes())
-                    process.stdin.flush()
-                except: process = None
-        except queue.Empty: continue
-        except Exception: pass
+        if process and process.stdin:
+            try:
+                process.stdin.write(audio_chunk.tobytes())
+                process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                process = None
 
-    if process: process.terminate()
+    if process and process.poll() is None:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+
+
+def _audio_player_worker() -> None:
+    # Prefer sounddevice (requirements.txt): works on Windows without ffplay in PATH.
+    try:
+        _audio_player_worker_sounddevice()
+        return
+    except Exception as e:
+        _log.warning("sounddevice playback path failed: %s", e, exc_info=True)
+        print(f"⚠️ [TTS] sounddevice 無法使用（{e!s}），改試 ffplay…")
+
+    if shutil.which("ffplay"):
+        print("🔊 [TTS] 使用 ffplay 播放")
+        _audio_player_worker_ffplay()
+        return
+
+    _log.error(
+        "No audio backend: install sounddevice (pip) or add ffplay (FFmpeg) to PATH"
+    )
+    print(
+        "❌ [TTS] 無法播放聲音：sounddevice 與 ffplay 皆不可用。\n"
+        "   請: pip install sounddevice  或  安裝 FFmpeg 並將 ffplay 加入 PATH"
+    )
 
 
 # ==========================================
@@ -440,14 +505,10 @@ def _audio_player_worker():
 def start_tts_system() -> None:
     global _tts_threads_started
     if _tts_threads_started: return
+    # Audio: prefer sounddevice; ffplay is optional fallback (see _audio_player_worker).
     if not shutil.which("ffplay"):
-        _log.error(
-            "ffplay not found on PATH. Install FFmpeg and add the bin directory "
-            "to your system PATH; audio playback uses ffplay (PCM pipe)."
-        )
         print(
-            "❌ [TTS] 找不到 ffplay（需安裝 FFmpeg 並把 bin 加入系統 PATH）。\n"
-            "   有收到解說文字也仍不會有聲音。下載: https://ffmpeg.org/download.html"
+            "ℹ️ [TTS] 未偵測到 ffplay；將優先使用 sounddevice 播放（無須安裝 FFmpeg）。"
         )
     _stop_event.clear()
     t1 = threading.Thread(target=lambda: asyncio.run(_openai_realtime_worker()), daemon=True)
