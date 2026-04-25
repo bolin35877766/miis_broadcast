@@ -6,13 +6,12 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
 
 ## Features
 
-- **Six input modes**:
-  - Video file playback
-  - Live camera feed (Auto-detects physical webcams, skips OBS Virtual Camera)
-  - OBS Virtual Camera stream
-  - VR headset stream — Meta Quest via Quest Link → OBS Virtual Camera (plain stream)
-  - Integrated ByteTrack subject tracking (physical webcam only)
-  - **VR & Webcam synchronized dual-source** — side-by-side `1280×480` composite with sub-millisecond frame alignment
+- **Five input modes** (matches the Source panel: **Offline** + **Online ▾** menu):
+  - **Video file** — local file playback with seek bar
+  - **Webcam** — physical camera only; auto-detect skips the OBS Virtual Camera device
+  - **Webcam + Tracking** — ByteTrack subject lock and box overlay; with **remote inference** the server runs ByteTrack on the received frames; with **local inference** tracking runs on this machine via `CameraByteTrackThread`
+  - **VR (OBS Virtual Camera)** — any source you route into OBS (e.g. Quest Link / game capture) and expose as **OBS Virtual Camera**; same “plain” full-frame stream as Webcam, different device index
+  - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
@@ -242,14 +241,15 @@ python -m miis_broadcast
 ### In the GUI
 
 1. **Select input** — two buttons in the Source panel:
-   - **📁 Offline** — click to open a local video file
-   - **🌐 Online ▾** — dropdown with three live input modes:
+   - **📁 Offline** — open a local video file
+   - **🌐 Online ▾** — four live sources:
      - **📷 Webcam** — physical webcam, plain stream (auto-skips OBS Virtual Camera)
-     - **🎯 Webcam + Tracking** — physical webcam with ByteTrack subject tracking
-     - **🥽 VR (OBS Virtual Camera)** — Meta Quest via Quest Link → OBS Virtual Camera, plain stream
+     - **🎯 Webcam + Tracking** — ByteTrack; **remote** = tracking on server, **local** = `CameraByteTrackThread` on this PC
+     - **🥽 VR (OBS Virtual Camera)** — e.g. Quest Link / capture into OBS, then use OBS Virtual Camera as the device
+     - **🎮 VR & Webcam (Sync)** — `1280×480` side-by-side: webcam + OBS Virtual Camera
 2. **Choose a commentary style** from the dropdown
 3. **Select TTS backend** — OpenAI Realtime or ChatterBox Local (Note: ChatterBox may be disabled in some environments)
-4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s to load). The ByteTrack model preloads in the background automatically, so switching to any tracking mode after startup is instant.
+4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s on first local use). ByteTrack (YOLOX) preloads in the background so **Webcam + Tracking** is ready without a long stall (local path only).
 5. Commentary text appears in the transcript panel and is read aloud in real time
 6. **Click Stop Broadcasting** to end inference; latency statistics are printed to the console
 
