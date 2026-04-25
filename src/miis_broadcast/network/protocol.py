@@ -28,6 +28,7 @@ MSG_ERROR   = "ERROR"
 MSG_STOP    = "STOP"
 MSG_PING    = "PING"
 MSG_PONG    = "PONG"
+MSG_PREVIEW = "PREVIEW"  # JPEG frame with tracking overlay for thin-client GUI
 
 _HEADER_FMT  = ">II"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)  # 8 bytes

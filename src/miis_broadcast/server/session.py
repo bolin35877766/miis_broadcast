@@ -27,7 +27,7 @@ import numpy as np
 
 from ..network.protocol import (
     MSG_ACK, MSG_ERROR, MSG_FRAME, MSG_HELLO,
-    MSG_PING, MSG_PONG, MSG_SEGMENT, MSG_START,
+    MSG_PING, MSG_PONG, MSG_PREVIEW, MSG_SEGMENT, MSG_START,
     MSG_STATUS, MSG_STOP,
     PROTOCOL_VERSION, pack_message, read_message,
 )
@@ -66,6 +66,8 @@ class ClientSession:
 
         self._stop = False
         self._mode = "camera"
+        self._bt_frame_id: int = 0
+        self._last_preview_mono: float = 0.0
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -133,6 +135,9 @@ class ClientSession:
         log.info("[Session %s] Inference START mode=%s", self.addr, mode)
         self._send({"type": MSG_STATUS, "msg": f"Inference started (mode={mode})"})
 
+        self._bt_frame_id = 0
+        self._last_preview_mono = 0.0
+
         buffer: deque[_FrameItem] = deque(maxlen=180)
         stop_event = threading.Event()
 
@@ -188,9 +193,21 @@ class ClientSession:
             return
 
         if bt is not None:
-            # ByteTrack mode: use subject crop
+            # ByteTrack: process() returns annotated BGR (boxes) + subject crop (RGB) for LiveCC
             try:
-                _, subject_rgb = bt.track(frame_bgr)
+                self._bt_frame_id += 1
+                annotated_bgr, subject_rgb = bt.process(frame_bgr, self._bt_frame_id)
+
+                # Throttle preview to ~12 fps so the thin-client UI can show boxes
+                _now = time.monotonic()
+                if _now - self._last_preview_mono >= (1.0 / 12.0):
+                    self._last_preview_mono = _now
+                    ret, jbuf = cv2.imencode(
+                        ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 72]
+                    )
+                    if ret:
+                        self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
+
                 if subject_rgb is not None:
                     subject_bgr = cv2.cvtColor(
                         cv2.resize(subject_rgb, (640, 480)),

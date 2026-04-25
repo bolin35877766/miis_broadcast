@@ -25,7 +25,7 @@ from PySide6 import QtCore
 
 from .protocol import (
     MSG_ACK, MSG_ERROR, MSG_FRAME, MSG_HELLO,
-    MSG_PING, MSG_PONG, MSG_SEGMENT, MSG_START,
+    MSG_PING, MSG_PONG, MSG_PREVIEW, MSG_SEGMENT, MSG_START,
     MSG_STATUS, MSG_STOP,
     PROTOCOL_VERSION, pack_message, read_message,
 )
@@ -55,6 +55,8 @@ class SocketClientRunner(QtCore.QThread):
     signal_segment       = QtCore.Signal(float, float, str)
     signal_status        = QtCore.Signal(str)
     signal_error         = QtCore.Signal(str)
+    # BGR numpy (HxWx3 uint8) — server-side tracking preview with boxes
+    signal_preview       = QtCore.Signal(object)
 
     def __init__(
         self,
@@ -192,3 +194,10 @@ class SocketClientRunner(QtCore.QThread):
             self.signal_error.emit(str(msg.get("msg", "")))
         elif t == MSG_PING:
             self._send_raw(pack_message({"type": MSG_PONG}))
+        elif t == MSG_PREVIEW:
+            if not binary:
+                return
+            nparr = np.frombuffer(binary, dtype=np.uint8)
+            bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if bgr is not None:
+                self.signal_preview.emit(bgr)

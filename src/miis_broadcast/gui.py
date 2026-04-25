@@ -1196,6 +1196,7 @@ class MainWindow(QtWidgets.QMainWindow):
         runner.signal_segment.connect(self.on_segment)
         runner.signal_status.connect(self.on_remote_status)
         runner.signal_error.connect(self.on_remote_server_error)
+        runner.signal_preview.connect(self.on_remote_track_preview)
         self._socket_runner = runner
         runner.start()
 
@@ -1237,6 +1238,17 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(str)
     def on_remote_status(self, msg: str) -> None:
         self.statusBar().showMessage(f"[Remote] {msg}", 3000)
+
+    @QtCore.Slot(object)
+    def on_remote_track_preview(self, frame_bgr: object) -> None:
+        # Server sends annotated BGR with ByteTrack boxes (throttled) during obs_track
+        if not isinstance(frame_bgr, np.ndarray) or self.mode != "obs_track":
+            return
+        if not self._socket_runner:
+            return
+        if not self.is_inference_running:
+            return
+        self.video_panel.update_frame(frame_bgr, is_bgr=True)
 
     @QtCore.Slot(str)
     def on_remote_server_error(self, msg: str) -> None:
@@ -1704,7 +1716,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
-        self.video_panel.update_frame(frame_rgb)
+        # obs_track + remote: preview with boxes is driven by on_remote_track_preview
+        if not (
+            self.mode == "obs_track"
+            and self._socket_runner is not None
+            and self.is_inference_running
+        ):
+            self.video_panel.update_frame(frame_rgb)
         if not self.is_inference_running:
             return
         # obs_track on thin client: frames come from plain CameraThread and
