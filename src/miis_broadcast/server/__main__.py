@@ -19,10 +19,18 @@ import socket
 import sys
 import threading
 
+# Force unbuffered output so logs appear immediately in SSH/tmux sessions
+sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+
+# force=True ensures this takes effect even if a previously imported package
+# (e.g. transformers, torch) already attached a handler to the root logger.
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s %(name)s — %(message)s",
     datefmt="%H:%M:%S",
+    stream=sys.stderr,
+    force=True,
 )
 log = logging.getLogger("miis_broadcast.server")
 

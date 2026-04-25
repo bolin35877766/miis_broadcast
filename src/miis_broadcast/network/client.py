@@ -15,8 +15,10 @@ Usage from main thread:
 from __future__ import annotations
 
 import logging
+import queue
 import socket
 import threading
+import time
 from typing import Optional
 
 import cv2
@@ -32,12 +34,22 @@ from .protocol import (
 
 log = logging.getLogger(__name__)
 
+# Maximum frames buffered for sending; excess are dropped to avoid memory growth.
+_FRAME_QUEUE_MAX = 30
+# Maximum frame send rate to the server (fps).  LiveCC runs at ~0.5 fps so 6fps
+# is more than enough and keeps the TCP buffer from overwhelming the main thread.
+_FRAME_SEND_FPS_MAX = 6.0
+
 
 class SocketClientRunner(QtCore.QThread):
     """
     Connects to the inference server and runs the receive loop in a background
-    QThread.  All outgoing sends (frames, control messages) are thread-safe
-    via an internal lock.
+    QThread.  All outgoing sends (frames, control messages) are thread-safe.
+
+    Frame sending is fully non-blocking from the caller's perspective: send_frame()
+    encodes the frame and drops it into an internal queue; a dedicated background
+    thread drains the queue and calls sendall().  This prevents the GUI thread
+    from ever blocking on a TCP write.
 
     Signals (emitted from the background thread, delivered via Qt queued
     connection to the main/GUI thread automatically):
@@ -47,6 +59,7 @@ class SocketClientRunner(QtCore.QThread):
         signal_segment(f, f, s) — start_t, stop_t, text from server
         signal_status(str)      — informational message from server
         signal_error(str)       — error message from server
+        signal_preview(object)  — BGR ndarray from server tracking overlay
     """
 
     signal_connected     = QtCore.Signal()
@@ -70,7 +83,16 @@ class SocketClientRunner(QtCore.QThread):
         self._sock: Optional[socket.socket] = None
         self._stop_requested = False
         self._frame_id = 0
-        self._send_lock = threading.Lock()
+        # Protects control-message sends (START / STOP / HELLO).
+        # Frame sends go through the dedicated sender thread instead.
+        self._ctrl_lock = threading.Lock()
+        # Pre-encoded JPEG bytes (not raw numpy) so encoding is off the GUI thread.
+        self._frame_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(
+            maxsize=_FRAME_QUEUE_MAX
+        )
+        # Client-side frame rate throttle
+        self._last_frame_sent_mono: float = 0.0
+        self._min_frame_interval: float = 1.0 / _FRAME_SEND_FPS_MAX
 
     # ------------------------------------------------------------------ #
     # QThread entry point
@@ -78,6 +100,13 @@ class SocketClientRunner(QtCore.QThread):
 
     def run(self) -> None:
         self._stop_requested = False
+        # Drain any leftover frames from a previous run
+        while not self._frame_queue.empty():
+            try:
+                self._frame_queue.get_nowait()
+            except queue.Empty:
+                break
+
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(10.0)
@@ -89,12 +118,20 @@ class SocketClientRunner(QtCore.QThread):
             return
 
         # HELLO handshake
-        self._send_raw(pack_message({"type": MSG_HELLO, "protocol_version": PROTOCOL_VERSION}))
+        self._send_ctrl(pack_message({"type": MSG_HELLO, "protocol_version": PROTOCOL_VERSION}))
 
         self.signal_connected.emit()
         log.info("[SocketClient] Connected to %s:%d", self._host, self._port)
 
-        # Receive loop
+        # Start the dedicated frame-sender thread so send_frame() is never blocking
+        sender_thread = threading.Thread(
+            target=self._frame_sender_loop,
+            daemon=True,
+            name="socket-frame-sender",
+        )
+        sender_thread.start()
+
+        # Receive loop (runs in the QThread's worker thread)
         while not self._stop_requested:
             try:
                 result = read_message(self._sock)
@@ -108,8 +145,16 @@ class SocketClientRunner(QtCore.QThread):
                 break
             self._handle_message(*result)
 
+        # Signal the frame sender to stop, then wait briefly
+        self._stop_requested = True
+        try:
+            self._frame_queue.put_nowait(None)  # sentinel to unblock the sender
+        except queue.Full:
+            pass
+        sender_thread.join(timeout=2.0)
+
         # Cleanup
-        with self._send_lock:
+        with self._ctrl_lock:
             if self._sock:
                 try:
                     self._sock.close()
@@ -122,40 +167,52 @@ class SocketClientRunner(QtCore.QThread):
     # ------------------------------------------------------------------ #
 
     def send_frame(self, frame_bgr: np.ndarray, t: float) -> None:
-        """Compress frame to JPEG and send FRAME message to server."""
-        if self._sock is None:
+        """
+        Encode frame and enqueue for sending.  Returns immediately (non-blocking).
+        Frames are dropped when the queue is full so the GUI thread never stalls.
+        """
+        if self._sock is None or self._stop_requested:
             return
+
+        # Client-side rate throttle — no need to flood faster than the server reads
+        now = time.monotonic()
+        if now - self._last_frame_sent_mono < self._min_frame_interval:
+            return
+        self._last_frame_sent_mono = now
+
         try:
             ret, jpeg_buf = cv2.imencode(
                 ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
             )
             if not ret:
                 return
-            jpeg_bytes = jpeg_buf.tobytes()
-            msg = {
-                "type": MSG_FRAME,
-                "frame_id": self._frame_id,
-                "t": float(t),
-            }
+            msg = {"type": MSG_FRAME, "frame_id": self._frame_id, "t": float(t)}
             self._frame_id += 1
-            self._send_raw(pack_message(msg, jpeg_bytes))
+            wire = pack_message(msg, jpeg_buf.tobytes())
+            self._frame_queue.put_nowait(wire)
+        except queue.Full:
+            pass  # drop frame — server is catching up
         except Exception as e:
-            log.warning("[SocketClient] send_frame: %s", e)
+            log.warning("[SocketClient] send_frame encode: %s", e)
 
     def start_inference(self, mode: str, query: str) -> None:
         """Tell server to begin inference with given mode and query prompt."""
-        self._send_raw(
+        self._send_ctrl(
             pack_message({"type": MSG_START, "mode": mode, "query": query})
         )
 
     def stop_inference(self) -> None:
         """Tell server to stop current inference session."""
-        self._send_raw(pack_message({"type": MSG_STOP}))
+        self._send_ctrl(pack_message({"type": MSG_STOP}))
 
     def disconnect_and_quit(self) -> None:
         """Gracefully close socket and stop the QThread."""
         self._stop_requested = True
-        with self._send_lock:
+        try:
+            self._frame_queue.put_nowait(None)  # sentinel for the sender thread
+        except queue.Full:
+            pass
+        with self._ctrl_lock:
             if self._sock:
                 try:
                     self._sock.close()
@@ -169,14 +226,35 @@ class SocketClientRunner(QtCore.QThread):
     # Internal helpers
     # ------------------------------------------------------------------ #
 
-    def _send_raw(self, data: bytes) -> None:
-        with self._send_lock:
+    def _frame_sender_loop(self) -> None:
+        """Background thread: drains the frame queue and does the actual sendall."""
+        while not self._stop_requested:
+            try:
+                wire = self._frame_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if wire is None:
+                break  # sentinel — time to stop
+            with self._ctrl_lock:
+                sock = self._sock
+            if sock is None:
+                continue
+            try:
+                sock.sendall(wire)
+            except Exception as e:
+                if not self._stop_requested:
+                    log.warning("[SocketClient] frame send failed: %s", e)
+                break
+
+    def _send_ctrl(self, data: bytes) -> None:
+        """Send a control message (HELLO / START / STOP).  Thread-safe."""
+        with self._ctrl_lock:
             if self._sock is None:
                 return
             try:
                 self._sock.sendall(data)
             except Exception as e:
-                log.warning("[SocketClient] send failed: %s", e)
+                log.warning("[SocketClient] ctrl send failed: %s", e)
 
     def _handle_message(self, msg: dict, binary: bytes) -> None:
         t = msg.get("type")
@@ -193,7 +271,7 @@ class SocketClientRunner(QtCore.QThread):
         elif t == MSG_ERROR:
             self.signal_error.emit(str(msg.get("msg", "")))
         elif t == MSG_PING:
-            self._send_raw(pack_message({"type": MSG_PONG}))
+            self._send_ctrl(pack_message({"type": MSG_PONG}))
         elif t == MSG_PREVIEW:
             if not binary:
                 return
