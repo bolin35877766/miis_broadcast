@@ -1604,8 +1604,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_text("請先連線遠端伺服器，或等待本機模型載入完成")
             return
 
-        # Start new log session before inference
-        log_path = self.session_logger.start_new_session(self.mode)
+        # Session file: same layout for every input mode; header records where LiveCC runs
+        if self._socket_runner is not None:
+            inference_backend = "remote"
+        elif getattr(self, "livecc_model", None) is not None:
+            inference_backend = "local"
+        else:
+            inference_backend = "unknown"
+        log_path = self.session_logger.start_new_session(
+            self.mode, inference_backend=inference_backend
+        )
         print(f"[Main] Session log started: {log_path}")
 
         style_key = self.control_panel.get_selected_style_key()
@@ -1651,6 +1659,14 @@ class MainWindow(QtWidgets.QMainWindow):
             elif self.livecc_model is not None:
                 # Local: pass file path directly to local LiveCC worker
                 self.signal_start_livecc.emit(self.current_video_path, prompt)
+            else:
+                self.append_text(
+                    "未連線遠端且本機無 LiveCC 模型，無法開始。請先連線遠端或安裝本機模型。"
+                )
+                self.is_inference_running = False
+                self.control_panel.set_start_button_state(False)
+                self.control_panel.set_tts_controls_enabled(True)
+                return
 
         elif self.mode in ("camera", "obs", "obs_track", "dual_sync"):
             if self._socket_runner is not None:
