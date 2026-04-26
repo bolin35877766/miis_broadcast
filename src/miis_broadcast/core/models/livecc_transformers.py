@@ -444,6 +444,22 @@ class LiveCCInfer:
             content.append({"type": "text", "text": query})
             state["query"] = query
 
+        # Reduce copy-paste commentary when recent_texts / KV keep prior wording
+        recent = state.get("recent_texts", [])
+        if isinstance(recent, list) and any(
+            isinstance(t, str) and t.strip() for t in recent
+        ):
+            content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "Diversity: do not restate the previous sentence. "
+                        "Vary phrasing. If the scene is unchanged, note one new micro-detail; "
+                        "avoid repeating the same opening clause as last time."
+                    ),
+                }
+            )
+
         return {"role": "user", "content": content}
 
     # ------------------------------
@@ -594,7 +610,7 @@ class LiveCCInfer:
                 temperature=0.9,
                 top_p=0.9,
                 top_k=30,
-                repetition_penalty=1.1,
+                repetition_penalty=1.22,
                 max_new_tokens=self.max_new_tokens,
             )
 
@@ -704,9 +720,9 @@ class LiveCCInfer:
             return_dict_in_generate=True,
             pad_token_id=self._pad_token_id_for_generate(),
             do_sample=True,
-            temperature=1,
+            temperature=0.9,
             top_p=0.9,
-            repetition_penalty=1.1,
+            repetition_penalty=1.22,
             max_new_tokens=self.max_new_tokens,
         )
 

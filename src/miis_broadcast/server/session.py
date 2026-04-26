@@ -13,6 +13,7 @@ ByteTrack (mode=obs_track):
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import socket
 import threading
@@ -33,6 +34,19 @@ from ..network.protocol import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _commentary_too_similar(prev: str, cur: str, *, ratio: float = 0.86) -> bool:
+    """True if the new segment is a near-duplicate of the last (loop / stuck phrasing)."""
+    a = (prev or "").strip().lower()
+    b = (cur or "").strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if len(b) < 20:
+        return a == b
+    return difflib.SequenceMatcher(None, a, b).ratio() >= ratio
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +87,8 @@ class ClientSession:
         self._tx_previews: int = 0
         self._tx_segments: int = 0
         self._infer_cycles: int = 0
+        # Drop near-duplicate LiveCC lines (overlapping 2s clips + KV tend to echo wording)
+        self._last_segment_text: str = ""
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -151,6 +167,7 @@ class ClientSession:
         self._tx_previews = 0
         self._tx_segments = 0
         self._infer_cycles = 0
+        self._last_segment_text = ""
 
         buffer: deque[_FrameItem] = deque(maxlen=180)
         stop_event = threading.Event()
@@ -332,8 +349,8 @@ class ClientSession:
                 len(buffer),
             )
 
-            # Periodic state reset to avoid repetition loops
-            if inference_count % 5 == 0:
+            # Periodic state reset: overlapping 2s clips + KV make echo outputs; clear more often on server
+            if inference_count % 3 == 0:
                 state = {}
                 log.debug("[Session] State reset (count=%d)", inference_count)
 
@@ -343,6 +360,14 @@ class ClientSession:
                 ):
                     if stop_event.is_set():
                         break
+                    if _commentary_too_similar(self._last_segment_text, text or ""):
+                        log.debug(
+                            "[Session] Skip near-duplicate segment (t=[%.2f,%.2f])",
+                            float(start_ts),
+                            float(stop_ts),
+                        )
+                        continue
+                    self._last_segment_text = text or ""
                     self._tx_segments += 1
                     tprev = (text or "").replace("\n", " ")[:100]
                     nseg = self._tx_segments
