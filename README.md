@@ -53,7 +53,7 @@ LiveCCWorker / LiveCCCameraWorker
 TTS Engine (OpenAI Realtime WebSocket or ChatterBox local)
         │ PCM 24 kHz
         ▼
-ffplay (audio output)
+sounddevice or ffplay (audio output)
 ```
 
 ### Remote inference (online / thin-client)
@@ -134,17 +134,19 @@ Key modules:
 
 - Python 3.10
 - CUDA-capable GPU (tested with CUDA 12.x)
-- `ffplay` (from FFmpeg) — required for audio output
+- For **OpenAI TTS** playback, either **`sounddevice`** (default; uses PortAudio) or **`ffplay`** (FFmpeg) on your **PATH** as a fallback
 - OpenAI API key (if using the OpenAI TTS backend)
 - [ByteTrack_repo](https://github.com/ifzhang/ByteTrack) — required for OBS + tracking mode (set path in `configs/models.yml` or via `BYTETRACK_REPO` env var)
 
 **No TTS sound?**  Check these in order:
 
 1. TTS combobox is **OpenAI TTS**, not **不啟用 (Mute)**.
-2. `ffplay` is on your **PATH** (install [FFmpeg](https://ffmpeg.org) for Windows, then open a *new* terminal and run `ffplay -version`). Without `ffplay`, the app will print a startup error in the console and there will be no audio even if commentary text appears.
+2. `pip install sounddevice` (or ensure `sounddevice` from `requirements.txt` is installed). If neither **sounddevice** nor **ffplay** works, the console prints an error and there will be no audio even if commentary text appears.
 3. `OPENAI_API_KEY` is valid; invalid keys stop the TTS WebSocket and also yield no sound.
 
-**Remote inference:** OpenAI TTS and `ffplay` playback run on the **client machine** (where you run the GUI) — not on the headless `miis_broadcast.server` host. The server only needs GPU for LiveCC + ByteTrack.
+**Remote inference:** OpenAI TTS and audio playback run on the **client machine** (where you run the GUI) — not on the headless `miis_broadcast.server` host. The server only needs GPU for LiveCC + ByteTrack.
+
+**Similar lines repeating in remote commentary?** The server builds **overlapping ~2s video clips** every inference tick; the VLM can echo the same phrasing. The server also **skips near-duplicate** segments (vs. the previous line) and periodically resets model state to mitigate loops; for variety, adjust the **commentary style** / `query` in `configs/livecc_prompts.yml` (e.g. ask for 繁體中文).
 
 ### Python dependencies
 
