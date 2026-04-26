@@ -1756,14 +1756,16 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
         # obs_track + remote + infer: raw 30fps camera must not overwrite server PREVIEW (boxes).
-        # Threshold = 400 ms — safely covers the 67 ms PREVIEW interval (15 fps) even when the
-        # GPU or network introduces occasional jitter.
+        # Threshold = 1500 ms — ByteTrack (YOLOX) + concurrent LiveCC inference can push
+        # PREVIEW intervals well above 67 ms; 400 ms was too tight and caused visible jumping
+        # between raw and annotated frames.  1500 ms still falls back to raw if the server
+        # stops sending for 1.5 s (e.g. connection lost).
         if (
             self.mode == "obs_track"
             and self._socket_runner is not None
             and self.is_inference_running
         ):
-            if time.monotonic() - self._last_track_preview_mono < 0.40:
+            if time.monotonic() - self._last_track_preview_mono < 1.50:
                 pass  # keep last PREVIEW visible
             else:
                 self.video_panel.update_frame(frame_rgb)

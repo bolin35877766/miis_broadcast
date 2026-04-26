@@ -101,15 +101,17 @@ and fills the server-side buffer.  15 fps (≈ 67 ms/frame) provides:
 - Less than half the camera's 30 fps, so the send queue stays near-empty under normal conditions
 - Sufficient temporal density for the LiveCC clip builder (`window_sec=2.0, target_fps=2.0`)
 
-#### Why the PREVIEW display threshold is 400 ms
+#### Why the PREVIEW display threshold is 1500 ms
 
-The camera thread emits raw frames at 30 fps (~33 ms).  Server PREVIEW frames arrive at
-~67 ms intervals (15 fps).  Without a hold-off, the next raw camera frame would overwrite
-the annotated PREVIEW within 33 ms — the tracking boxes would flash and disappear.
+The camera thread emits raw frames at 30 fps (~33 ms).  Server PREVIEW frames nominally
+arrive at ~67 ms intervals (15 fps), but ByteTrack (YOLOX) running alongside LiveCC
+inference can push actual intervals well above that under GPU load.
 
-A 400 ms threshold means: after the last server PREVIEW arrives, raw frames are suppressed
-for 400 ms.  This safely covers two missed PREVIEWs (134 ms) plus typical network/GPU
-jitter, keeping the boxes visible continuously.
+A 1500 ms threshold means: after the last server PREVIEW arrives, raw frames are suppressed
+for 1.5 s.  This keeps annotated frames visible even when the server is momentarily busy,
+without permanently freezing if the connection drops (after 1.5 s of silence the client
+falls back to raw camera).  A narrower threshold (e.g. 400 ms) caused the annotated and
+raw frames to alternate visibly — tracking boxes appeared to jump.
 
 Key modules:
 
