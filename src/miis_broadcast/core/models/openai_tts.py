@@ -258,6 +258,8 @@ async def _openai_realtime_worker():
                 cfg = _get_tts_cfg_snapshot()
 
                 # 1. Session Update
+                # warmed_up becomes True when OpenAI echoes back "session.updated"
+                # (typically <300 ms) — no audio warmup round-trip needed.
                 await websocket.send(json.dumps({
                     "type": "session.update",
                     "session": {
@@ -271,16 +273,7 @@ async def _openai_realtime_worker():
                     },
                 }))
 
-                # 2. Warmup
-                await websocket.send(json.dumps({
-                    "type": "conversation.item.create",
-                    "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "warmup"}]},
-                }))
-                await websocket.send(json.dumps({"type": "response.create"}))
-                is_response_active = True
-                doing_warmup = True
-
-                # 3. 主循環
+                # 2. 主循環
                 while not _stop_event.is_set():
                     
                     # (A) 檢查設定更新
@@ -346,17 +339,17 @@ async def _openai_realtime_worker():
                         event = json.loads(message)
                         etype = event.get("type", "")
 
-                        if etype == "response.audio.delta":
+                        if etype == "session.updated":
+                            if not warmed_up:
+                                warmed_up = True
+                                print("✅ [TTS Worker] session.updated — 準備就緒，可接受文字。")
+
+                        elif etype == "response.audio.delta":
                             if warmed_up:
                                 audio_bytes = base64.b64decode(event["delta"])
                                 _audio_output_queue.put(np.frombuffer(audio_bytes, dtype=np.int16))
 
                         elif etype in ["response.done", "response.cancelled"]:
-                            if etype == "response.done" and not warmed_up and doing_warmup:
-                                warmed_up = True
-                                doing_warmup = False
-                                print("✅ [TTS Worker] Warmup 完成。")
-                            
                             # 伺服器端已經清空狀態，現在可以接收新 response 了
                             is_response_active = False
                             awaiting_cancel_ack = False
