@@ -532,10 +532,10 @@ class ClientSession:
                     })
             except RuntimeError as e:
                 if _is_cuda_recoverable_inference_error(e):
-                    log.warning(
-                        "[Session] LiveCC GPU recoverable error — clearing KV cache: %s",
-                        e,
-                    )
+                    # KV clear + bump timer: avoids a tight retry loop while still respecting
+                    # infer_interval. ByteTrack-on-CPU largely removes concurrent-GPU asserts;
+                    # this path still handles OOM / rare Live-only CUDA faults.
+                    log.warning("[Session] LiveCC recoverable GPU error — resetting KV: %s", e)
                     try:
                         torch.cuda.synchronize()
                     except Exception:
@@ -545,16 +545,7 @@ class ClientSession:
                     except Exception:
                         pass
                     state = {}
-                    try:
-                        self._send({
-                            "type": MSG_STATUS,
-                            "msg": (
-                                "LiveCC skipped one cycle (GPU). KV cache cleared. "
-                                "If this repeats, restart the server."
-                            ),
-                        })
-                    except Exception:
-                        pass
+                    last_infer_t = time.time()
                     continue
                 log.exception("[Session] Inference RuntimeError: %s", e)
                 self._send({"type": MSG_ERROR, "msg": str(e)})
