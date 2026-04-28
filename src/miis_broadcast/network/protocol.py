@@ -29,6 +29,8 @@ MSG_STOP    = "STOP"
 MSG_PING    = "PING"
 MSG_PONG    = "PONG"
 MSG_PREVIEW = "PREVIEW"  # JPEG frame with tracking overlay for thin-client GUI
+# Thin-client telemetry (optional) — echoed on server stdout next to ByteTrack FPS prints
+MSG_CLIENT_DIAG = "CLIENT_DIAG"
 
 _HEADER_FMT  = ">II"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)  # 8 bytes

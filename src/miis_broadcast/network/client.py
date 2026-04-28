@@ -26,7 +26,7 @@ import numpy as np
 from PySide6 import QtCore
 
 from .protocol import (
-    MSG_ACK, MSG_ERROR, MSG_FRAME, MSG_HELLO,
+    MSG_ACK, MSG_CLIENT_DIAG, MSG_ERROR, MSG_FRAME, MSG_HELLO,
     MSG_PING, MSG_PONG, MSG_PREVIEW, MSG_SEGMENT, MSG_START,
     MSG_STATUS, MSG_STOP,
     PROTOCOL_VERSION, pack_message, read_message,
@@ -193,6 +193,35 @@ class SocketClientRunner(QtCore.QThread):
             pass  # drop frame — server is catching up
         except Exception as e:
             log.warning("[SocketClient] send_frame encode: %s", e)
+
+    def get_frame_send_queue_levels(self) -> tuple[int, int]:
+        """Return (current_qsize, maxsize) for the outgoing JPEG queue (telemetry)."""
+        return self._frame_queue.qsize(), _FRAME_QUEUE_MAX
+
+    def send_obs_track_diagnostic(
+        self,
+        rss_mib: float,
+        jpeg_q_used: int,
+        jpeg_q_max: int,
+        sys_ram_pct: float,
+    ) -> None:
+        """
+        Send optional thin-client RAM / queue stats to the server so they print on the
+        same stdout as ByteTrack FPS lines (server terminal), not only the GUI console.
+        """
+        if self._sock is None or self._stop_requested:
+            return
+        self._send_ctrl(
+            pack_message(
+                {
+                    "type": MSG_CLIENT_DIAG,
+                    "rss_mib": float(rss_mib),
+                    "jpeg_q_used": int(jpeg_q_used),
+                    "jpeg_q_max": int(jpeg_q_max),
+                    "sys_ram_pct": float(sys_ram_pct),
+                }
+            )
+        )
 
     def start_inference(self, mode: str, query: str) -> None:
         """Tell server to begin inference with given mode and query prompt."""

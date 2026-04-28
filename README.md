@@ -13,6 +13,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR (OBS Virtual Camera)** — any source you route into OBS (e.g. Quest Link / game capture) and expose as **OBS Virtual Camera**; same “plain” full-frame stream as Webcam, different device index
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
+- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **15 fps send / PREVIEW throttle** vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -117,6 +118,9 @@ Key modules:
 
 | Path | Role |
 |---|---|
+| [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
+| [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, optional thin-client diagnostics |
+| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME decode, ByteTrack, PREVIEW throttle, stdout RAM telemetry |
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel, control widgets |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
 | [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |
@@ -323,6 +327,21 @@ Every message on the socket is framed as:
 | `ERROR` | S → C | `msg` | — |
 | `STOP` | C → S | — | — |
 | `PING` / `PONG` | bidirectional | — | — |
+| `CLIENT_DIAG` | C → S | optional `rss_mib`, `jpeg_q_used`, `jpeg_q_max`, `sys_ram_pct` | — |
+
+### Memory telemetry (remote Webcam + Tracking)
+
+When inference runs on a **remote** server (`obs_track` + TCP), **RSS** readings refer to **different machines** unless stated otherwise:
+
+| Printed line (server **stdout**, same stream as ByteTrack FPS `print`s) | Meaning |
+|---|---|
+| `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | Tracking throughput on the **inference host** (existing `ByteTrackWrapper` log, every 20 frames). |
+| `[ByteTrack] Server (this host) process RAM: …` | **This** `miis_broadcast.server` Python process on the **GPU / inference machine** — use this to judge remote RAM pressure (decode, ByteTrack, LiveCC buffer). Emitted every 20 ByteTrack frames. |
+| `[ByteTrack] Thin-client (sender PC) RAM: …` | **Laptop / GUI machine** that encodes JPEGs and sends `FRAME`s: client RSS, outbound JPEG queue depth, and sender system RAM. The client forwards a small `CLIENT_DIAG` message so these lines appear in the **server terminal** next to FPS, not only in the GUI console. |
+
+**Tuning 15 fps send / PREVIEW:** prioritise **Server (this host)** when asking whether the remote box is memory-bound. Sender-PC lines help if you suspect encode or TCP backlog on the client.
+
+The diagnostic payload is a short JSON message (order of **hundreds of bytes** every ~2 s from the GUI timer). It does not meaningfully block other OS processes; control sends hold the client socket lock only for that small `sendall`.
 
 ### Server logging
 
@@ -361,11 +380,13 @@ Inference: remote
 [HH:MM:SS] [GUI] [INFO] Starting inference (Style: …, TTS: …)
 [HH:MM:SS] [COMMENTARY] AI-generated commentary text…
 [HH:MM:SS] [GUI] [INFO] Stopping inference
+[HH:MM:SS] [Memory] [INFO] sender_PC RSS=… MiB | JPEG send_queue=… | …
 ```
 
 | Line type | Meaning |
 |-----------|---------|
 | `[GUI] [INFO]` | System events from the GUI (start, stop, remote connection changes, errors) |
+| `[Memory] [INFO]` | (Remote `obs_track` only) Sender-PC RSS and outbound JPEG queue depth written on the **client** while a session file is open; does **not** duplicate the server’s own RSS (see **Memory telemetry** above for server stdout). |
 | `[COMMENTARY]` | Every segment of AI commentary as it arrives from LiveCC (remote or local) |
 | `Inference: remote` | LiveCC ran on the remote server (thin-client mode) |
 | `Inference: local` | LiveCC ran on the local GPU |

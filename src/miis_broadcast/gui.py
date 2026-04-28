@@ -860,6 +860,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Remote inference state — use _socket_runner is not None to check active connection
         self._socket_runner: Optional[SocketClientRunner] = None
+        # Periodic RAM/JPEG-queue telemetry during remote obs_track (see _start_obs_track_ram_monitor)
+        self._obs_track_ram_timer: Optional[QtCore.QTimer] = None
         # When remote sends PREVIEW (boxes), avoid raw camera overwriting it for ~one frame period
         self._last_track_preview_mono: float = 0.0
 
@@ -1190,8 +1192,54 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---------------- Remote Socket ----------------
 
+    def _stop_obs_track_ram_monitor(self) -> None:
+        if self._obs_track_ram_timer is not None:
+            self._obs_track_ram_timer.stop()
+            self._obs_track_ram_timer.deleteLater()
+            self._obs_track_ram_timer = None
+
+    def _start_obs_track_ram_monitor(self) -> None:
+        """Log sender-PC RAM + JPEG queue (optional); server-side RAM prints on inference host."""
+        self._stop_obs_track_ram_monitor()
+        timer = QtCore.QTimer(self)
+        timer.setInterval(2000)
+        timer.timeout.connect(self._log_obs_track_ram_tick)
+        self._obs_track_ram_timer = timer
+        timer.start()
+        self._log_obs_track_ram_tick()
+
+    @QtCore.Slot()
+    def _log_obs_track_ram_tick(self) -> None:
+        if (
+            self.mode != "obs_track"
+            or not self.is_inference_running
+            or self._socket_runner is None
+        ):
+            self._stop_obs_track_ram_monitor()
+            return
+        try:
+            import psutil
+
+            rss_mb = psutil.Process().memory_info().rss / (1024.0**2)
+            q_used, q_max = self._socket_runner.get_frame_send_queue_levels()
+            sys_pct = psutil.virtual_memory().percent
+            msg = (
+                f"sender_PC RSS={rss_mb:.1f} MiB | JPEG send_queue={q_used}/{q_max} | "
+                f"sender system_RAM_used={sys_pct:.0f}%"
+            )
+            # Remote: forward to server so it prints on the same stdout as ByteTrack FPS
+            # (see server session _handle_client_diag); keep session file on this machine.
+            self._socket_runner.send_obs_track_diagnostic(
+                rss_mb, q_used, q_max, sys_pct
+            )
+            if hasattr(self, "session_logger") and self.session_logger.current_log_file:
+                self.session_logger.log_system("Memory", "INFO", msg)
+        except Exception as e:
+            print(f"[Memory][obs_track] telemetry failed: {e}")
+
     @QtCore.Slot(str, int)
     def on_remote_connect_clicked(self, host: str, port: int) -> None:
+        self._stop_obs_track_ram_monitor()
         if self._socket_runner is not None:
             self._socket_runner.disconnect_and_quit()
             self._socket_runner = None
@@ -1214,6 +1262,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def on_remote_disconnect_clicked(self) -> None:
+        self._stop_obs_track_ram_monitor()
         if self._socket_runner is not None:
             self.append_text("[Remote] 中斷連線")
             self._socket_runner.disconnect_and_quit()
@@ -1676,6 +1725,8 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self.mode in ("camera", "obs", "obs_track", "dual_sync"):
             if self._socket_runner is not None:
                 self._socket_runner.start_inference(self.mode, prompt)
+                if self.mode == "obs_track":
+                    self._start_obs_track_ram_monitor()
             elif self.livecc_model is not None:
                 self.signal_start_camera_livecc.emit(prompt)
             else:
@@ -1688,6 +1739,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def stop_inference(self) -> None:
         if not self.is_inference_running:
             return
+        self._stop_obs_track_ram_monitor()
         self.append_text("Stopping inference")
         if hasattr(self, "_pending_segments"):
             self._pending_segments.clear()

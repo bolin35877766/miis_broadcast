@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 
 from ..network.protocol import (
-    MSG_ACK, MSG_ERROR, MSG_FRAME, MSG_HELLO,
+    MSG_ACK, MSG_CLIENT_DIAG, MSG_ERROR, MSG_FRAME, MSG_HELLO,
     MSG_PING, MSG_PONG, MSG_PREVIEW, MSG_SEGMENT, MSG_START,
     MSG_STATUS, MSG_STOP,
     PROTOCOL_VERSION, pack_message, read_message,
@@ -213,6 +213,8 @@ class ClientSession:
                     break
                 elif msg.get("type") == MSG_FRAME:
                     self._handle_frame(msg, binary, buffer, bt)
+                elif msg.get("type") == MSG_CLIENT_DIAG:
+                    self._handle_client_diag(msg)
                 elif msg.get("type") == MSG_PING:
                     self._send({"type": MSG_PONG})
         finally:
@@ -226,6 +228,45 @@ class ClientSession:
                 self._tx_segments,
                 self._infer_cycles,
             )
+
+    # ------------------------------------------------------------------ #
+    # Thin-client diagnostic (same stdout as ByteTrack FPS prints in bytetrack_tracker)
+    # ------------------------------------------------------------------ #
+
+    def _handle_client_diag(self, msg: dict) -> None:
+        """
+        Stats from the thin client's machine (JPEG encode + tcp send queue), not from this server.
+        Printed beside ByteTrack lines so operators know which machine each line refers to.
+        """
+        try:
+            rss = float(msg.get("rss_mib", 0.0))
+            qu = int(msg.get("jpeg_q_used", 0))
+            qm = int(msg.get("jpeg_q_max", 0))
+            sp = float(msg.get("sys_ram_pct", 0.0))
+        except (TypeError, ValueError):
+            return
+        print(
+            f"[ByteTrack] Thin-client (sender PC) RAM: {rss:.1f} MiB | "
+            f"jpeg_send_queue={qu}/{qm} | sender system_RAM_used={sp:.0f}%"
+        )
+
+    @staticmethod
+    def _print_server_process_ram(buffer_len: int) -> None:
+        """
+        RSS of this server's Python process (inference host: decode, ByteTrack, LiveCC).
+        Printed every 20 ByteTrack frames (same rhythm as Infer/Wall FPS in bytetrack_tracker).
+        """
+        try:
+            import psutil
+
+            rss_mib = psutil.Process().memory_info().rss / (1024.0**2)
+            sys_pct = psutil.virtual_memory().percent
+        except Exception:
+            return
+        print(
+            f"[ByteTrack] Server (this host) process RAM: {rss_mib:.1f} MiB | "
+            f"host system_RAM_used={sys_pct:.0f}% | livecc_subject_buffer={buffer_len}"
+        )
 
     # ------------------------------------------------------------------ #
     # Frame handling
@@ -288,6 +329,9 @@ class ClientSession:
                         cv2.COLOR_RGB2BGR,
                     )
                     buffer.append(_FrameItem(t=t, frame=subject_bgr))
+                # Remote host RSS: same cadence as Infer/Wall FPS in bytetrack_tracker (every 20 frames)
+                if self._infer_mode == "obs_track" and self._bt_frame_id % 20 == 0:
+                    self._print_server_process_ram(len(buffer))
             except Exception as e:
                 log.warning("[Session] ByteTrack error: %s", e)
         else:
