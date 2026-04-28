@@ -177,6 +177,13 @@ def build_clip_from_buffer(
     if len(frames_in_window) < 2:
         return None
 
+    # Mixed frame sizes (e.g. Free Switch: 640×480 vs 1280×480) break np.stack.
+    # Anchor to the **newest** frame shape so the clip matches the current source.
+    ref_shape = frames_in_window[-1].frame.shape
+    frames_in_window = [fi for fi in frames_in_window if fi.frame.shape == ref_shape]
+    if len(frames_in_window) < 2:
+        return None
+
     duration = frames_in_window[-1].t - frames_in_window[0].t
     if duration <= 0:
         return None
