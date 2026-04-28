@@ -231,14 +231,14 @@ The Python **`logging`** lines above go to **stderr**.  Separately, **stdout** c
 | Example prefix | Origin | Meaning |
 |---|---|---|
 | `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | `bytetrack_tracker.py` | Every **20** frames when ByteTrack runs on **this host** |
-| `[ByteTrack] Server (this host) process RAM: …` | `session.py` | **Inference server process** RSS + host RAM % + LiveCC subject buffer length (`obs_track`, every **20** BT frames) — use this for **remote box** tuning |
+| `[Server RSS] full python process (LiveCC+ByteTrack+decode): …` | `session.py` | **Entire server Python process** RSS (includes LiveCC + ByteTrack + OpenCV decode; labels next to FPS lines only for readability) (`obs_track`, every **20** BT frames) |
 | `[ByteTrack] Thin-client (sender PC) RAM: …` | `session.py` (payload from GUI via **`MSG_CLIENT_DIAG`**) | **Laptop / GUI** RSS, JPEG **send** queue, sender system RAM — upstream encode/TCP health |
 
 **Remote vs local:** with **thin client + `obs_track`**, tracking runs on the server, so
 these lines appear on the **remote machine’s** terminal (SSH/tmux). Local-only
 `obs_track` (`CameraByteTrackThread` on your PC) prints the first line from the same
-tracker class on **your** stdout; `Server (this host)` still means “this Python process
-on whatever machine runs `miis_broadcast.server`.”
+tracker class on **your** stdout; **`[Server RSS]`** is **whole-process** RAM (LiveCC + ByteTrack +
+decode), not ByteTrack-only, on whatever machine runs `miis_broadcast.server`.
 
 For a full narrative (15 fps send / PREVIEW, protocol field list), see the root
 **Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).

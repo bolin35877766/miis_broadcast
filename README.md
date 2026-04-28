@@ -336,10 +336,10 @@ When inference runs on a **remote** server (`obs_track` + TCP), **RSS** readings
 | Printed line (server **stdout**, same stream as ByteTrack FPS `print`s) | Meaning |
 |---|---|
 | `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | Tracking throughput on the **inference host** (existing `ByteTrackWrapper` log, every 20 frames). |
-| `[ByteTrack] Server (this host) process RAM: …` | **This** `miis_broadcast.server` Python process on the **GPU / inference machine** — use this to judge remote RAM pressure (decode, ByteTrack, LiveCC buffer). Emitted every 20 ByteTrack frames. |
+| `[Server RSS] full python process (LiveCC+ByteTrack+decode): …` | **Whole** `miis_broadcast.server` process RSS (LiveCC / Qwen **and** ByteTrack / YOLO **and** JPEG decode — not split per model). Emitted every **20** ByteTrack frames (same cadence as FPS lines). |
 | `[ByteTrack] Thin-client (sender PC) RAM: …` | **Laptop / GUI machine** that encodes JPEGs and sends `FRAME`s: client RSS, outbound JPEG queue depth, and sender system RAM. The client forwards a small `CLIENT_DIAG` message so these lines appear in the **server terminal** next to FPS, not only in the GUI console. |
 
-**Tuning 15 fps send / PREVIEW:** prioritise **Server (this host)** when asking whether the remote box is memory-bound. Sender-PC lines help if you suspect encode or TCP backlog on the client.
+**Tuning 15 fps send / PREVIEW:** prioritise the **`[Server RSS]`** line when asking whether the remote box is memory-bound. Sender-PC lines help if you suspect encode or TCP backlog on the client.
 
 The diagnostic payload is a short JSON message (order of **hundreds of bytes** every ~2 s from the GUI timer). It does not meaningfully block other OS processes; control sends hold the client socket lock only for that small `sendall`.
 

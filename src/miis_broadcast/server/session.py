@@ -299,7 +299,7 @@ class ClientSession:
         except Exception:
             return
         print(
-            f"[ByteTrack] Server (this host) process RAM: {rss_mib:.1f} MiB | "
+            f"[Server RSS] full python process (LiveCC+ByteTrack+decode): {rss_mib:.1f} MiB | "
             f"host system_RAM_used={sys_pct:.0f}% | livecc_subject_buffer={buffer_len}"
         )
 
