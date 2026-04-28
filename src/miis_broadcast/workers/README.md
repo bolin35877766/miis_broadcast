@@ -240,15 +240,15 @@ these lines appear on the **remote machine’s** terminal (SSH/tmux). Local-only
 tracker class on **your** stdout; **`[Server RSS]`** is **whole-process** RAM (LiveCC + ByteTrack +
 decode), not ByteTrack-only, on whatever machine runs `miis_broadcast.server`.
 
-**Single-GPU server (`obs_track`):** incoming `FRAME` JPEGs are decoded on a dedicated
-thread; ByteTrack (`bt.process`) shares `_session_gpu_lock` with LiveCC so YOLO and
-the captioner never run CUDA kernels concurrently (avoids rare `device-side assert` errors).
+**Server (`obs_track`):** incoming `FRAME` JPEGs are decoded on a dedicated thread;
+ByteTrack (YOLOX) and LiveCC (Qwen) run **concurrently** on the same GPU — they use separate
+CUDA streams and do not require serialization. The root cause of any past `device-side assert`
+errors was KV cache out-of-bounds (fixed in `livecc_transformers.py`), not GPU concurrency.
 The session uses a short **`_frame_queue`** (`maxsize=2`) so processing stays near real time.
 On the **client**, `MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (default **2.5 s**) suppresses raw
-camera between PREVIEW updates so the video panel does not alternate boxed/unboxed frames when
-LiveCC pauses ByteTrack for ~2 s.
+camera between PREVIEW updates to avoid alternating boxed/unboxed frames.
 
-For a full narrative (30 fps send / PREVIEW baseline, GPU serialization, protocol field list), see the root
+For a full narrative (30 fps send / PREVIEW baseline, protocol field list), see the root
 **Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).
 
 ---

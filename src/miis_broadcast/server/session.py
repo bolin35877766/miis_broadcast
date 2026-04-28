@@ -80,11 +80,6 @@ def _is_oob_vocab_value_error(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and "input_ids out of vocab" in str(exc).lower()
 
 
-# Minimum idle time between finishing one LiveCC run and starting the next (seconds).
-# Larger values give ByteTrack more consecutive GPU access (higher Wall FPS / smoother boxes);
-# commentary segments arrive less often.
-_DEFAULT_LIVECC_INFER_GAP_SEC = 3.5
-
 
 # ---------------------------------------------------------------------------
 # FrameItem: mirrors workers/livecc.py to avoid circular import
@@ -212,10 +207,7 @@ class ClientSession:
         bt = self._maybe_load_bytetrack(mode)
 
         # Keep only the last 2 JPEG frames so the processor stays near real-time.
-        # ByteTrack (YOLOX) and LiveCC run concurrently on the same GPU — they are separate
-        # models with separate CUDA streams and do not conflict. The earlier _session_gpu_lock
-        # was removed: the device-side assert root cause was KV cache OOB (now fixed in
-        # livecc_transformers.py), NOT concurrent GPU access.
+        # ByteTrack (YOLOX) and LiveCC run concurrently on the same GPU (separate CUDA streams).
         self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=2)
         self._logged_first_frame_decode = False
 
@@ -368,8 +360,7 @@ class ClientSession:
                 pass
 
     # ------------------------------------------------------------------ #
-    # JPEG decode + ByteTrack (+ optional PREVIEW/buffer): runs on dedicated thread,
-    # holds _session_gpu_lock only around bt.process() — never blocks recv.
+    # JPEG decode + ByteTrack (+ optional PREVIEW/buffer): dedicated thread.
     # ------------------------------------------------------------------ #
 
     def _frame_processor_loop(
@@ -459,12 +450,12 @@ class ClientSession:
 
         state: Dict[str, Any] = {}
         inference_count = 0
-        infer_gap = _DEFAULT_LIVECC_INFER_GAP_SEC
+        infer_interval = 2.0
         last_infer_t = time.time()
 
         while not stop_event.is_set():
             now = time.time()
-            if now - last_infer_t < infer_gap:
+            if now - last_infer_t < infer_interval:
                 time.sleep(0.1)
                 continue
 
