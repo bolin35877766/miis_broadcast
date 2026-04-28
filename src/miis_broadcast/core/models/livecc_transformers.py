@@ -601,18 +601,19 @@ class LiveCCInfer:
             # [Key] Record inference start time
             t_gen_start = time.time()
 
-            outputs = self.model.generate(
-                **inputs,
-                past_key_values=state.get("past_key_values", None),
-                return_dict_in_generate=True,
-                pad_token_id=self._pad_token_id_for_generate(),
-                do_sample=True,
-                temperature=0.9,
-                top_p=0.9,
-                top_k=30,
-                repetition_penalty=1.22,
-                max_new_tokens=self.max_new_tokens,
-            )
+            with torch.inference_mode():
+                outputs = self.model.generate(
+                    **inputs,
+                    past_key_values=state.get("past_key_values", None),
+                    return_dict_in_generate=True,
+                    pad_token_id=self._pad_token_id_for_generate(),
+                    do_sample=True,
+                    temperature=0.9,
+                    top_p=0.9,
+                    top_k=30,
+                    repetition_penalty=1.22,
+                    max_new_tokens=self.max_new_tokens,
+                )
 
             t_gen_end = time.time()
             log_gen_time(t_gen_end - t_gen_start)
@@ -651,93 +652,118 @@ class LiveCCInfer:
         # ✅ Option A: Keep only recent N seconds of multimodal memory (reset if exceeded)
         self._apply_mm_window_policy(state, start_ts=start_timestamp, stop_ts=stop_timestamp)
 
-        message = self._build_message_content(
-            start_ts=start_timestamp,
-            stop_ts=stop_timestamp,
-            clip_obj=clip.frames,
-            query=query,
-            state=state,
-        )
-
-        texts = self.processor.apply_chat_template(
-            [message],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-        past_ids = state.get("past_ids", None)
-        if past_ids is not None:
-            if not hasattr(self, "system_prompt_offset"):
-                temp_msg = {"role": "user", "content": [{"type": "text", "text": "livecc"}]}
-                temp_text = self.processor.apply_chat_template([temp_msg], tokenize=False)
-                self.system_prompt_offset = temp_text.index("<|im_start|>user")
-            texts = "<|im_end|>\n" + texts[self.system_prompt_offset :]
-
-        inputs = self.processor(
-            text=texts,
-            images=None,
-            videos=[clip.frames],
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-        inputs = inputs.to(self.device)
-
-        if "pixel_values_videos" in inputs:
-            pv = inputs["pixel_values_videos"]
-            if pv.dtype == torch.float32 and self.model.dtype == torch.bfloat16:
-                inputs["pixel_values_videos"] = pv.to(torch.bfloat16)
-
-        # ✅ token budget truncation (align boundaries, sync KV)
-        new_len = int(inputs.input_ids.shape[1])
-        truncate_state_by_budget(
-            state,
-            new_len,
-            ctx_max=self.ctx_max,
-            max_new_tokens=self.max_new_tokens,
-            headroom=self.headroom,
-            boundary_patterns=self._boundary_patterns,
-        )
-
-        _sync_past_ids_and_cache(state)
-
-        past_ids = state.get("past_ids", None)
-        if past_ids is not None:
-            # Extend attention_mask to cover the prepended past tokens
-            past_mask = torch.ones(
-                (1, past_ids.shape[1]), dtype=torch.long, device=self.device
+        for kv_attempt in range(2):
+            message = self._build_message_content(
+                start_ts=start_timestamp,
+                stop_ts=stop_timestamp,
+                clip_obj=clip.frames,
+                query=query,
+                state=state,
             )
-            inputs["attention_mask"] = torch.cat(
-                [past_mask, inputs["attention_mask"]], dim=1
+
+            texts = self.processor.apply_chat_template(
+                [message],
+                tokenize=False,
+                add_generation_prompt=True,
             )
-            inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
-        # [Key] Record inference start time
-        t_gen_start = time.time()
+            past_ids = state.get("past_ids", None)
+            if past_ids is not None:
+                if not hasattr(self, "system_prompt_offset"):
+                    temp_msg = {"role": "user", "content": [{"type": "text", "text": "livecc"}]}
+                    temp_text = self.processor.apply_chat_template([temp_msg], tokenize=False)
+                    self.system_prompt_offset = temp_text.index("<|im_start|>user")
+                texts = "<|im_end|>\n" + texts[self.system_prompt_offset :]
 
-        outputs = self.model.generate(
-            **inputs,
-            past_key_values=state.get("past_key_values", None),
-            return_dict_in_generate=True,
-            pad_token_id=self._pad_token_id_for_generate(),
-            do_sample=True,
-            temperature=0.9,
-            top_p=0.9,
-            repetition_penalty=1.22,
-            max_new_tokens=self.max_new_tokens,
-        )
+            inputs = self.processor(
+                text=texts,
+                images=None,
+                videos=[clip.frames],
+                return_tensors="pt",
+                return_attention_mask=True,
+            )
+            inputs = inputs.to(self.device)
 
-        t_gen_end = time.time()
-        log_gen_time(t_gen_end - t_gen_start)
+            if "pixel_values_videos" in inputs:
+                pv = inputs["pixel_values_videos"]
+                if pv.dtype == torch.float32 and self.model.dtype == torch.bfloat16:
+                    inputs["pixel_values_videos"] = pv.to(torch.bfloat16)
 
-        state["past_key_values"] = outputs.past_key_values
-        state["past_ids"] = outputs.sequences[:, :-1]
+            # ✅ token budget truncation (align boundaries, sync KV)
+            new_len = int(inputs.input_ids.shape[1])
+            truncate_state_by_budget(
+                state,
+                new_len,
+                ctx_max=self.ctx_max,
+                max_new_tokens=self.max_new_tokens,
+                headroom=self.headroom,
+                boundary_patterns=self._boundary_patterns,
+            )
 
-        response = self.processor.decode(
-            outputs.sequences[0, inputs.input_ids.size(1) :],
-            skip_special_tokens=True,
-        )
+            _sync_past_ids_and_cache(state)
 
-        # ✅ Option A: Update recent commentaries
-        self._update_recent_texts(state, response)
+            past_ids = state.get("past_ids", None)
+            if past_ids is not None:
+                # Extend attention_mask to cover the prepended past tokens
+                past_mask = torch.ones(
+                    (1, past_ids.shape[1]), dtype=torch.long, device=self.device
+                )
+                inputs["attention_mask"] = torch.cat(
+                    [past_mask, inputs["attention_mask"]], dim=1
+                )
+                inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
-        yield (start_timestamp, stop_timestamp), response, state
+            vs = getattr(self.model.config, "vocab_size", None)
+            if isinstance(vs, int) and vs > 0:
+                ids_chk = inputs["input_ids"]
+                mx = int(ids_chk.max().item())
+                mn = int(ids_chk.min().item())
+                if mn < 0 or mx >= vs:
+                    if kv_attempt == 0:
+                        _log.warning(
+                            "input_ids OOB [%d,%d] vs vocab_size=%d; clearing multimodal KV and retry",
+                            mn,
+                            mx,
+                            vs,
+                        )
+                        state.pop("past_ids", None)
+                        state.pop("past_key_values", None)
+                        continue
+                    raise ValueError(
+                        "input_ids out of vocab range after KV reset [%d,%d] vs %d"
+                        % (mn, mx, vs)
+                    )
+
+            # [Key] Record inference start time
+            t_gen_start = time.time()
+
+            # inference_mode reduces autograd overhead vs no_grad; helps a bit under GPU memory pressure
+            with torch.inference_mode():
+                outputs = self.model.generate(
+                    **inputs,
+                    past_key_values=state.get("past_key_values", None),
+                    return_dict_in_generate=True,
+                    pad_token_id=self._pad_token_id_for_generate(),
+                    do_sample=True,
+                    temperature=0.9,
+                    top_p=0.9,
+                    repetition_penalty=1.22,
+                    max_new_tokens=self.max_new_tokens,
+                )
+
+            t_gen_end = time.time()
+            log_gen_time(t_gen_end - t_gen_start)
+
+            state["past_key_values"] = outputs.past_key_values
+            state["past_ids"] = outputs.sequences[:, :-1]
+
+            response = self.processor.decode(
+                outputs.sequences[0, inputs.input_ids.size(1) :],
+                skip_special_tokens=True,
+            )
+
+            # ✅ Option A: Update recent commentaries
+            self._update_recent_texts(state, response)
+
+            yield (start_timestamp, stop_timestamp), response, state
+            break

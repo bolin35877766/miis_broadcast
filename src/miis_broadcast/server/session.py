@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
+import torch
 
 from ..network.protocol import (
     MSG_ACK, MSG_CLIENT_DIAG, MSG_ERROR, MSG_FRAME, MSG_HELLO,
@@ -47,6 +48,36 @@ def _commentary_too_similar(prev: str, cur: str, *, ratio: float = 0.86) -> bool
     if len(b) < 20:
         return a == b
     return difflib.SequenceMatcher(None, a, b).ratio() >= ratio
+
+
+def _is_cuda_or_oom(exc: BaseException) -> bool:
+    """Treat CUDA OOM errors from LiveCC.generate (often deep inside Qwen layers)."""
+    oom_cls = getattr(torch.cuda, "OutOfMemoryError", None)
+    if oom_cls is not None and isinstance(exc, oom_cls):
+        return True
+    return "out of memory" in str(exc).lower()
+
+
+def _is_cuda_recoverable_inference_error(exc: BaseException) -> bool:
+    """
+    OOM, device-side assert, or similar: clear KV and continue next cycle when possible.
+    Note: after a device-side assert the CUDA context may stay broken; users may need a
+    server process restart if failures repeat.
+    """
+    if _is_cuda_or_oom(exc):
+        return True
+    msg = str(exc).lower()
+    if "device-side assert" in msg:
+        return True
+    if "assert triggered" in msg and "cuda" in msg:
+        return True
+    if "indexSelectLargeIndex" in str(exc):
+        return True
+    return False
+
+
+def _is_oob_vocab_value_error(exc: BaseException) -> bool:
+    return isinstance(exc, ValueError) and "input_ids out of vocab" in str(exc).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +202,10 @@ class ClientSession:
 
         buffer: deque[_FrameItem] = deque(maxlen=180)
         stop_event = threading.Event()
+        # Serialize all CUDA work across threads: recv loop runs ByteTrack (YOLO) while the
+        # inference thread runs LiveCC.generate(). Concurrent kernels on one GPU caused rare
+        # device-side asserts (embedding index_select) in long obs_track sessions.
+        self._session_gpu_lock = threading.Lock()
 
         # Load ByteTrack if needed
         bt = self._maybe_load_bytetrack(mode)
@@ -309,8 +344,9 @@ class ClientSession:
         if bt is not None:
             # ByteTrack: process() returns annotated BGR (boxes) + subject crop (RGB) for LiveCC
             try:
-                self._bt_frame_id += 1
-                annotated_bgr, subject_rgb = bt.process(frame_bgr, self._bt_frame_id)
+                with self._session_gpu_lock:
+                    self._bt_frame_id += 1
+                    annotated_bgr, subject_rgb = bt.process(frame_bgr, self._bt_frame_id)
 
                 # Throttle preview to ~15 fps so the thin-client UI can show boxes
                 _now = time.monotonic()
@@ -399,9 +435,13 @@ class ClientSession:
                 log.debug("[Session] State reset (count=%d)", inference_count)
 
             try:
-                for (start_ts, stop_ts), text, state in self.livecc_model.live_cc_from_frames(
-                    clip=clip, query=query, state=state
-                ):
+                with self._session_gpu_lock:
+                    batch = list(
+                        self.livecc_model.live_cc_from_frames(
+                            clip=clip, query=query, state=state
+                        )
+                    )
+                for (start_ts, stop_ts), text, state in batch:
                     if stop_event.is_set():
                         break
                     if _commentary_too_similar(self._last_segment_text, text or ""):
@@ -439,6 +479,43 @@ class ClientSession:
                         "stop_t":  float(stop_ts),
                         "text":    text,
                     })
+            except RuntimeError as e:
+                if _is_cuda_recoverable_inference_error(e):
+                    log.warning(
+                        "[Session] LiveCC GPU recoverable error — clearing KV cache: %s",
+                        e,
+                    )
+                    try:
+                        torch.cuda.synchronize()
+                    except Exception:
+                        pass
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+                    state = {}
+                    try:
+                        self._send({
+                            "type": MSG_STATUS,
+                            "msg": (
+                                "LiveCC skipped one cycle (GPU). KV cache cleared. "
+                                "If this repeats, restart the server."
+                            ),
+                        })
+                    except Exception:
+                        pass
+                    continue
+                log.exception("[Session] Inference RuntimeError: %s", e)
+                self._send({"type": MSG_ERROR, "msg": str(e)})
+                stop_event.set()
+            except ValueError as e:
+                if _is_oob_vocab_value_error(e):
+                    log.warning("[Session] %s — resetting KV.", e)
+                    state = {}
+                    continue
+                log.exception("[Session] Inference ValueError: %s", e)
+                self._send({"type": MSG_ERROR, "msg": str(e)})
+                stop_event.set()
             except Exception as e:
                 log.exception("[Session] Inference error: %s", e)
                 self._send({"type": MSG_ERROR, "msg": str(e)})
