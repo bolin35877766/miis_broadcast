@@ -249,7 +249,7 @@ The session uses a short **`_frame_queue`** (`maxsize=2`) so processing stays ne
 On the **client**, `MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (default **2.5 s**) suppresses raw
 camera between PREVIEW updates to cover the LiveCC generate window without flickering.
 
-For a full narrative (30 fps send / PREVIEW baseline, protocol field list), see the root
+For a full narrative (15 fps default send / PREVIEW baseline, protocol field list), see the root
 **Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).
 
 ---

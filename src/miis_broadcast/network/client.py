@@ -36,8 +36,8 @@ log = logging.getLogger(__name__)
 
 # Maximum frames buffered for sending; excess are dropped to avoid memory growth.
 _FRAME_QUEUE_MAX = 30
-# Maximum frame send rate to the server (fps).
-_FRAME_SEND_FPS_MAX = 30.0
+# Maximum frame send rate to the server (fps). Lower = less GPU/load on inference host.
+_FRAME_SEND_FPS_MAX = 15.0
 
 
 class SocketClientRunner(QtCore.QThread):
