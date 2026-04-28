@@ -243,12 +243,12 @@ decode), not ByteTrack-only, on whatever machine runs `miis_broadcast.server`.
 **Server (`obs_track`):** incoming `FRAME` JPEGs are decoded on a dedicated thread.
 `bt.process()` and `live_cc_from_frames` run sequentially on that thread; all network I/O
 runs freely outside it. The session uses a **single-slot `_frame_queue`** (`maxsize=1`,
-latest FRAME overwrites). **PREVIEW** messages are **subsampled** to ≈**18 Hz** (see
+latest FRAME overwrites). **PREVIEW** messages are **subsampled** to ≈**15 Hz** (see
 `_PREVIEW_SAMPLE_OUT_FPS` in `session.py`). On the **client**,
 `MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (default **2.5 s**) suppresses raw camera between
 PREVIEW updates to avoid flickering.
 
-For a full narrative (30→18 phase sampling, PREVIEW caps, protocol field list), see the root
+For a full narrative (30→15 phase sampling, PREVIEW caps, protocol field list), see the root
 **Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).
 
 ---

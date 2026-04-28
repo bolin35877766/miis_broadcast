@@ -36,8 +36,8 @@ log = logging.getLogger(__name__)
 
 # Nominal upstream rate: GUI emits ~30 camera callbacks/sec (thin client encode path).
 _REMOTE_INPUT_NOMINAL_FPS = 30.0
-# Wired FRAME rate after deterministic sampling: ratio OUT/IN = 18/30 = 3/5 (phase accumulator).
-_REMOTE_FRAME_SAMPLE_OUT_FPS = 18.0
+# Wired FRAME rate after deterministic sampling: ratio OUT/IN = 15/30 = 1/2 (phase accumulator).
+_REMOTE_FRAME_SAMPLE_OUT_FPS = 15.0
 _FRAME_SAMPLE_PHASE_STEP = (
     _REMOTE_FRAME_SAMPLE_OUT_FPS / _REMOTE_INPUT_NOMINAL_FPS
 )
@@ -51,7 +51,7 @@ class SocketClientRunner(QtCore.QThread):
     QThread.  All outgoing sends (frames, control messages) are thread-safe.
 
     Frame sending is fully non-blocking from the caller's perspective: send_frame()
-    applies deterministic **30 Hz → 18 Hz** downsampling via a phase accumulator, then enqueues JPEG
+    applies deterministic **30 Hz → 15 Hz** downsampling via a phase accumulator, then enqueues JPEG
     wire bytes; a background thread calls sendall().
 
     Signals (emitted from the background thread, delivered via Qt queued
@@ -174,10 +174,9 @@ class SocketClientRunner(QtCore.QThread):
         Encode frame and enqueue for sending.  Returns immediately (non-blocking).
 
         **Sampling specification:** callers emit ~``_REMOTE_INPUT_NOMINAL_FPS`` callbacks/sec (30 Hz).
-        We apply a **phase accumulator** step ``OUT/IN = 18/30`` per callback; whenever the
+        We apply a **phase accumulator** step ``OUT/IN = 15/30`` per callback; whenever the
         accumulated phase reaches 1.0, we JPEG-encode **that** frame and enqueue one FRAME
-        (~18/sec long-term average). Reproducible ratio **18/30 = 3/5**; 18 Hz chosen over 20 Hz
-        to reduce GPU/CUDA load on the inference host.
+        (~15/sec long-term average). Reproducible ratio **15/30 = 1/2**.
 
         If the outbound queue is full, the encoded blob may be dropped (TCP backlog); GUI never blocks.
         """

@@ -13,7 +13,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR (OBS Virtual Camera)** — any source you route into OBS (e.g. Quest Link / game capture) and expose as **OBS Virtual Camera**; same “plain” full-frame stream as Webcam, different device index
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **30→18 phase sampling / PREVIEW caps** vs **ByteTrack Wall FPS / LiveCC gap** vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
+- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **30→15 phase sampling / PREVIEW caps** vs **ByteTrack Wall FPS / LiveCC gap** vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -73,7 +73,7 @@ _frame_sender_loop (background thread)
         │                                                               │
         │  ◄── MSG_SEGMENT (text) ◄── LiveCC inference (GPU)  ◄────────┤
         │  ◄── MSG_PREVIEW (JPEG) ◄── ByteTrack overlay ───────────────┘
-        │                               (obs_track mode only, capped at sample out ≈18 Hz)
+        │                               (obs_track mode only, capped at sample out ≈15 Hz)
         ▼
 on_segment → text panel + OpenAI TTS (local audio)
 on_remote_track_preview → video panel (annotated frames with tracking boxes)
@@ -96,15 +96,15 @@ memory bounded and backpressure natural.
 
 **Nominal capture → wire (thin client)**  
 The GUI/camera emits **~30** `send_frame()` callbacks/sec. `client.py` applies a classical **phase
-accumulator**: each callback adds `STEP = OUT/IN = 18/30` to phase; whenever phase ≥ **1**, one FRAME
-JPEG is queued and phase subtracts **1**. Long-term average ≈ **18** frames/sec wired to the server —
-the reproducible ratio is **`18 Hz = (3/5) × 30 Hz`**. **18 Hz** is used instead of **20 Hz** to lower GPU/CUDA load on the inference host.
+accumulator**: each callback adds `STEP = OUT/IN = 15/30` to phase; whenever phase ≥ **1**, one FRAME
+JPEG is queued and phase subtracts **1**. Long-term average ≈ **15** frames/sec wired to the server —
+the reproducible ratio is **`15 Hz = (1/2) × 30 Hz`**.
 
 **Ingress on server** uses a single-slot JPEG buffer (`maxsize=1`): each new FRAME **overwrites** pending decode work («always latest»).
 
 **PREVIEW (`MSG_PREVIEW` back)**  
-Annotated previews are gated with wall-clock spacing **`1/_PREVIEW_SAMPLE_OUT_FPS`** (≈18 Hz). If ByteTrack
-Wall FPS stays below ~18 Hz, actual PREVIEW rate follows physics.
+Annotated previews are gated with wall-clock spacing **`1/_PREVIEW_SAMPLE_OUT_FPS`** (≈15 Hz). If ByteTrack
+Wall FPS stays below ~15 Hz, actual PREVIEW rate follows physics.
 
 LiveCC runs on a **2 s interval** (`infer_interval = 2.0` in `session.py`), independent of frame sampling.
 
@@ -120,7 +120,7 @@ or **`_PREVIEW_SAMPLE_OUT_FPS`** (`session.py`) together so IN/OUT stay a delibe
 #### Why the PREVIEW display hold window (default **2.5 s**)
 
 The camera thread emits raw frames at 30 fps. **`MSG_PREVIEW`** is **subsampled** server-side to
-roughly **≤18 Hz** (wall-clock). Without a hold window, **`on_camera_frame`** would paint raw video
+roughly **≤15 Hz** (wall-clock). Without a hold window, **`on_camera_frame`** would paint raw video
 between PREVIEW arrivals, so boxed and unboxed frames alternate visibly (jump-back artefact).
 
 The GUI suppresses raw-camera **`video_panel`** updates for
