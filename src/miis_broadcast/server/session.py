@@ -20,7 +20,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from typing import Any, Dict, Optional
 
 import cv2
@@ -202,13 +202,27 @@ class ClientSession:
 
         buffer: deque[_FrameItem] = deque(maxlen=180)
         stop_event = threading.Event()
-        # Serialize all CUDA work across threads: recv loop runs ByteTrack (YOLO) while the
-        # inference thread runs LiveCC.generate(). Concurrent kernels on one GPU caused rare
-        # device-side asserts (embedding index_select) in long obs_track sessions.
-        self._session_gpu_lock = threading.Lock()
-
-        # Load ByteTrack if needed
+        # Load ByteTrack before frame worker (worker needs bt reference).
         bt = self._maybe_load_bytetrack(mode)
+
+        # Single-GPU serialization: ByteTrack (YOLO) and LiveCC must not run concurrently.
+        # IMPORTANT: recv must NOT hold this lock — it would block disconnect/PING. We decode
+        # frames off the recv loop via _frame_queue + _frame_processor_loop (GPU work only).
+        self._session_gpu_lock = threading.Lock()
+        # Keep only the last few JPEG frames so the processor never falls behind real-time.
+        # With ByteTrack Wall FPS ~11 and camera at 30 fps, a queue of 120 causes ~11 s lag
+        # (oldest-first FIFO: 120 / 11 fps = ~10.9 s). maxsize=5 caps lag to ≤ 0.5 s.
+        self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=5)
+        self._logged_first_frame_decode = False
+
+        frame_thread = threading.Thread(
+            target=self._frame_processor_loop,
+            args=(buffer, bt, stop_event),
+            name="session-frame-gpu",
+            daemon=True,
+        )
+        frame_thread.start()
+
         if mode == "obs_track" and bt is None:
             log.warning(
                 "[Session %s] obs_track but ByteTrack not loaded — "
@@ -254,6 +268,7 @@ class ClientSession:
                     self._send({"type": MSG_PONG})
         finally:
             stop_event.set()
+            frame_thread.join(timeout=5.0)
             infer_thread.join(timeout=5.0)
             log.info(
                 "[Session %s] Inference STOP  rx_frames=%d tx_previews=%d tx_segments=%d infer_cycles=%d",
@@ -304,7 +319,7 @@ class ClientSession:
         )
 
     # ------------------------------------------------------------------ #
-    # Frame handling
+    # Frame handling (recv: enqueue JPEG only; GPU in _frame_processor_loop)
     # ------------------------------------------------------------------ #
 
     def _handle_frame(
@@ -317,18 +332,12 @@ class ClientSession:
         if not binary:
             return
         t = float(msg.get("t", 0.0))
-
-        nparr = np.frombuffer(binary, dtype=np.uint8)
-        frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if frame_bgr is None:
-            return
-
         self._rx_frames += 1
         if self._rx_frames == 1:
             log.info(
-                "[Session %s] First FRAME decoded  shape=%s t=%.3f",
+                "[Session %s] First FRAME recv  jpeg_bytes=%d t=%.3f",
                 self.addr,
-                getattr(frame_bgr, "shape", "?"),
+                len(binary),
                 t,
             )
         elif self._rx_frames % 120 == 0:
@@ -341,16 +350,69 @@ class ClientSession:
                 self._infer_mode,
             )
 
-        if bt is not None:
-            # ByteTrack: process() returns annotated BGR (boxes) + subject crop (RGB) for LiveCC
-            # NOTE: no GPU lock here — locking the recv thread blocks socket reads and causes
-            # PREVIEW gaps (>1500 ms) that make the GUI flicker between raw and annotated frames.
-            # The GPU lock is held ONLY inside _inference_loop around live_cc_from_frames.
+        q = getattr(self, "_frame_queue", None)
+        if q is None:
+            return
+        try:
+            q.put_nowait((t, binary))
+        except Full:
+            # Queue full — drop oldest, try to enqueue latest (stay real-time).
             try:
-                self._bt_frame_id += 1
-                annotated_bgr, subject_rgb = bt.process(frame_bgr, self._bt_frame_id)
+                q.get_nowait()
+                q.put_nowait((t, binary))
+            except (Empty, Full):
+                pass
 
-                # Throttle preview to ~15 fps so the thin-client UI can show boxes
+    # ------------------------------------------------------------------ #
+    # JPEG decode + ByteTrack (+ optional PREVIEW/buffer): runs on dedicated thread,
+    # holds _session_gpu_lock only around bt.process() — never blocks recv.
+    # ------------------------------------------------------------------ #
+
+    def _frame_processor_loop(
+        self,
+        buffer: deque,
+        bt: Any,
+        stop_event: threading.Event,
+    ) -> None:
+        q = self._frame_queue
+        lock = self._session_gpu_lock
+        while not stop_event.is_set():
+            try:
+                item = q.get(timeout=0.2)
+            except Empty:
+                continue
+            t, binary = item
+            nparr = np.frombuffer(binary, dtype=np.uint8)
+            frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame_bgr is None:
+                continue
+
+            if not self._logged_first_frame_decode:
+                self._logged_first_frame_decode = True
+                log.info(
+                    "[Session %s] First FRAME decoded  shape=%s t=%.3f",
+                    self.addr,
+                    getattr(frame_bgr, "shape", "?"),
+                    t,
+                )
+
+            if bt is not None:
+                try:
+                    with lock:
+                        self._bt_frame_id += 1
+                        annotated_bgr, subject_rgb = bt.process(
+                            frame_bgr, self._bt_frame_id
+                        )
+                except Exception as e:
+                    log.warning("[Session] ByteTrack error: %s", e)
+                    if _is_cuda_recoverable_inference_error(e):
+                        try:
+                            torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                    continue
+
                 _now = time.monotonic()
                 if _now - self._last_preview_mono >= (1.0 / 30.0):
                     self._last_preview_mono = _now
@@ -367,24 +429,20 @@ class ClientSession:
                         cv2.COLOR_RGB2BGR,
                     )
                     buffer.append(_FrameItem(t=t, frame=subject_bgr))
-                # Remote host RSS: same cadence as Infer/Wall FPS in bytetrack_tracker (every 20 frames)
                 if self._infer_mode == "obs_track" and self._bt_frame_id % 20 == 0:
                     self._print_server_process_ram(len(buffer))
-            except Exception as e:
-                log.warning("[Session] ByteTrack error: %s", e)
-        else:
-            buffer.append(_FrameItem(t=t, frame=frame_bgr))
-            # obs_track without ByteTrack: still stream a throttled preview so the GUI is not blank
-            if self._infer_mode == "obs_track":
-                _now = time.monotonic()
-                if _now - self._last_preview_mono >= (1.0 / 30.0):
-                    self._last_preview_mono = _now
-                    ret, jbuf = cv2.imencode(
-                        ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
-                    )
-                    if ret:
-                        self._tx_previews += 1
-                        self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
+            else:
+                buffer.append(_FrameItem(t=t, frame=frame_bgr))
+                if self._infer_mode == "obs_track":
+                    _now = time.monotonic()
+                    if _now - self._last_preview_mono >= (1.0 / 30.0):
+                        self._last_preview_mono = _now
+                        ret, jbuf = cv2.imencode(
+                            ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                        )
+                        if ret:
+                            self._tx_previews += 1
+                            self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
 
     # ------------------------------------------------------------------ #
     # Inference loop (background thread)
