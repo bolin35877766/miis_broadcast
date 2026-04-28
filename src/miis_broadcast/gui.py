@@ -468,6 +468,11 @@ class ControlPanel(QtWidgets.QWidget):
         form.setFormAlignment(QtCore.Qt.AlignTop)
         form.setSpacing(12)
         form.setContentsMargins(14, 18, 14, 12)
+        # Without QScrollArea the form does not auto-expand field columns.
+        # AllNonFixedFieldsGrow makes slider row widgets fill the available width.
+        form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
 
         # [CSS]
         combo_style = """
@@ -525,7 +530,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_speed.setValue(100)      # 預設 1.0x
 
         self.lbl_speed_val = QtWidgets.QLabel("1.0x")
-        self.lbl_speed_val.setMinimumWidth(55)
+        self.lbl_speed_val.setFixedWidth(48)
         self.lbl_speed_val.setAlignment(QtCore.Qt.AlignCenter)
 
         speed_row = QtWidgets.QHBoxLayout()
@@ -542,7 +547,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_exag.setValue(80)
 
         self.lbl_exag_val = QtWidgets.QLabel("0.8")
-        self.lbl_exag_val.setMinimumWidth(55)
+        self.lbl_exag_val.setFixedWidth(48)
         self.lbl_exag_val.setAlignment(QtCore.Qt.AlignCenter)
 
         exag_row = QtWidgets.QHBoxLayout()
@@ -559,7 +564,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_cfg.setValue(70)
 
         self.lbl_cfg_val = QtWidgets.QLabel("0.7")
-        self.lbl_cfg_val.setMinimumWidth(55)
+        self.lbl_cfg_val.setFixedWidth(48)
         self.lbl_cfg_val.setAlignment(QtCore.Qt.AlignCenter)
 
         cfg_row = QtWidgets.QHBoxLayout()
@@ -576,7 +581,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_ui_scale.setValue(14)
 
         self.lbl_ui_scale_val = QtWidgets.QLabel("14pt")
-        self.lbl_ui_scale_val.setMinimumWidth(55)
+        self.lbl_ui_scale_val.setFixedWidth(48)
         self.lbl_ui_scale_val.setAlignment(QtCore.Qt.AlignCenter)
 
         font_row = QtWidgets.QHBoxLayout()
