@@ -217,6 +217,32 @@ When using remote inference, the server (`python -m miis_broadcast.server`) emit
 **`tx_previews = 0` is normal** for `camera`, `obs`, `file`, and `dual_sync` because
 `MSG_PREVIEW` is only sent in `obs_track` mode.
 
+Remote inference also uses **`MSG_CLIENT_DIAG`** (optional): the GUI sends compact JSON
+every ~2 s with sender-PC RSS, outbound JPEG queue depth, and sender system RAM.
+The session prints one line per message on **stdout** — see below (not mixed into the
+`logging` stderr table).
+
+### Server stdout (`print`, same terminal as ByteTrack FPS)
+
+The Python **`logging`** lines above go to **stderr**.  Separately, **stdout** carries
+`print()` lines from **`ByteTrackWrapper`** (YOLOX + tracker timing) and from
+**`ClientSession`** (`server/session.py`) so operators can correlate FPS and RAM in one stream:
+
+| Example prefix | Origin | Meaning |
+|---|---|---|
+| `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | `bytetrack_tracker.py` | Every **20** frames when ByteTrack runs on **this host** |
+| `[ByteTrack] Server (this host) process RAM: …` | `session.py` | **Inference server process** RSS + host RAM % + LiveCC subject buffer length (`obs_track`, every **20** BT frames) — use this for **remote box** tuning |
+| `[ByteTrack] Thin-client (sender PC) RAM: …` | `session.py` (payload from GUI via **`MSG_CLIENT_DIAG`**) | **Laptop / GUI** RSS, JPEG **send** queue, sender system RAM — upstream encode/TCP health |
+
+**Remote vs local:** with **thin client + `obs_track`**, tracking runs on the server, so
+these lines appear on the **remote machine’s** terminal (SSH/tmux). Local-only
+`obs_track` (`CameraByteTrackThread` on your PC) prints the first line from the same
+tracker class on **your** stdout; `Server (this host)` still means “this Python process
+on whatever machine runs `miis_broadcast.server`.”
+
+For a full narrative (15 fps send / PREVIEW, protocol field list), see the root
+**Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).
+
 ---
 
 ## Session Log Files (client-side)
@@ -234,9 +260,14 @@ Inference: remote
 [HH:MM:SS] [COMMENTARY] AI-generated commentary text…
 [HH:MM:SS] [GUI] [INFO] [Remote] 連線中斷: …
 [HH:MM:SS] [GUI] [INFO] Stopping inference
+[HH:MM:SS] [Memory] [INFO] sender_PC RSS=… MiB | JPEG send_queue=… | sender system_RAM_used=…%
 ```
 
-**All five input modes produce this same structure.**
+**`[Memory] [INFO]`** — only when **remote `obs_track`** and a session file is active:
+sender-PC RSS / outbound queue (see **`MSG_CLIENT_DIAG`** above). Does **not** include
+server-side RSS; watch the inference host **stdout** lines for remote process RAM.
+
+**All five input modes produce this same structure** (except optional `[Memory]` lines).
 The `Input Mode:` header and `[COMMENTARY]` content differ; everything else is identical.
 
 | Header field | Values |
