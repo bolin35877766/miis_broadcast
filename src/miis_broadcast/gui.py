@@ -780,13 +780,16 @@ class ControlPanel(QtWidgets.QWidget):
         self.l_voice.setVisible(show_openai)
         self.cmb_voice.setVisible(show_openai)
         self.l_speed.setVisible(show_openai)
-        self._speed_row_widget.setVisible(show_openai)
+        self.slider_speed.setVisible(show_openai)
+        self.lbl_speed_val.setVisible(show_openai)
 
         show_local = (mode == "local")
         self.l_exag.setVisible(show_local)
-        self._exag_row_widget.setVisible(show_local)
+        self.slider_exag.setVisible(show_local)
+        self.lbl_exag_val.setVisible(show_local)
         self.l_cfg.setVisible(show_local)
-        self._cfg_row_widget.setVisible(show_local)
+        self.slider_cfg.setVisible(show_local)
+        self.lbl_cfg_val.setVisible(show_local)
 
     def set_tts_controls_enabled(self, enabled: bool) -> None:
         # Lock during inference to prevent state corruption
