@@ -64,7 +64,7 @@ on_camera_frame / on_video_frame
 
 | Condition | Tracking runs on | Preview frames |
 |-----------|-----------------|----------------|
-| Remote connected | Server (ByteTrack inside `ClientSession`; decoded frames queued, GPU work serialized with LiveCC) | Server sends `MSG_PREVIEW` JPEG back (throttled to **~30 fps** by default) |
+| Remote connected | Server (ByteTrack inside `ClientSession`; decoded frames queued, GPU work serialized with LiveCC) | Server sends **`MSG_PREVIEW` JPEG once per tracked frame** (rate ≈ ByteTrack Wall FPS, typically well below raw 30 fps upload) |
 | Local only | `CameraByteTrackThread` on client GPU | `signal_frame` emits annotated BGR directly |
 
 ---

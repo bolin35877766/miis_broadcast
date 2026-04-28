@@ -13,7 +13,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR (OBS Virtual Camera)** — any source you route into OBS (e.g. Quest Link / game capture) and expose as **OBS Virtual Camera**; same “plain” full-frame stream as Webcam, different device index
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **30 fps send / PREVIEW throttle** (baseline) vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
+- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **30 fps client send** vs **ByteTrack Wall FPS / LiveCC gap** vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -92,28 +92,32 @@ drains the queue and calls `sendall`.  The GUI thread is never blocked by TCP I/
 If the queue is full the newest frame is silently dropped (`put_nowait`), keeping
 memory bounded and backpressure natural.
 
-#### Client send rate and PREVIEW throttle (currently 30 fps)
+#### Client send rate vs server PREVIEW (obs_track)
 
-Both `_FRAME_SEND_FPS_MAX` (client → server) and the server-side PREVIEW throttle
-(`1.0 / 30.0`) are set to **30 fps** as the testing baseline, matching the camera source.
+**Client** `_FRAME_SEND_FPS_MAX` remains **30 fps** (testing baseline, matches the camera).
+
+**Server** sends **one `MSG_PREVIEW` per successful ByteTrack frame** (no separate 30 Hz cap).
+Effective preview rate is **`ByteTrack` Wall FPS** (often ~10–15/s while sharing the GPU with LiveCC),
+so the thin client receives as many boxed frames as the tracker can produce.
+
+LiveCC uses a **minimum gap** between inference runs (`session.py` → `_DEFAULT_LIVECC_INFER_GAP_SEC`, default **3.5 s**) so YOLO tracking gets longer uninterrupted windows; commentary segments arrive less often than with a shorter gap.
 
 Measured on server with ByteTrack + LiveCC sharing one GPU (obs_track):
-- **ByteTrack Infer FPS** exceeds 30 fps — the GPU can keep up at 30 fps input
-- **Server RSS** stabilises at ~2 500 MiB and is driven by LiveCC KV cache, not frame rate
-- **Host system RAM** remains at ~28 % with 30 fps — headroom is comfortable
-- **Client JPEG send queue** stays at 0 / 30 — no backpressure at 30 fps
+- **ByteTrack Infer FPS** can exceed 30 fps — the YOLO forward is not the main limiter
+- **Wall FPS** rises when LiveCC runs less frequently (larger infer gap)
+- **Server RSS** stabilises around LiveCC KV cache size, not raw frame count
+- **Client JPEG send queue** stays at 0 / 30 — no backpressure at 30 fps send
 
-LiveCC itself only uses a 2 s / 2 fps clip per inference cycle regardless of send rate;
-the higher send rate benefits ByteTrack tracking smoothness and PREVIEW display quality.
+LiveCC still uses a ~2 s / 2 fps clip per inference cycle regardless of send rate;
+the higher send rate benefits ByteTrack association and subject crops.
 
-Reduce `_FRAME_SEND_FPS_MAX` and the PREVIEW throttle together if bandwidth or GPU
-becomes a constraint — keep both aligned so previews match the streamed frame rate.
+Lower `_FRAME_SEND_FPS_MAX` only if bandwidth or the client CPU struggles; server PREVIEW count follows tracker throughput automatically.
 
 #### Why the PREVIEW display hold window (default **2.5 s**)
 
-The camera thread emits raw frames at 30 fps.  Server **`MSG_PREVIEW`** frames are sent at
-most ~30 Hz (server throttle), but actual arrival gaps are larger whenever ByteTrack stalls
-during **LiveCC** on the shared GPU (**~2 s** per inference while `_session_gpu_lock` is held).
+The camera thread emits raw frames at 30 fps.  **`MSG_PREVIEW`** is sent **once per ByteTrack
+output** (effective rate ≈ Wall FPS, not a fixed 30 Hz cap). Actual arrival gaps widen whenever
+ByteTrack stalls during **LiveCC** on the shared GPU (**~2 s** per inference while `_session_gpu_lock` is held).
 
 Without a hold window, **`on_camera_frame`** would paint raw video between PREVIEW arrivals,
 so boxed and unboxed frames alternate visibly (and when PREVIEW resumes, the annotated frame can
@@ -138,7 +142,7 @@ Key modules:
 |---|---|
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
 | [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, optional thin-client diagnostics |
-| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **`_frame_queue`** (small backlog, **`maxsize=2`**) → background decode + **`_session_gpu_lock`** (serialize ByteTrack + LiveCC on one GPU), PREVIEW throttle, stdout RAM telemetry |
+| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **`_frame_queue`** (small backlog, **`maxsize=2`**) → background decode + **`_session_gpu_lock`** (serialize ByteTrack + LiveCC on one GPU); **one PREVIEW per tracked frame**; LiveCC gap **`_DEFAULT_LIVECC_INFER_GAP_SEC`**; stdout RAM telemetry |
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — remote `obs_track`: **`_OBS_TRACK_PREVIEW_HOLD_SEC`** (raw-camera suppression after each PREVIEW) |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
 | [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |
@@ -357,7 +361,7 @@ When inference runs on a **remote** server (`obs_track` + TCP), **RSS** readings
 | `[Server RSS] full python process (LiveCC+ByteTrack+decode): …` | **Whole** `miis_broadcast.server` process RSS (LiveCC / Qwen **and** ByteTrack / YOLO **and** JPEG decode — not split per model). Emitted every **20** ByteTrack frames (same cadence as FPS lines). |
 | `[ByteTrack] Thin-client (sender PC) RAM: …` | **Laptop / GUI machine** that encodes JPEGs and sends `FRAME`s: client RSS, outbound JPEG queue depth, and sender system RAM. The client forwards a small `CLIENT_DIAG` message so these lines appear in the **server terminal** next to FPS, not only in the GUI console. |
 
-**Tuning send / PREVIEW fps (default 30):** prioritise the **`[Server RSS]`** line when asking whether the remote box is memory-bound. Sender-PC lines help if you suspect encode or TCP backlog on the client.
+**Tuning:** prioritise **`[Server RSS]`** and **ByteTrack Wall FPS** vs **Infer FPS** on the inference host when asking whether RAM or GPU multiplexing is the limiter. Sender-PC lines help if you suspect JPEG encode or TCP backlog on the client.
 
 The diagnostic payload is a short JSON message (order of **hundreds of bytes** every ~2 s from the GUI timer). It does not meaningfully block other OS processes; control sends hold the client socket lock only for that small `sendall`.
 

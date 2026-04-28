@@ -80,6 +80,12 @@ def _is_oob_vocab_value_error(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and "input_ids out of vocab" in str(exc).lower()
 
 
+# Minimum idle time between finishing one LiveCC run and starting the next (seconds).
+# Larger values give ByteTrack more consecutive GPU access (higher Wall FPS / smoother boxes);
+# commentary segments arrive less often.
+_DEFAULT_LIVECC_INFER_GAP_SEC = 3.5
+
+
 # ---------------------------------------------------------------------------
 # FrameItem: mirrors workers/livecc.py to avoid circular import
 # ---------------------------------------------------------------------------
@@ -209,10 +215,10 @@ class ClientSession:
         # IMPORTANT: recv must NOT hold this lock — it would block disconnect/PING. We decode
         # frames off the recv loop via _frame_queue + _frame_processor_loop (GPU work only).
         self._session_gpu_lock = threading.Lock()
-        # Keep only the last few JPEG frames so the processor never falls behind real-time.
-        # With ByteTrack Wall FPS ~11 and camera at 30 fps, a queue of 120 causes ~11 s lag
-        # (oldest-first FIFO: 120 / 11 fps = ~10.9 s). maxsize=5 caps lag to ≤ 0.5 s.
-        self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=5)
+        # Keep only the last 2 JPEG frames: processor always gets the freshest available frame.
+        # With ByteTrack Wall FPS ~15 and camera at 30 fps, maxsize=2 → latency ≈ 2/15 ≈ 0.13 s.
+        # Smaller queue = less "jump back" when PREVIEW resumes after a LiveCC GPU lock cycle.
+        self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=2)
         self._logged_first_frame_decode = False
 
         frame_thread = threading.Thread(
@@ -413,15 +419,14 @@ class ClientSession:
                             pass
                     continue
 
-                _now = time.monotonic()
-                if _now - self._last_preview_mono >= (1.0 / 30.0):
-                    self._last_preview_mono = _now
-                    ret, jbuf = cv2.imencode(
-                        ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 78]
-                    )
-                    if ret:
-                        self._tx_previews += 1
-                        self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
+                # Send one PREVIEW per processed frame — Wall FPS (~10–15/s) already caps rate;
+                # no extra throttle here (avoids missing box moves between LiveCC locks).
+                ret, jbuf = cv2.imencode(
+                    ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 78]
+                )
+                if ret:
+                    self._tx_previews += 1
+                    self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
 
                 if subject_rgb is not None:
                     subject_bgr = cv2.cvtColor(
@@ -458,12 +463,12 @@ class ClientSession:
 
         state: Dict[str, Any] = {}
         inference_count = 0
-        infer_interval = 2.0
+        infer_gap = _DEFAULT_LIVECC_INFER_GAP_SEC
         last_infer_t = time.time()
 
         while not stop_event.is_set():
             now = time.time()
-            if now - last_infer_t < infer_interval:
+            if now - last_infer_t < infer_gap:
                 time.sleep(0.1)
                 continue
 
