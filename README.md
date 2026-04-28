@@ -13,7 +13,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR (OBS Virtual Camera)** — any source you route into OBS (e.g. Quest Link / game capture) and expose as **OBS Virtual Camera**; same “plain” full-frame stream as Webcam, different device index
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **client send FPS** (`_FRAME_SEND_FPS_MAX`, default **20**) vs **ByteTrack Wall FPS / LiveCC gap** vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
+- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **30→20 phase sampling / PREVIEW caps** vs **ByteTrack Wall FPS / LiveCC gap** vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -73,7 +73,7 @@ _frame_sender_loop (background thread)
         │                                                               │
         │  ◄── MSG_SEGMENT (text) ◄── LiveCC inference (GPU)  ◄────────┤
         │  ◄── MSG_PREVIEW (JPEG) ◄── ByteTrack overlay ───────────────┘
-        │                               (obs_track mode only, up to ~30 fps)
+        │                               (obs_track mode only, capped at sample out ≈20 Hz)
         ▼
 on_segment → text panel + OpenAI TTS (local audio)
 on_remote_track_preview → video panel (annotated frames with tracking boxes)
@@ -94,14 +94,19 @@ memory bounded and backpressure natural.
 
 #### Client send rate vs server PREVIEW (obs_track)
 
-**Client** `_FRAME_SEND_FPS_MAX` defaults to **20 fps** (JPEG send cap; uses **temporal sampling** — always the latest camera frame at each tick, not blind drops). The server recv path uses a **single-slot** pending JPEG (latest overwrites) so tracking sees the freshest frame without a deep queue.
+**Nominal capture → wire (thin client)**  
+The GUI/camera emits **~30** `send_frame()` callbacks/sec. `client.py` applies a classical **phase
+accumulator**: each callback adds `STEP = OUT/IN = 20/30` to phase; whenever phase ≥ **1**, one FRAME
+JPEG is queued and phase subtracts **1**. Long-term average ≈ **20** frames/sec wired to the server —
+the reproducible answer to «why 20?» is **`20 Hz = (2/3) × 30 Hz`**.
 
-**Server** sends **one `MSG_PREVIEW` per successful ByteTrack frame** (no separate 30 Hz cap).
-Effective preview rate is **`ByteTrack` Wall FPS** (typically ~10–20/s depending on GPU load),
-so the thin client receives as many boxed frames as the tracker can produce.
+**Ingress on server** uses a single-slot JPEG buffer (`maxsize=1`): each new FRAME **overwrites** pending decode work («always latest»).
 
-LiveCC runs on a **2 s interval** (`infer_interval = 2.0` in `session.py`), independent of
-send rate — the clip builder samples 2 fps from the last 2 s of subject crops regardless.
+**PREVIEW (`MSG_PREVIEW` back)**  
+Annotated previews are gated with wall-clock spacing **`1/_PREVIEW_SAMPLE_OUT_FPS`** (≈20 Hz). If ByteTrack
+Wall FPS stays below ~20 Hz, actual PREVIEW rate follows physics.
+
+LiveCC runs on a **2 s interval** (`infer_interval = 2.0` in `session.py`), independent of frame sampling.
 
 **GPU serialization (`_session_gpu_lock`):** only `model.generate()` inside `live_cc_from_frames`
 acquires the lock. `bt.process()` and all network I/O run freely outside it. This prevents
@@ -109,19 +114,19 @@ CUDA context corruption when both models share the same GPU at ~96% utilisation 
 the lock, concurrent kernels from YOLOX and Qwen can collide and trigger `device-side assert`.
 
 Measured on server with ByteTrack + LiveCC sharing one GPU (obs_track):
-- **ByteTrack Wall FPS** ~10–20/s — YOLOX runs freely; only pauses during the `~1–1.5 s`
-  `model.generate()` window
-- **ByteTrack Infer FPS** (pure YOLOX forward) still high — the lock does not affect it
+- **ByteTrack Wall FPS** ~10–14/s typical
+- **ByteTrack Infer FPS** (pure YOLOX forward) can be higher
 - **Server RSS** stabilises around LiveCC KV cache size, not raw frame count
-- **Client JPEG send queue** stays near 0 / 30 — minimal backpressure at 20 fps send
+- **Client JPEG send queue** stays near 0 / 30 — minimal TCP backlog
 
-Lower `_FRAME_SEND_FPS_MAX` only if bandwidth or the client CPU struggles; server PREVIEW count follows tracker throughput automatically.
+Tune **`_REMOTE_FRAME_SAMPLE_OUT_FPS`**, **`_REMOTE_INPUT_NOMINAL_FPS`** (`client.py`),
+or **`_PREVIEW_SAMPLE_OUT_FPS`** (`session.py`) together so IN/OUT stay a deliberate ratio.
 
 #### Why the PREVIEW display hold window (default **2.5 s**)
 
-The camera thread emits raw frames at 30 fps. **`MSG_PREVIEW`** is sent **once per ByteTrack
-output** (effective rate ≈ Wall FPS). PREVIEW gaps widen for **~1–1.5 s** while
-`_session_gpu_lock` is held during `model.generate()` — ByteTrack pauses during that window.
+The camera thread emits raw frames at 30 fps. **`MSG_PREVIEW`** is **subsampled** server-side to
+roughly **≤20 Hz** (wall-clock). Extra gaps can appear for **~1–1.5 s** while `_session_gpu_lock`
+is held during `model.generate()`.
 
 Without a hold window, **`on_camera_frame`** would paint raw video between PREVIEW arrivals,
 so boxed and unboxed frames alternate visibly (jump-back artefact).
@@ -131,8 +136,8 @@ The GUI suppresses raw-camera **`video_panel`** updates for
 delivery. This window should comfortably exceed the LiveCC generate time (~1–1.5 s). It still
 falls back to raw camera if the server stops sending for 2.5 s (e.g. disconnect).
 
-The server uses a **single-slot `_frame_queue`** (`maxsize=1`): each new JPEG **overwrites**
-the pending slot (temporal sampling — always the latest frame). See `server/session.py`.
+The server uses a **single-slot `_frame_queue`** (`maxsize=1`): each new FRAME JPEG **overwrites**
+the pending slot. See `server/session.py`.
 
 If you see boxes flickering against raw frames, raise `_OBS_TRACK_PREVIEW_HOLD_SEC`.
 
@@ -142,7 +147,7 @@ Key modules:
 |---|---|
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
 | [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, optional thin-client diagnostics |
-| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **single-slot queue** (latest sample) → background decode → ByteTrack (free-running) + LiveCC (`_session_gpu_lock` wraps **`model.generate()` only**); one PREVIEW per tracked frame; stdout RAM telemetry |
+| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **single-slot queue** → decode → ByteTrack + LiveCC (`_session_gpu_lock` wraps **`model.generate()` only**); PREVIEW capped at **`_PREVIEW_SAMPLE_OUT_FPS`** Hz; stdout RAM telemetry |
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — remote `obs_track`: **`_OBS_TRACK_PREVIEW_HOLD_SEC`** (raw-camera suppression after each PREVIEW) |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
 | [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |

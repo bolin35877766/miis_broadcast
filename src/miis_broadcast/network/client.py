@@ -34,10 +34,15 @@ from .protocol import (
 
 log = logging.getLogger(__name__)
 
-# Maximum frames buffered for sending; excess are dropped to avoid memory growth.
+# Nominal upstream rate: GUI emits ~30 camera callbacks/sec (thin client encode path).
+_REMOTE_INPUT_NOMINAL_FPS = 30.0
+# Wired FRAME rate after deterministic sampling: ratio OUT/IN = 20/30 = 2/3 (phase accumulator).
+_REMOTE_FRAME_SAMPLE_OUT_FPS = 20.0
+_FRAME_SAMPLE_PHASE_STEP = (
+    _REMOTE_FRAME_SAMPLE_OUT_FPS / _REMOTE_INPUT_NOMINAL_FPS
+)
+# Maximum pre-encoded blobs waiting for tcp sendall (different from FPS sampling).
 _FRAME_QUEUE_MAX = 30
-# Maximum frame send rate to the server (fps). Lower = less GPU/load on inference host.
-_FRAME_SEND_FPS_MAX = 20.0
 
 
 class SocketClientRunner(QtCore.QThread):
@@ -46,9 +51,8 @@ class SocketClientRunner(QtCore.QThread):
     QThread.  All outgoing sends (frames, control messages) are thread-safe.
 
     Frame sending is fully non-blocking from the caller's perspective: send_frame()
-    updates the latest frame, encodes at `_FRAME_SEND_FPS_MAX` Hz (temporal sampling),
-    then enqueues JPEG wire bytes; a dedicated background thread drains the queue and calls
-    sendall(). This prevents the GUI thread from ever blocking on a TCP write.
+    applies deterministic **30 Hz → 20 Hz** downsampling via a phase accumulator, then enqueues JPEG
+    wire bytes; a background thread calls sendall().
 
     Signals (emitted from the background thread, delivered via Qt queued
     connection to the main/GUI thread automatically):
@@ -89,11 +93,8 @@ class SocketClientRunner(QtCore.QThread):
         self._frame_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(
             maxsize=_FRAME_QUEUE_MAX
         )
-        # Client-side frame rate throttle (temporal sampling: always keep newest frame)
-        self._last_frame_sent_mono: float = 0.0
-        self._min_frame_interval: float = 1.0 / _FRAME_SEND_FPS_MAX
-        self._sample_bgr: Optional[np.ndarray] = None
-        self._sample_t: float = 0.0
+        # Phase accumulator for 30 -> 20 fps (emit when phase crosses 1.0): standard resampling.
+        self._sample_phase: float = 0.0
 
     # ------------------------------------------------------------------ #
     # QThread entry point
@@ -101,6 +102,7 @@ class SocketClientRunner(QtCore.QThread):
 
     def run(self) -> None:
         self._stop_requested = False
+        self._sample_phase = 0.0
         # Drain any leftover frames from a previous run
         while not self._frame_queue.empty():
             try:
@@ -171,38 +173,38 @@ class SocketClientRunner(QtCore.QThread):
         """
         Encode frame and enqueue for sending.  Returns immediately (non-blocking).
 
-        Temporal sampling: each callback updates the newest frame; we JPEG-encode at most
-        `_FRAME_SEND_FPS_MAX` times per second using that latest image (not "first frame wins"
-        inside each window).  If the outbound queue is full, the wire payload may be dropped —
-        the GUI thread never blocks on TCP.
+        **Sampling specification:** callers emit ~``_REMOTE_INPUT_NOMINAL_FPS`` callbacks/sec (30 Hz).
+        We apply a **phase accumulator** step ``OUT/IN = 20/30`` per callback; whenever the
+        accumulated phase reaches 1.0, we JPEG-encode **that** frame and enqueue one FRAME
+        (~20/sec long-term average). This gives a reproducible answer to «why 20?»: it is the
+        chosen rational downsample ratio from 30 Hz, not an arbitrary throttle.
+
+        If the outbound queue is full, the encoded blob may be dropped (TCP backlog); GUI never blocks.
         """
         if self._sock is None or self._stop_requested:
             return
 
-        # Always retain the latest camera frame; subsample in time to cap send FPS.
-        self._sample_bgr = frame_bgr.copy()
-        self._sample_t = float(t)
-        now = time.monotonic()
-        if now - self._last_frame_sent_mono < self._min_frame_interval:
+        self._sample_phase += _FRAME_SAMPLE_PHASE_STEP
+        if self._sample_phase < 1.0:
             return
-        self._last_frame_sent_mono = now
+        self._sample_phase -= 1.0
 
         try:
             ret, jpeg_buf = cv2.imencode(
-                ".jpg", self._sample_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
             )
             if not ret:
                 return
             msg = {
                 "type": MSG_FRAME,
                 "frame_id": self._frame_id,
-                "t": self._sample_t,
+                "t": float(t),
             }
             self._frame_id += 1
             wire = pack_message(msg, jpeg_buf.tobytes())
             self._frame_queue.put_nowait(wire)
         except queue.Full:
-            pass  # drop encoded wire — TCP sender backlogged; GUI still non-blocking
+            pass  # TCP sender backlogged — drop encoded wire only
         except Exception as e:
             log.warning("[SocketClient] send_frame encode: %s", e)
 

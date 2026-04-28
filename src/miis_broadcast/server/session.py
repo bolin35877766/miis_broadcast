@@ -36,6 +36,9 @@ from ..network.protocol import (
 
 log = logging.getLogger(__name__)
 
+# PREVIEW(MSG_PREVIEW back to thin client): emit at most this rate (same 20fps story as FRAME sample).
+_PREVIEW_SAMPLE_OUT_FPS = 20.0
+
 
 def _commentary_too_similar(prev: str, cur: str, *, ratio: float = 0.86) -> bool:
     """True if the new segment is a near-duplicate of the last (loop / stuck phrasing)."""
@@ -118,7 +121,6 @@ class ClientSession:
         self._stop = False
         self._mode = "camera"
         self._bt_frame_id: int = 0
-        self._last_preview_mono: float = 0.0
         self._infer_mode: str = "camera"
         self._rx_frames: int = 0
         self._tx_previews: int = 0
@@ -198,7 +200,6 @@ class ClientSession:
         self._send({"type": MSG_STATUS, "msg": f"Inference started (mode={mode})"})
 
         self._bt_frame_id = 0
-        self._last_preview_mono = 0.0
         self._infer_mode = mode
         self._rx_frames = 0
         self._tx_previews = 0
@@ -220,6 +221,7 @@ class ClientSession:
         # track always the freshest frame, not a multi-frame FIFO that discards by order).
         self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=1)
         self._logged_first_frame_decode = False
+        self._preview_sample_last_emit_mono = 0.0
 
         frame_thread = threading.Thread(
             target=self._frame_processor_loop,
@@ -416,14 +418,17 @@ class ClientSession:
                             pass
                     continue
 
-                # Send one PREVIEW per processed frame — Wall FPS (~10–15/s) already caps rate;
-                # no extra throttle here (avoids missing box moves between LiveCC locks).
-                ret, jbuf = cv2.imencode(
-                    ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 78]
-                )
-                if ret:
-                    self._tx_previews += 1
-                    self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
+                # PREVIEW return path: at most `_PREVIEW_SAMPLE_OUT_FPS` Hz (consistent 20fps cap).
+                gap = 1.0 / _PREVIEW_SAMPLE_OUT_FPS
+                pn = time.monotonic()
+                if pn - self._preview_sample_last_emit_mono >= gap:
+                    self._preview_sample_last_emit_mono = pn
+                    ret, jbuf = cv2.imencode(
+                        ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 78]
+                    )
+                    if ret:
+                        self._tx_previews += 1
+                        self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
 
                 if subject_rgb is not None:
                     subject_bgr = cv2.cvtColor(
@@ -437,8 +442,9 @@ class ClientSession:
                 buffer.append(_FrameItem(t=t, frame=frame_bgr))
                 if self._infer_mode == "obs_track":
                     _now = time.monotonic()
-                    if _now - self._last_preview_mono >= (1.0 / 30.0):
-                        self._last_preview_mono = _now
+                    _gap = 1.0 / _PREVIEW_SAMPLE_OUT_FPS
+                    if _now - self._preview_sample_last_emit_mono >= _gap:
+                        self._preview_sample_last_emit_mono = _now
                         ret, jbuf = cv2.imencode(
                             ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
                         )
