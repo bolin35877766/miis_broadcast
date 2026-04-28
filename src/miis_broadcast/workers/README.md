@@ -241,14 +241,12 @@ tracker class on **your** stdout; **`[Server RSS]`** is **whole-process** RAM (L
 decode), not ByteTrack-only, on whatever machine runs `miis_broadcast.server`.
 
 **Server (`obs_track`):** incoming `FRAME` JPEGs are decoded on a dedicated thread.
-**`_session_gpu_lock`** serializes only the `model.generate()` call inside `live_cc_from_frames`
-— `bt.process()` and all network I/O are **outside** the lock and run freely. This prevents
-`device-side assert` on a GPU that is already at ~96% utilisation (YOLOX + Qwen kernels
-colliding). ByteTrack pauses for ~1–1.5 s while LiveCC holds the lock, then resumes.
-The session uses a **single-slot `_frame_queue`** (`maxsize=1`, latest FRAME overwrites). **PREVIEW**
-messages are **subsampled** to ≈**18 Hz** (see `_PREVIEW_SAMPLE_OUT_FPS` in `session.py`).
-On the **client**, `MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (default **2.5 s**) suppresses raw
-camera between PREVIEW updates to cover the LiveCC generate window without flickering.
+`bt.process()` and `live_cc_from_frames` run sequentially on that thread; all network I/O
+runs freely outside it. The session uses a **single-slot `_frame_queue`** (`maxsize=1`,
+latest FRAME overwrites). **PREVIEW** messages are **subsampled** to ≈**18 Hz** (see
+`_PREVIEW_SAMPLE_OUT_FPS` in `session.py`). On the **client**,
+`MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (default **2.5 s**) suppresses raw camera between
+PREVIEW updates to avoid flickering.
 
 For a full narrative (30→18 phase sampling, PREVIEW caps, protocol field list), see the root
 **Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).

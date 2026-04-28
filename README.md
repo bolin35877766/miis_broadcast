@@ -108,11 +108,6 @@ Wall FPS stays below ~18 Hz, actual PREVIEW rate follows physics.
 
 LiveCC runs on a **2 s interval** (`infer_interval = 2.0` in `session.py`), independent of frame sampling.
 
-**GPU serialization (`_session_gpu_lock`):** only `model.generate()` inside `live_cc_from_frames`
-acquires the lock. `bt.process()` and all network I/O run freely outside it. This prevents
-CUDA context corruption when both models share the same GPU at ~96% utilisation — without
-the lock, concurrent kernels from YOLOX and Qwen can collide and trigger `device-side assert`.
-
 Measured on server with ByteTrack + LiveCC sharing one GPU (obs_track):
 - **ByteTrack Wall FPS** ~10–14/s typical
 - **ByteTrack Infer FPS** (pure YOLOX forward) can be higher
@@ -125,16 +120,12 @@ or **`_PREVIEW_SAMPLE_OUT_FPS`** (`session.py`) together so IN/OUT stay a delibe
 #### Why the PREVIEW display hold window (default **2.5 s**)
 
 The camera thread emits raw frames at 30 fps. **`MSG_PREVIEW`** is **subsampled** server-side to
-roughly **≤18 Hz** (wall-clock). Extra gaps can appear for **~1–1.5 s** while `_session_gpu_lock`
-is held during `model.generate()`.
-
-Without a hold window, **`on_camera_frame`** would paint raw video between PREVIEW arrivals,
-so boxed and unboxed frames alternate visibly (jump-back artefact).
+roughly **≤18 Hz** (wall-clock). Without a hold window, **`on_camera_frame`** would paint raw video
+between PREVIEW arrivals, so boxed and unboxed frames alternate visibly (jump-back artefact).
 
 The GUI suppresses raw-camera **`video_panel`** updates for
 **`MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (2.50 s)** after each **`on_remote_track_preview`**
-delivery. This window should comfortably exceed the LiveCC generate time (~1–1.5 s). It still
-falls back to raw camera if the server stops sending for 2.5 s (e.g. disconnect).
+delivery. It falls back to raw camera if the server stops sending for 2.5 s (e.g. disconnect).
 
 The server uses a **single-slot `_frame_queue`** (`maxsize=1`): each new FRAME JPEG **overwrites**
 the pending slot. See `server/session.py`.
@@ -147,7 +138,7 @@ Key modules:
 |---|---|
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
 | [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, optional thin-client diagnostics |
-| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **single-slot queue** → decode → ByteTrack + LiveCC (`_session_gpu_lock` wraps **`model.generate()` only**); PREVIEW capped at **`_PREVIEW_SAMPLE_OUT_FPS`** Hz; stdout RAM telemetry |
+| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **single-slot queue** → decode → ByteTrack + LiveCC; PREVIEW capped at **`_PREVIEW_SAMPLE_OUT_FPS`** Hz; stdout RAM telemetry |
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — remote `obs_track`: **`_OBS_TRACK_PREVIEW_HOLD_SEC`** (raw-camera suppression after each PREVIEW) |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
 | [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |

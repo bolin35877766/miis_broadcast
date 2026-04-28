@@ -819,8 +819,9 @@ class MainWindow(QtWidgets.QMainWindow):
     signal_start_camera_livecc = QtCore.Signal(str)
 
     # Remote obs_track: suppress raw-camera overlay this long after each PREVIEW (seconds).
-    # Narrower than 1500 ms for lower perceived lag; widen if boxes flicker vs raw frames.
-    _OBS_TRACK_PREVIEW_HOLD_SEC = 0.60
+    # Keeps the last annotated frame visible between PREVIEW deliveries (~18 Hz).
+    # Falls back to raw camera if no PREVIEW arrives for this long (e.g. disconnect).
+    _OBS_TRACK_PREVIEW_HOLD_SEC = 2.50
 
     # signal to apply settings to tts thread to avoid calling slots directly on the main thread
     signal_tts_apply_settings = QtCore.Signal(str, float)
