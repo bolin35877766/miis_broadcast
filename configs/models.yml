@@ -23,8 +23,8 @@ bytetrack:
   exp_file: "/home/miislab-server3/ByteTrack_repo/exps/example/mot/yolox_x_mix_det.py"
   ckpt_path: "/home/miislab-server3/ByteTrack_repo/pretrained/bytetrack_x_mot17.pth.tar"
   model_size: "x"
-  device: "cpu"
-  fp16: false
+  device: "cuda"
+  fp16: true
   fuse: true
   # BYTETracker hyper-parameters
   track_thresh: 0.5

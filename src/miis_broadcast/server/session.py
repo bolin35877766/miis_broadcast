@@ -206,8 +206,12 @@ class ClientSession:
         # Load ByteTrack before frame worker (worker needs bt reference).
         bt = self._maybe_load_bytetrack(mode)
 
+        # Serialize only the GPU-heavy forward pass (model.generate) between ByteTrack and
+        # LiveCC. bt.process() and all network I/O must NOT hold this lock — only the inner
+        # live_cc_from_frames call acquires it, so ByteTrack keeps running freely outside that
+        # narrow window.
+        self._session_gpu_lock = threading.Lock()
         # Keep only the last 2 JPEG frames so the processor stays near real-time.
-        # ByteTrack (YOLOX) and LiveCC run concurrently on the same GPU (separate CUDA streams).
         self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=2)
         self._logged_first_frame_decode = False
 
@@ -486,11 +490,12 @@ class ClientSession:
                 log.debug("[Session] State reset (count=%d)", inference_count)
 
             try:
-                batch = list(
-                    self.livecc_model.live_cc_from_frames(
-                        clip=clip, query=query, state=state
+                with self._session_gpu_lock:
+                    batch = list(
+                        self.livecc_model.live_cc_from_frames(
+                            clip=clip, query=query, state=state
+                        )
                     )
-                )
                 last_infer_t = time.time()
                 for (start_ts, stop_ts), text, state in batch:
                     if stop_event.is_set():
