@@ -294,7 +294,7 @@ class ControlPanel(QtWidgets.QWidget):
         if not hasattr(self, "cmb_tts"):
             return
         fm = self.fontMetrics()
-        combo_h = max(36, fm.height() + 14)
+        combo_h = max(34, fm.height() + 10)
         self._settings_row_min_h = combo_h
         for c in (self.cmb_tts, self.cmb_style, self.cmb_voice):
             c.setMinimumHeight(combo_h)
@@ -333,14 +333,36 @@ class ControlPanel(QtWidgets.QWidget):
         for row in getattr(self, "_settings_rows", {}).values():
             row.setMinimumHeight(combo_h)
 
+    def apply_source_metrics(self) -> None:
+        """Keep Source button heights in sync with current app font size."""
+        if not hasattr(self, "btn_offline"):
+            return
+        fm = self.fontMetrics()
+        main_h = max(42, fm.height() + 18)
+        switch_h = max(28, fm.height() + 8)
+        for btn in (self.btn_offline, self.btn_online, self.btn_open_remote):
+            btn.setMinimumHeight(main_h)
+            btn.setMaximumHeight(main_h)
+        for btn in (self.btn_sw_webcam, self.btn_sw_vr, self.btn_sw_dual):
+            btn.setMinimumHeight(switch_h)
+            btn.setMaximumHeight(switch_h)
+
     def setup_ui(self) -> None:
-        # Single column layout (no scroll area) — sidebar never shows a vertical scrollbar.
+        # QScrollArea with both scrollbars hidden — no visible draggable bar,
+        # but layout always has enough room so widgets never overlap.
         outer_layout = QtWidgets.QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
+        _scroll = QtWidgets.QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        outer_layout.addWidget(_scroll)
+
         _inner = QtWidgets.QWidget()
-        outer_layout.addWidget(_inner)
+        _scroll.setWidget(_inner)
 
         layout = QtWidgets.QVBoxLayout(_inner)
         layout.setSpacing(16)
@@ -348,18 +370,19 @@ class ControlPanel(QtWidgets.QWidget):
 
         # Source
         grp_source = QtWidgets.QGroupBox("影像來源 (Source)")
+        self.grp_source = grp_source
         v_src = QtWidgets.QVBoxLayout(grp_source)
         v_src.setSpacing(10)
-        v_src.setContentsMargins(14, 18, 14, 12)
+        v_src.setContentsMargins(12, 16, 12, 10)
 
         btn_row = QtWidgets.QHBoxLayout()
-        btn_row.setSpacing(10)
+        btn_row.setSpacing(12)
 
         btn_style = """
             QPushButton {
                 background-color: #505050;
-                border-radius: 10px;
-                padding: 10px 20px;
+                border-radius: 9px;
+                padding: 3px 14px;
                 font-weight: 650;
                 text-align: center;
             }
@@ -394,12 +417,12 @@ class ControlPanel(QtWidgets.QWidget):
         """
 
         # ── Button 1: Offline video input ────────────────────────────────
-        self.btn_offline = QtWidgets.QPushButton("📁  Offline")
+        self.btn_offline = QtWidgets.QPushButton("Offline")
         self.btn_offline.setStyleSheet(btn_style)
         self.btn_offline.clicked.connect(lambda: self.requestOpenVideo.emit())
 
         # ── Button 2: Online live input (dropdown with 3 sub-modes) ──────
-        self.btn_online = QtWidgets.QPushButton("🌐  Online  ▾")
+        self.btn_online = QtWidgets.QPushButton("Online  ▾")
         self.btn_online.setStyleSheet(btn_style)
 
         menu_online = QtWidgets.QMenu(self.btn_online)
@@ -437,8 +460,8 @@ class ControlPanel(QtWidgets.QWidget):
                 background-color: #2e7d32;
                 color: white;
                 font-weight: 700;
-                border-radius: 10px;
-                padding: 12px 14px;
+                border-radius: 9px;
+                padding: 3px 14px;
             }
             QPushButton:hover { background-color: #388e3c; }
             QPushButton:disabled { background-color: #555; color: #999; }
@@ -446,18 +469,18 @@ class ControlPanel(QtWidgets.QWidget):
         v_src.addWidget(self.btn_open_remote)
 
         self.lbl_source_sub = QtWidgets.QLabel("Status: —")
-        self.lbl_source_sub.setStyleSheet("color: #b5b5b5; font-size: 12px;")
+        self.lbl_source_sub.setStyleSheet("color: #b5b5b5; font-size: 11px;")
         self.lbl_source_sub.setWordWrap(True)
         v_src.addWidget(self.lbl_source_sub)
 
         self.lbl_remote_badge = QtWidgets.QLabel("● 未連線")
-        self.lbl_remote_badge.setStyleSheet("color: #888; font-size: 12px;")
+        self.lbl_remote_badge.setStyleSheet("color: #888; font-size: 11px;")
         v_src.addWidget(self.lbl_remote_badge)
 
         # ── Free Switch: single row — equal-width buttons (no extra label row → no scroll)
         self.free_switch_bar = QtWidgets.QWidget()
         _bar_row = QtWidgets.QHBoxLayout(self.free_switch_bar)
-        _bar_row.setContentsMargins(0, 4, 0, 0)
+        _bar_row.setContentsMargins(0, 2, 0, 0)
         _bar_row.setSpacing(5)
 
         _sw_style = """
@@ -468,8 +491,6 @@ class ControlPanel(QtWidgets.QWidget):
                 font-size: 11px;
                 background-color: #434343;
                 color: #eaeaea;
-                min-height: 26px;
-                max-height: 28px;
             }
             QPushButton:hover { background-color: #555; }
             QPushButton:checked {
@@ -484,7 +505,7 @@ class ControlPanel(QtWidgets.QWidget):
 
         self.btn_sw_webcam = QtWidgets.QPushButton("鏡頭")
         self.btn_sw_vr     = QtWidgets.QPushButton("VR")
-        self.btn_sw_dual   = QtWidgets.QPushButton("雙拼")
+        self.btn_sw_dual   = QtWidgets.QPushButton("拼接")
         for _btn, _tip in (
             (self.btn_sw_webcam, "實體鏡頭 (Webcam)，與伺服器送出之畫面一致"),
             (self.btn_sw_vr, "OBS 虛擬鏡頭 (VR／遊戲畫面)"),
@@ -508,13 +529,14 @@ class ControlPanel(QtWidgets.QWidget):
         v_src.addWidget(self.free_switch_bar)
 
         layout.addWidget(grp_source)
+        self.apply_source_metrics()
 
         # Settings — one row widget per logical row (QHBoxLayout inside QVBoxLayout).
         # QGridLayout + addWidget(..., alignment=...) can mis-bind on some bindings and pile widgets up.
         grp_settings = QtWidgets.QGroupBox("推論設定 (Settings)")
         v_settings = QtWidgets.QVBoxLayout(grp_settings)
-        v_settings.setContentsMargins(14, 18, 14, 12)
-        v_settings.setSpacing(10)
+        v_settings.setContentsMargins(14, 22, 14, 12)
+        v_settings.setSpacing(8)
 
         self._settings_rows: dict[str, QtWidgets.QWidget] = {}
 
@@ -670,8 +692,6 @@ class ControlPanel(QtWidgets.QWidget):
             self.slider_ui_scale,
         ):
             _s.setSizePolicy(_sp_exp, _sp_fix)
-
-        self.apply_settings_metrics()
 
         _settings_row_combo("tts", self.l_tts, self.cmb_tts)
         _settings_row_combo("style", self.l_style, self.cmb_style)
@@ -939,6 +959,7 @@ class ControlPanel(QtWidgets.QWidget):
     def set_free_switch_bar_visible(self, visible: bool, active_source: str = "webcam") -> None:
         """Show or hide the Free Switch source bar, and highlight the active button."""
         self.free_switch_bar.setVisible(visible)
+        self.apply_source_metrics()
         if visible:
             self.highlight_switch_source(active_source)
 
@@ -1255,6 +1276,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage("Initializing system...")
 
         # Settings rows use font metrics; refresh after panel is under MainWindow (correct font chain)
+        self.control_panel.apply_source_metrics()
         self.control_panel.apply_settings_metrics()
 
         # Signals
@@ -1573,6 +1595,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_font_scale_request(self, size_pt: int) -> None:
         self.font_size = int(size_pt)
         self._apply_styles(self.font_size)
+        self.control_panel.apply_source_metrics()
         self.control_panel.apply_settings_metrics()
         self.statusBar().showMessage(f"Font size adjusted to: {self.font_size}pt", 2000)
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
