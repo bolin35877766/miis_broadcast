@@ -73,7 +73,7 @@ _frame_sender_loop (background thread)
         │                                                               │
         │  ◄── MSG_SEGMENT (text) ◄── LiveCC inference (GPU)  ◄────────┤
         │  ◄── MSG_PREVIEW (JPEG) ◄── ByteTrack overlay ───────────────┘
-        │                               (obs_track mode only, ~15 fps)
+        │                               (obs_track mode only, up to ~30 fps)
         ▼
 on_segment → text panel + OpenAI TTS (local audio)
 on_remote_track_preview → video panel (annotated frames with tracking boxes)
@@ -92,21 +92,28 @@ drains the queue and calls `sendall`.  The GUI thread is never blocked by TCP I/
 If the queue is full the newest frame is silently dropped (`put_nowait`), keeping
 memory bounded and backpressure natural.
 
-#### Why 15 fps for the client send rate
+#### Client send rate and PREVIEW throttle (currently 30 fps)
 
-The server's LiveCC model runs at ~2 s per inference cycle regardless of how many
-frames it receives; sending faster than the model can process only wastes bandwidth
-and fills the server-side buffer.  15 fps (≈ 67 ms/frame) provides:
+Both `_FRAME_SEND_FPS_MAX` (client → server) and the server-side PREVIEW throttle
+(`1.0 / 30.0`) are set to **30 fps** as the testing baseline, matching the camera source.
 
-- Smooth enough ByteTrack tracking boxes on the remote preview (~15 PREVIEW/s back)
-- Less than half the camera's 30 fps, so the send queue stays near-empty under normal conditions
-- Sufficient temporal density for the LiveCC clip builder (`window_sec=2.0, target_fps=2.0`)
+Measured on server with ByteTrack + LiveCC sharing one GPU (obs_track):
+- **ByteTrack Infer FPS** exceeds 30 fps — the GPU can keep up at 30 fps input
+- **Server RSS** stabilises at ~2 500 MiB and is driven by LiveCC KV cache, not frame rate
+- **Host system RAM** remains at ~28 % with 30 fps — headroom is comfortable
+- **Client JPEG send queue** stays at 0 / 30 — no backpressure at 30 fps
+
+LiveCC itself only uses a 2 s / 2 fps clip per inference cycle regardless of send rate;
+the higher send rate benefits ByteTrack tracking smoothness and PREVIEW display quality.
+
+Reduce `_FRAME_SEND_FPS_MAX` and the PREVIEW throttle together if bandwidth or GPU
+becomes a constraint (e.g. 15 fps on a weaker GPU or a slow network link).
 
 #### Why the PREVIEW display threshold is 1500 ms
 
 The camera thread emits raw frames at 30 fps (~33 ms).  Server PREVIEW frames nominally
-arrive at ~67 ms intervals (15 fps), but ByteTrack (YOLOX) running alongside LiveCC
-inference can push actual intervals well above that under GPU load.
+arrive at ~33 ms intervals (30 fps), but ByteTrack (YOLOX) running alongside LiveCC
+inference can push actual intervals above that under GPU load.
 
 A 1500 ms threshold means: after the last server PREVIEW arrives, raw frames are suppressed
 for 1.5 s.  This keeps annotated frames visible even when the server is momentarily busy,

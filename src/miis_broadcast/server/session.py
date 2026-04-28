@@ -352,7 +352,7 @@ class ClientSession:
 
                 # Throttle preview to ~15 fps so the thin-client UI can show boxes
                 _now = time.monotonic()
-                if _now - self._last_preview_mono >= (1.0 / 15.0):
+                if _now - self._last_preview_mono >= (1.0 / 30.0):
                     self._last_preview_mono = _now
                     ret, jbuf = cv2.imencode(
                         ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 78]
@@ -377,7 +377,7 @@ class ClientSession:
             # obs_track without ByteTrack: still stream a throttled preview so the GUI is not blank
             if self._infer_mode == "obs_track":
                 _now = time.monotonic()
-                if _now - self._last_preview_mono >= (1.0 / 15.0):
+                if _now - self._last_preview_mono >= (1.0 / 30.0):
                     self._last_preview_mono = _now
                     ret, jbuf = cv2.imencode(
                         ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
