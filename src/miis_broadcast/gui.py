@@ -286,21 +286,13 @@ class ControlPanel(QtWidgets.QWidget):
         self.setup_ui()
 
     def setup_ui(self) -> None:
-        # Outer layout holds only the scroll area so content never clips
+        # Single column layout (no scroll area) — sidebar never shows a vertical scrollbar.
         outer_layout = QtWidgets.QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        outer_layout.addWidget(scroll)
-
-        # Inner container that holds all the GroupBoxes
         _inner = QtWidgets.QWidget()
-        scroll.setWidget(_inner)
+        outer_layout.addWidget(_inner)
 
         layout = QtWidgets.QVBoxLayout(_inner)
         layout.setSpacing(16)
@@ -414,47 +406,56 @@ class ControlPanel(QtWidgets.QWidget):
         self.lbl_remote_badge.setStyleSheet("color: #888; font-size: 12px;")
         v_src.addWidget(self.lbl_remote_badge)
 
-        # ── Free Switch source bar (hidden unless mode == "free_switch") ──────
+        # ── Free Switch: single row — equal-width buttons (no extra label row → no scroll)
         self.free_switch_bar = QtWidgets.QWidget()
-        _bar_layout = QtWidgets.QVBoxLayout(self.free_switch_bar)
-        _bar_layout.setContentsMargins(0, 6, 0, 0)
-        _bar_layout.setSpacing(4)
+        _bar_row = QtWidgets.QHBoxLayout(self.free_switch_bar)
+        _bar_row.setContentsMargins(0, 4, 0, 0)
+        _bar_row.setSpacing(5)
 
-        _bar_label = QtWidgets.QLabel("🔀 切換輸入源 (即時生效)：")
-        _bar_label.setStyleSheet("color: #b5e6ff; font-size: 12px; font-weight: 600;")
-        _bar_layout.addWidget(_bar_label)
-
-        _btn_row = QtWidgets.QHBoxLayout()
-        _btn_row.setSpacing(6)
-
-        _sw_style_base = """
+        _sw_style = """
             QPushButton {
-                border-radius: 8px;
-                padding: 7px 10px;
+                border-radius: 7px;
+                padding: 5px 6px;
                 font-weight: 600;
-                font-size: 12px;
-                background-color: #484848;
-                color: #ddd;
+                font-size: 11px;
+                background-color: #434343;
+                color: #eaeaea;
+                min-height: 26px;
+                max-height: 28px;
             }
-            QPushButton:hover { background-color: #5a5a5a; }
+            QPushButton:hover { background-color: #555; }
             QPushButton:checked {
-                background-color: #3a86ff;
+                background-color: #2962ff;
                 color: white;
             }
         """
-        self.btn_sw_webcam = QtWidgets.QPushButton("📷 Webcam")
-        self.btn_sw_vr     = QtWidgets.QPushButton("🥽 VR")
-        self.btn_sw_dual   = QtWidgets.QPushButton("🔀 W+VR")
-        for _btn in (self.btn_sw_webcam, self.btn_sw_vr, self.btn_sw_dual):
+        _exp = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+
+        self.btn_sw_webcam = QtWidgets.QPushButton("鏡頭")
+        self.btn_sw_vr     = QtWidgets.QPushButton("VR")
+        self.btn_sw_dual   = QtWidgets.QPushButton("雙拼")
+        for _btn, _tip in (
+            (self.btn_sw_webcam, "實體鏡頭 (Webcam)，與伺服器送出之畫面一致"),
+            (self.btn_sw_vr, "OBS 虛擬鏡頭 (VR／遊戲畫面)"),
+            (self.btn_sw_dual, "左右並列：Webcam + VR（1280×480）"),
+        ):
             _btn.setCheckable(True)
-            _btn.setStyleSheet(_sw_style_base)
-            _btn_row.addWidget(_btn)
+            _btn.setToolTip(_tip)
+            _btn.setStyleSheet(_sw_style)
+            _btn.setSizePolicy(_exp)
+            _btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
 
         self.btn_sw_webcam.clicked.connect(lambda: self.requestSwitchSource.emit("webcam"))
         self.btn_sw_vr.clicked.connect(    lambda: self.requestSwitchSource.emit("vr"))
         self.btn_sw_dual.clicked.connect(  lambda: self.requestSwitchSource.emit("dual"))
 
-        _bar_layout.addLayout(_btn_row)
+        _bar_row.addWidget(self.btn_sw_webcam, 1)
+        _bar_row.addWidget(self.btn_sw_vr, 1)
+        _bar_row.addWidget(self.btn_sw_dual, 1)
+
         self.free_switch_bar.setVisible(False)
         v_src.addWidget(self.free_switch_bar)
 
