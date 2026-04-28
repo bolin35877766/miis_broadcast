@@ -17,6 +17,7 @@ from .workers.openai_tts import OpenAITTSWorker
 from .workers.obs_input import OBSCameraThread
 from .workers.camera_bytetrack import CameraByteTrackThread
 from .workers.dual_source import DualSourceCameraThread
+from .workers.free_switch import FreeSwitchCameraThread, SOURCE_WEBCAM, SOURCE_VR, SOURCE_DUAL
 # LiveCCWorker / LiveCCCameraWorker are imported lazily only when not using client-only mode
 # so this process never loads the VLM on a thin client.
 from .core.prompt.prompt_manager import PromptManager
@@ -271,6 +272,8 @@ class ControlPanel(QtWidgets.QWidget):
     requestOpenCameraTrack = QtCore.Signal()   # webcam + ByteTrack
     requestOpenOBS         = QtCore.Signal()
     requestOpenDualSync    = QtCore.Signal()   # Webcam + VR side-by-side
+    requestOpenFreeSwitch  = QtCore.Signal()   # Free Switch (both cams always running)
+    requestSwitchSource    = QtCore.Signal(str)  # "webcam" | "vr" | "dual"
     requestStart           = QtCore.Signal()
     requestFontScale       = QtCore.Signal(int)
     requestRemoteConnect   = QtCore.Signal(str, int)  # host, port
@@ -375,6 +378,11 @@ class ControlPanel(QtWidgets.QWidget):
         # Mode 4: Dual source sync — Webcam (idx 0) + VR/OBS (idx 5), side-by-side
         menu_online.addAction("🎮  VR & Webcam (Sync)",      lambda: self.requestOpenDualSync.emit())
 
+        menu_online.addSeparator()
+
+        # Mode 5: Free Switch — both cameras always running, switch without reconnect
+        menu_online.addAction("🔀  Free Switch",             lambda: self.requestOpenFreeSwitch.emit())
+
         self.btn_online.setMenu(menu_online)
 
         btn_row.addWidget(self.btn_offline)
@@ -405,6 +413,50 @@ class ControlPanel(QtWidgets.QWidget):
         self.lbl_remote_badge = QtWidgets.QLabel("● 未連線")
         self.lbl_remote_badge.setStyleSheet("color: #888; font-size: 12px;")
         v_src.addWidget(self.lbl_remote_badge)
+
+        # ── Free Switch source bar (hidden unless mode == "free_switch") ──────
+        self.free_switch_bar = QtWidgets.QWidget()
+        _bar_layout = QtWidgets.QVBoxLayout(self.free_switch_bar)
+        _bar_layout.setContentsMargins(0, 6, 0, 0)
+        _bar_layout.setSpacing(4)
+
+        _bar_label = QtWidgets.QLabel("🔀 切換輸入源 (即時生效)：")
+        _bar_label.setStyleSheet("color: #b5e6ff; font-size: 12px; font-weight: 600;")
+        _bar_layout.addWidget(_bar_label)
+
+        _btn_row = QtWidgets.QHBoxLayout()
+        _btn_row.setSpacing(6)
+
+        _sw_style_base = """
+            QPushButton {
+                border-radius: 8px;
+                padding: 7px 10px;
+                font-weight: 600;
+                font-size: 12px;
+                background-color: #484848;
+                color: #ddd;
+            }
+            QPushButton:hover { background-color: #5a5a5a; }
+            QPushButton:checked {
+                background-color: #3a86ff;
+                color: white;
+            }
+        """
+        self.btn_sw_webcam = QtWidgets.QPushButton("📷 Webcam")
+        self.btn_sw_vr     = QtWidgets.QPushButton("🥽 VR")
+        self.btn_sw_dual   = QtWidgets.QPushButton("🔀 W+VR")
+        for _btn in (self.btn_sw_webcam, self.btn_sw_vr, self.btn_sw_dual):
+            _btn.setCheckable(True)
+            _btn.setStyleSheet(_sw_style_base)
+            _btn_row.addWidget(_btn)
+
+        self.btn_sw_webcam.clicked.connect(lambda: self.requestSwitchSource.emit("webcam"))
+        self.btn_sw_vr.clicked.connect(    lambda: self.requestSwitchSource.emit("vr"))
+        self.btn_sw_dual.clicked.connect(  lambda: self.requestSwitchSource.emit("dual"))
+
+        _bar_layout.addLayout(_btn_row)
+        self.free_switch_bar.setVisible(False)
+        v_src.addWidget(self.free_switch_bar)
 
         layout.addWidget(grp_source)
 
@@ -795,6 +847,18 @@ class ControlPanel(QtWidgets.QWidget):
     def set_status(self, text: str) -> None:
         self.lbl_source_sub.setText(f"Status: {text}")
 
+    def set_free_switch_bar_visible(self, visible: bool, active_source: str = "webcam") -> None:
+        """Show or hide the Free Switch source bar, and highlight the active button."""
+        self.free_switch_bar.setVisible(visible)
+        if visible:
+            self.highlight_switch_source(active_source)
+
+    def highlight_switch_source(self, source: str) -> None:
+        """Update which switch button appears active (checked/highlighted)."""
+        self.btn_sw_webcam.setChecked(source == "webcam")
+        self.btn_sw_vr.setChecked(    source == "vr")
+        self.btn_sw_dual.setChecked(  source == "dual")
+
     def set_start_button_state(self, running: bool) -> None:
         if running:
             self.btn_start.setText("Stop Broadcasting")
@@ -804,7 +868,8 @@ class ControlPanel(QtWidgets.QWidget):
             self.btn_start.setProperty("active", False)
         self.btn_start.style().unpolish(self.btn_start)
         self.btn_start.style().polish(self.btn_start)
-        # Disable source buttons during inference to prevent switching mid-session
+        # Disable source buttons during inference to prevent switching mid-session.
+        # free_switch_bar buttons remain enabled so the user can switch sources live.
         self.btn_offline.setEnabled(not running)
         self.btn_online.setEnabled(not running)
         self.btn_open_remote.setEnabled(not running)
@@ -851,6 +916,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.obs_thread: Optional[OBSCameraThread] = None
         self.obs_bytetrack_thread: Optional[CameraByteTrackThread] = None
         self.dual_sync_thread: Optional[DualSourceCameraThread] = None
+        self.free_switch_thread: Optional[FreeSwitchCameraThread] = None
         self.video_fps: float = 30.0
         self.tts_mode: str = "none"
 
@@ -1105,6 +1171,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.requestOpenCameraTrack.connect(self.on_open_camera_track_clicked)
         self.control_panel.requestOpenOBS.connect(self.on_open_obs_clicked)
         self.control_panel.requestOpenDualSync.connect(self.on_open_dual_sync_clicked)
+        self.control_panel.requestOpenFreeSwitch.connect(self.on_open_free_switch_clicked)
+        self.control_panel.requestSwitchSource.connect(self.on_switch_source)
         self.control_panel.requestStart.connect(self.on_start_clicked)
         self.control_panel.requestFontScale.connect(self.on_font_scale_request)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
@@ -1503,6 +1571,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.dual_sync_thread.terminate()
                 self.dual_sync_thread.wait(1000)
             self.dual_sync_thread = None
+        if self.free_switch_thread:
+            self.free_switch_thread.requestStop()
+            try:
+                self.free_switch_thread.signal_frame.disconnect()
+                self.free_switch_thread.signal_source_changed.disconnect()
+            except RuntimeError:
+                pass
+            if not self.free_switch_thread.wait(3000):
+                self.free_switch_thread.terminate()
+                self.free_switch_thread.wait(1000)
+            self.free_switch_thread = None
+        self.control_panel.set_free_switch_bar_visible(False)
 
     @QtCore.Slot()
     def on_open_camera_clicked(self) -> None:
@@ -1631,6 +1711,95 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
 
+    @QtCore.Slot()
+    def on_open_free_switch_clicked(self) -> None:
+        """Show source-selection dialog, then start FreeSwitchCameraThread."""
+        # ── Initial source dialog ─────────────────────────────────────────────
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Free Switch — 選擇初始輸入源")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(360)
+        _dlg_layout = QtWidgets.QVBoxLayout(dlg)
+        _dlg_layout.setSpacing(14)
+        _dlg_layout.setContentsMargins(20, 20, 20, 20)
+
+        _lbl = QtWidgets.QLabel("請問您初始的輸入源是？")
+        _lbl.setStyleSheet("font-size: 14px; font-weight: 600;")
+        _dlg_layout.addWidget(_lbl)
+
+        _sub = QtWidgets.QLabel("啟動後可隨時點擊切換按鈕，攝影機不須重新連線。")
+        _sub.setStyleSheet("color: #aaa; font-size: 12px;")
+        _sub.setWordWrap(True)
+        _dlg_layout.addWidget(_sub)
+
+        _btn_row = QtWidgets.QHBoxLayout()
+        _btn_row.setSpacing(10)
+        chosen = [None]
+
+        _dlg_btn_style = """
+            QPushButton {
+                background-color: #505050;
+                border-radius: 10px;
+                padding: 10px 14px;
+                font-weight: 650;
+            }
+            QPushButton:hover { background-color: #3a86ff; color: white; }
+        """
+        for _label, _key in [
+            ("📷  Webcam",      SOURCE_WEBCAM),
+            ("🥽  VR",          SOURCE_VR),
+            ("🔀  Webcam + VR", SOURCE_DUAL),
+        ]:
+            _b = QtWidgets.QPushButton(_label)
+            _b.setStyleSheet(_dlg_btn_style)
+            _b.clicked.connect(lambda _, k=_key: (chosen.__setitem__(0, k), dlg.accept()))
+            _btn_row.addWidget(_b)
+
+        _dlg_layout.addLayout(_btn_row)
+        dlg.exec()
+
+        if chosen[0] is None:
+            return  # User closed dialog without choosing
+
+        initial_source: str = chosen[0]
+
+        # ── Start Free Switch mode ─────────────────────────────────────────────
+        self.stop_inference()
+        self.mode = "free_switch"
+        self.current_video_path = f"FreeSwitch:{initial_source}"
+        self.control_panel.set_status(f"Mode: Free Switch  ({initial_source})")
+        self.append_text(f"[FreeSwitch] 初始來源：{initial_source}  (兩組攝影機同時開啟)")
+        self._stop_all_source_threads()
+
+        self.camera_start_time = time.time()
+        self.free_switch_thread = FreeSwitchCameraThread(
+            initial_source=initial_source,
+            cam_idx=0,
+            vr_idx=5,
+        )
+        self.free_switch_thread.signal_frame.connect(self.on_camera_frame)
+        self.free_switch_thread.signal_error.connect(self.on_error)
+        self.free_switch_thread.signal_source_changed.connect(self._on_free_switch_source_changed)
+        self.free_switch_thread.start()
+
+        self.control_panel.set_free_switch_bar_visible(True, initial_source)
+        self.video_panel.slider.setEnabled(False)
+        self._update_start_button_state()
+
+    @QtCore.Slot(str)
+    def on_switch_source(self, source: str) -> None:
+        """Instantly switch the active camera source inside FreeSwitchCameraThread."""
+        if self.free_switch_thread is not None:
+            self.free_switch_thread.set_active_source(source)
+        # Highlight button immediately (don't wait for signal_source_changed round-trip)
+        self.control_panel.highlight_switch_source(source)
+
+    @QtCore.Slot(str)
+    def _on_free_switch_source_changed(self, source: str) -> None:
+        """Called when FreeSwitchCameraThread confirms the new source."""
+        self.control_panel.highlight_switch_source(source)
+        self.append_text(f"[FreeSwitch] 已切換至：{source}")
+
     def _apply_tts_settings_before_start(self) -> None:
         """Apply TTS settings according to current mode"""
         self.tts_mode = self.control_panel.get_tts_mode()
@@ -1726,7 +1895,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.control_panel.set_tts_controls_enabled(True)
                 return
 
-        elif self.mode in ("camera", "obs", "obs_track", "dual_sync"):
+        elif self.mode in ("camera", "obs", "obs_track", "dual_sync", "free_switch"):
             if self._socket_runner is not None:
                 self._socket_runner.start_inference(self.mode, prompt)
                 if self.mode == "obs_track":
@@ -1833,7 +2002,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # obs_track on thin client: frames come from plain CameraThread and
         # must be forwarded to the remote server so it can run ByteTrack there.
         # Include obs_track here for remote-only (client_only) path.
-        if self.mode not in ("camera", "obs", "dual_sync", "obs_track"):
+        if self.mode not in ("camera", "obs", "dual_sync", "obs_track", "free_switch"):
             return
 
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
