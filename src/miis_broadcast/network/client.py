@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 # Maximum frames buffered for sending; excess are dropped to avoid memory growth.
 _FRAME_QUEUE_MAX = 30
 # Maximum frame send rate to the server (fps). Lower = less GPU/load on inference host.
-_FRAME_SEND_FPS_MAX = 15.0
+_FRAME_SEND_FPS_MAX = 20.0
 
 
 class SocketClientRunner(QtCore.QThread):
@@ -46,9 +46,9 @@ class SocketClientRunner(QtCore.QThread):
     QThread.  All outgoing sends (frames, control messages) are thread-safe.
 
     Frame sending is fully non-blocking from the caller's perspective: send_frame()
-    encodes the frame and drops it into an internal queue; a dedicated background
-    thread drains the queue and calls sendall().  This prevents the GUI thread
-    from ever blocking on a TCP write.
+    updates the latest frame, encodes at `_FRAME_SEND_FPS_MAX` Hz (temporal sampling),
+    then enqueues JPEG wire bytes; a dedicated background thread drains the queue and calls
+    sendall(). This prevents the GUI thread from ever blocking on a TCP write.
 
     Signals (emitted from the background thread, delivered via Qt queued
     connection to the main/GUI thread automatically):
@@ -89,9 +89,11 @@ class SocketClientRunner(QtCore.QThread):
         self._frame_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(
             maxsize=_FRAME_QUEUE_MAX
         )
-        # Client-side frame rate throttle
+        # Client-side frame rate throttle (temporal sampling: always keep newest frame)
         self._last_frame_sent_mono: float = 0.0
         self._min_frame_interval: float = 1.0 / _FRAME_SEND_FPS_MAX
+        self._sample_bgr: Optional[np.ndarray] = None
+        self._sample_t: float = 0.0
 
     # ------------------------------------------------------------------ #
     # QThread entry point
@@ -168,12 +170,18 @@ class SocketClientRunner(QtCore.QThread):
     def send_frame(self, frame_bgr: np.ndarray, t: float) -> None:
         """
         Encode frame and enqueue for sending.  Returns immediately (non-blocking).
-        Frames are dropped when the queue is full so the GUI thread never stalls.
+
+        Temporal sampling: each callback updates the newest frame; we JPEG-encode at most
+        `_FRAME_SEND_FPS_MAX` times per second using that latest image (not "first frame wins"
+        inside each window).  If the outbound queue is full, the wire payload may be dropped —
+        the GUI thread never blocks on TCP.
         """
         if self._sock is None or self._stop_requested:
             return
 
-        # Client-side rate throttle — no need to flood faster than the server reads
+        # Always retain the latest camera frame; subsample in time to cap send FPS.
+        self._sample_bgr = frame_bgr.copy()
+        self._sample_t = float(t)
         now = time.monotonic()
         if now - self._last_frame_sent_mono < self._min_frame_interval:
             return
@@ -181,16 +189,20 @@ class SocketClientRunner(QtCore.QThread):
 
         try:
             ret, jpeg_buf = cv2.imencode(
-                ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                ".jpg", self._sample_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
             )
             if not ret:
                 return
-            msg = {"type": MSG_FRAME, "frame_id": self._frame_id, "t": float(t)}
+            msg = {
+                "type": MSG_FRAME,
+                "frame_id": self._frame_id,
+                "t": self._sample_t,
+            }
             self._frame_id += 1
             wire = pack_message(msg, jpeg_buf.tobytes())
             self._frame_queue.put_nowait(wire)
         except queue.Full:
-            pass  # drop frame — server is catching up
+            pass  # drop encoded wire — TCP sender backlogged; GUI still non-blocking
         except Exception as e:
             log.warning("[SocketClient] send_frame encode: %s", e)
 

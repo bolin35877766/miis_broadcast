@@ -216,8 +216,9 @@ class ClientSession:
         # live_cc_from_frames call acquires it, so ByteTrack keeps running freely outside that
         # narrow window.
         self._session_gpu_lock = threading.Lock()
-        # Keep only the last 2 JPEG frames so the processor stays near real-time.
-        self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=2)
+        # Single-slot pending JPEG: recv overwrites with the latest FRAME (temporal sampling —
+        # track always the freshest frame, not a multi-frame FIFO that discards by order).
+        self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=1)
         self._logged_first_frame_decode = False
 
         frame_thread = threading.Thread(
@@ -361,7 +362,7 @@ class ClientSession:
         try:
             q.put_nowait((t, binary))
         except Full:
-            # Queue full — drop oldest, try to enqueue latest (stay real-time).
+            # Slot occupied — replace with latest frame (sample), do not accumulate lag.
             try:
                 q.get_nowait()
                 q.put_nowait((t, binary))
