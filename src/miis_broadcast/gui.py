@@ -285,6 +285,54 @@ class ControlPanel(QtWidgets.QWidget):
         self.setMaximumWidth(520)  # Keep the preview large and prevents the panel from being too squashed
         self.setup_ui()
 
+    def apply_settings_metrics(self) -> None:
+        """Rebuild label/value column widths and combo heights from current app font.
+
+        Stylesheet fixed min-heights clash with enlarged fonts and clip combo text.
+        Call after startup and whenever UI font scale changes.
+        """
+        if not hasattr(self, "cmb_tts"):
+            return
+        fm = self.fontMetrics()
+        combo_h = max(36, fm.height() + 14)
+        self._settings_row_min_h = combo_h
+        for c in (self.cmb_tts, self.cmb_style, self.cmb_voice):
+            c.setMinimumHeight(combo_h)
+        titles = (
+            "TTS Mode:",
+            "Style:",
+            "Voice:",
+            "Speed:",
+            "Exaggeration:",
+            "CFG:",
+            "UI Scaling:",
+        )
+        lw = max(fm.horizontalAdvance(t) for t in titles) + 12
+        for lb in (
+            self.l_tts,
+            self.l_style,
+            self.l_voice,
+            self.l_speed,
+            self.l_exag,
+            self.l_cfg,
+            self.l_ui,
+        ):
+            lb.setMinimumWidth(lw)
+            lb.setMaximumWidth(lw)
+        vw = max(
+            fm.horizontalAdvance("999pt"),
+            fm.horizontalAdvance("1.55x"),
+        ) + 18
+        for v in (
+            self.lbl_speed_val,
+            self.lbl_exag_val,
+            self.lbl_cfg_val,
+            self.lbl_ui_scale_val,
+        ):
+            v.setMinimumWidth(vw)
+        for row in getattr(self, "_settings_rows", {}).values():
+            row.setMinimumHeight(combo_h)
+
     def setup_ui(self) -> None:
         # Single column layout (no scroll area) — sidebar never shows a vertical scrollbar.
         outer_layout = QtWidgets.QVBoxLayout(self)
@@ -461,33 +509,82 @@ class ControlPanel(QtWidgets.QWidget):
 
         layout.addWidget(grp_source)
 
-        # Settings — 3-column QGridLayout:
-        #   col 0 = right-aligned label  (auto width, no stretch)
-        #   col 1 = field / slider       (stretch=1, takes all spare width)
-        #   col 2 = slider value label   (no stretch, natural text width)
-        # Combo rows span col 1-2 so they stay the same width as slider+val.
+        # Settings — one row widget per logical row (QHBoxLayout inside QVBoxLayout).
+        # QGridLayout + addWidget(..., alignment=...) can mis-bind on some bindings and pile widgets up.
         grp_settings = QtWidgets.QGroupBox("推論設定 (Settings)")
-        grid = QtWidgets.QGridLayout(grp_settings)
-        grid.setContentsMargins(14, 18, 14, 12)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-        grid.setColumnStretch(0, 0)  # label column — natural width
-        grid.setColumnStretch(1, 1)  # field/slider column — takes all spare space
-        grid.setColumnStretch(2, 0)  # value label column — natural width
+        v_settings = QtWidgets.QVBoxLayout(grp_settings)
+        v_settings.setContentsMargins(14, 18, 14, 12)
+        v_settings.setSpacing(10)
 
-        # [CSS] — restore visible drop-down arrow
+        self._settings_rows: dict[str, QtWidgets.QWidget] = {}
+
+        def _settings_row_slider(
+            row_key: str,
+            lbl_w: QtWidgets.QWidget,
+            slider_w: QtWidgets.QWidget,
+            val_lbl: QtWidgets.QWidget,
+        ) -> None:
+            row = QtWidgets.QWidget()
+            h = QtWidgets.QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(12)
+            lbl_w.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            h.addWidget(lbl_w, stretch=0)
+            h.addWidget(slider_w, stretch=1)
+            h.addWidget(val_lbl, stretch=0)
+            _rh = max(
+                getattr(self, "_settings_row_min_h", 44),
+                int(slider_w.sizeHint().height()),
+            )
+            row.setMinimumHeight(_rh)
+            self._settings_rows[row_key] = row
+            v_settings.addWidget(row)
+
+        def _settings_row_combo(
+            row_key: str,
+            lbl_w: QtWidgets.QWidget,
+            combo_w: QtWidgets.QWidget,
+        ) -> None:
+            row = QtWidgets.QWidget()
+            h = QtWidgets.QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(12)
+            lbl_w.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            combo_w.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+            h.addWidget(lbl_w, stretch=0)
+            h.addWidget(combo_w, stretch=1)
+            row.setMinimumHeight(getattr(self, "_settings_row_min_h", 44))
+            self._settings_rows[row_key] = row
+            v_settings.addWidget(row)
+
+        lbl_style = "QLabel { color: #dedede; }"
+        lbl_val_style = """
+            QLabel { color: #c8c8c8; padding-left: 8px; }
+        """
+
+        def _make_lbl(text: str) -> QtWidgets.QLabel:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(lbl_style)
+            return lbl
+
+        def _apply_val_label(lbl: QtWidgets.QLabel) -> None:
+            lbl.setStyleSheet(lbl_val_style)
+            lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
         combo_style = """
             QComboBox {
-                padding: 6px 10px;
-                border-radius: 8px;
-                background-color: #333;
-                min-height: 30px;
+                padding: 3px 10px;
+                border-radius: 6px;
+                background-color: #303030;
+                border: 1px solid #484848;
             }
+            QComboBox:hover { border-color: #5a5a5a; }
             QComboBox::drop-down {
-                width: 24px;
-                border-left: 1px solid #555;
-                border-top-right-radius: 8px;
-                border-bottom-right-radius: 8px;
+                width: 20px;
+                border: 0px;
             }
             QComboBox QAbstractItemView { 
                 background-color: #333; 
@@ -506,14 +603,6 @@ class ControlPanel(QtWidgets.QWidget):
                 combo.setCurrentIndex(idx.row()),
                 combo.hidePopup()
             ))
-
-        lbl_style = "QLabel { color: #dedede; }"
-
-        def _make_lbl(text: str) -> QtWidgets.QLabel:
-            lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(lbl_style)
-            lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-            return lbl
 
         # --- TTS Mode ---
         self.l_tts = _make_lbl("TTS Mode:")
@@ -546,8 +635,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_speed.setRange(25, 150)  # 0.25x ~ 1.5x
         self.slider_speed.setValue(100)
         self.lbl_speed_val = QtWidgets.QLabel("1.0x")
-        self.lbl_speed_val.setStyleSheet(lbl_style)
-        self.lbl_speed_val.setAlignment(QtCore.Qt.AlignCenter)
+        _apply_val_label(self.lbl_speed_val)
 
         # --- Local: Exaggeration slider (0.2~1.2) ---
         self.l_exag = _make_lbl("Exaggeration:")
@@ -555,8 +643,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_exag.setRange(20, 120)
         self.slider_exag.setValue(80)
         self.lbl_exag_val = QtWidgets.QLabel("0.8")
-        self.lbl_exag_val.setStyleSheet(lbl_style)
-        self.lbl_exag_val.setAlignment(QtCore.Qt.AlignCenter)
+        _apply_val_label(self.lbl_exag_val)
 
         # --- Local: CFG slider (0.2~1.2) ---
         self.l_cfg = _make_lbl("CFG:")
@@ -564,8 +651,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_cfg.setRange(20, 120)
         self.slider_cfg.setValue(70)
         self.lbl_cfg_val = QtWidgets.QLabel("0.7")
-        self.lbl_cfg_val.setStyleSheet(lbl_style)
-        self.lbl_cfg_val.setAlignment(QtCore.Qt.AlignCenter)
+        _apply_val_label(self.lbl_cfg_val)
 
         # --- UI scale slider ---
         self.l_ui = _make_lbl("UI Scaling:")
@@ -573,21 +659,31 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_ui_scale.setRange(10, 26)
         self.slider_ui_scale.setValue(14)
         self.lbl_ui_scale_val = QtWidgets.QLabel("14pt")
-        self.lbl_ui_scale_val.setStyleSheet(lbl_style)
-        self.lbl_ui_scale_val.setAlignment(QtCore.Qt.AlignCenter)
+        _apply_val_label(self.lbl_ui_scale_val)
 
-        # Populate the grid
-        # row, col  (combo rows span col 1-2 so width matches slider+val column pair)
-        _R = QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
-        grid.addWidget(self.l_tts,           0, 0, _R); grid.addWidget(self.cmb_tts,         0, 1, 1, 2)
-        grid.addWidget(self.l_style,         1, 0, _R); grid.addWidget(self.cmb_style,        1, 1, 1, 2)
-        grid.addWidget(self.l_voice,         2, 0, _R); grid.addWidget(self.cmb_voice,        2, 1, 1, 2)
-        grid.addWidget(self.l_speed,         3, 0, _R); grid.addWidget(self.slider_speed,     3, 1);      grid.addWidget(self.lbl_speed_val,    3, 2, _R)
-        grid.addWidget(self.l_exag,          4, 0, _R); grid.addWidget(self.slider_exag,      4, 1);      grid.addWidget(self.lbl_exag_val,     4, 2, _R)
-        grid.addWidget(self.l_cfg,           5, 0, _R); grid.addWidget(self.slider_cfg,       5, 1);      grid.addWidget(self.lbl_cfg_val,      5, 2, _R)
-        grid.addWidget(self.l_ui,            6, 0, _R); grid.addWidget(self.slider_ui_scale,  6, 1);      grid.addWidget(self.lbl_ui_scale_val, 6, 2, _R)
+        _sp_exp = QtWidgets.QSizePolicy.Policy.Expanding
+        _sp_fix = QtWidgets.QSizePolicy.Policy.Fixed
+        for _s in (
+            self.slider_speed,
+            self.slider_exag,
+            self.slider_cfg,
+            self.slider_ui_scale,
+        ):
+            _s.setSizePolicy(_sp_exp, _sp_fix)
+
+        self.apply_settings_metrics()
+
+        _settings_row_combo("tts", self.l_tts, self.cmb_tts)
+        _settings_row_combo("style", self.l_style, self.cmb_style)
+        _settings_row_combo("voice", self.l_voice, self.cmb_voice)
+        _settings_row_slider("speed", self.l_speed, self.slider_speed, self.lbl_speed_val)
+        _settings_row_slider("exag", self.l_exag, self.slider_exag, self.lbl_exag_val)
+        _settings_row_slider("cfg", self.l_cfg, self.slider_cfg, self.lbl_cfg_val)
+        _settings_row_slider("ui", self.l_ui, self.slider_ui_scale, self.lbl_ui_scale_val)
 
         layout.addWidget(grp_settings)
+
+        self.apply_settings_metrics()
 
         # Action
         grp_action = QtWidgets.QGroupBox("操作 (Action)")
@@ -777,19 +873,28 @@ class ControlPanel(QtWidgets.QWidget):
         mode = self.get_tts_mode()
 
         show_openai = (mode == "openai")
-        self.l_voice.setVisible(show_openai)
-        self.cmb_voice.setVisible(show_openai)
-        self.l_speed.setVisible(show_openai)
-        self.slider_speed.setVisible(show_openai)
-        self.lbl_speed_val.setVisible(show_openai)
-
         show_local = (mode == "local")
-        self.l_exag.setVisible(show_local)
-        self.slider_exag.setVisible(show_local)
-        self.lbl_exag_val.setVisible(show_local)
-        self.l_cfg.setVisible(show_local)
-        self.slider_cfg.setVisible(show_local)
-        self.lbl_cfg_val.setVisible(show_local)
+
+        rows = getattr(self, "_settings_rows", {})
+        if rows:
+            rows["voice"].setVisible(show_openai)
+            rows["speed"].setVisible(show_openai)
+            rows["exag"].setVisible(show_local)
+            rows["cfg"].setVisible(show_local)
+            return
+
+        # Fallback for partially initialized panels.
+        for w in (self.l_voice, self.cmb_voice, self.l_speed, self.slider_speed, self.lbl_speed_val):
+            w.setVisible(show_openai)
+        for w in (
+            self.l_exag,
+            self.slider_exag,
+            self.lbl_exag_val,
+            self.l_cfg,
+            self.slider_cfg,
+            self.lbl_cfg_val,
+        ):
+            w.setVisible(show_local)
 
     def set_tts_controls_enabled(self, enabled: bool) -> None:
         # Lock during inference to prevent state corruption
@@ -1149,6 +1254,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
         self.statusBar().showMessage("Initializing system...")
 
+        # Settings rows use font metrics; refresh after panel is under MainWindow (correct font chain)
+        self.control_panel.apply_settings_metrics()
+
         # Signals
         self.control_panel.requestOpenVideo.connect(self.on_open_video_clicked)
         self.control_panel.requestOpenCamera.connect(self.on_open_camera_clicked)
@@ -1465,6 +1573,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_font_scale_request(self, size_pt: int) -> None:
         self.font_size = int(size_pt)
         self._apply_styles(self.font_size)
+        self.control_panel.apply_settings_metrics()
         self.statusBar().showMessage(f"Font size adjusted to: {self.font_size}pt", 2000)
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
 
