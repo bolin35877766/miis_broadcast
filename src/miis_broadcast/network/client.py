@@ -36,8 +36,8 @@ log = logging.getLogger(__name__)
 
 # Nominal upstream rate: GUI emits ~30 camera callbacks/sec (thin client encode path).
 _REMOTE_INPUT_NOMINAL_FPS = 30.0
-# Wired FRAME rate after deterministic sampling: ratio OUT/IN = 20/30 = 2/3 (phase accumulator).
-_REMOTE_FRAME_SAMPLE_OUT_FPS = 20.0
+# Wired FRAME rate after deterministic sampling: ratio OUT/IN = 18/30 = 3/5 (phase accumulator).
+_REMOTE_FRAME_SAMPLE_OUT_FPS = 18.0
 _FRAME_SAMPLE_PHASE_STEP = (
     _REMOTE_FRAME_SAMPLE_OUT_FPS / _REMOTE_INPUT_NOMINAL_FPS
 )
@@ -51,7 +51,7 @@ class SocketClientRunner(QtCore.QThread):
     QThread.  All outgoing sends (frames, control messages) are thread-safe.
 
     Frame sending is fully non-blocking from the caller's perspective: send_frame()
-    applies deterministic **30 Hz → 20 Hz** downsampling via a phase accumulator, then enqueues JPEG
+    applies deterministic **30 Hz → 18 Hz** downsampling via a phase accumulator, then enqueues JPEG
     wire bytes; a background thread calls sendall().
 
     Signals (emitted from the background thread, delivered via Qt queued
@@ -174,10 +174,10 @@ class SocketClientRunner(QtCore.QThread):
         Encode frame and enqueue for sending.  Returns immediately (non-blocking).
 
         **Sampling specification:** callers emit ~``_REMOTE_INPUT_NOMINAL_FPS`` callbacks/sec (30 Hz).
-        We apply a **phase accumulator** step ``OUT/IN = 20/30`` per callback; whenever the
+        We apply a **phase accumulator** step ``OUT/IN = 18/30`` per callback; whenever the
         accumulated phase reaches 1.0, we JPEG-encode **that** frame and enqueue one FRAME
-        (~20/sec long-term average). This gives a reproducible answer to «why 20?»: it is the
-        chosen rational downsample ratio from 30 Hz, not an arbitrary throttle.
+        (~18/sec long-term average). Reproducible ratio **18/30 = 3/5**; 18 Hz chosen over 20 Hz
+        to reduce GPU/CUDA load on the inference host.
 
         If the outbound queue is full, the encoded blob may be dropped (TCP backlog); GUI never blocks.
         """

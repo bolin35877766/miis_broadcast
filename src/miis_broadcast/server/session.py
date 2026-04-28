@@ -36,8 +36,8 @@ from ..network.protocol import (
 
 log = logging.getLogger(__name__)
 
-# PREVIEW(MSG_PREVIEW back to thin client): emit at most this rate (same 20fps story as FRAME sample).
-_PREVIEW_SAMPLE_OUT_FPS = 20.0
+# PREVIEW(MSG_PREVIEW back to thin client): max rate (aligned with thin-client FRAME sample; 18 Hz eases CUDA).
+_PREVIEW_SAMPLE_OUT_FPS = 18.0
 
 
 def _commentary_too_similar(prev: str, cur: str, *, ratio: float = 0.86) -> bool:
@@ -418,7 +418,7 @@ class ClientSession:
                             pass
                     continue
 
-                # PREVIEW return path: at most `_PREVIEW_SAMPLE_OUT_FPS` Hz (consistent 20fps cap).
+                # PREVIEW return path: at most `_PREVIEW_SAMPLE_OUT_FPS` Hz (consistent 18fps cap).
                 gap = 1.0 / _PREVIEW_SAMPLE_OUT_FPS
                 pn = time.monotonic()
                 if pn - self._preview_sample_last_emit_mono >= gap:

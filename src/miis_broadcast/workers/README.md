@@ -246,11 +246,11 @@ decode), not ByteTrack-only, on whatever machine runs `miis_broadcast.server`.
 `device-side assert` on a GPU that is already at ~96% utilisation (YOLOX + Qwen kernels
 colliding). ByteTrack pauses for ~1–1.5 s while LiveCC holds the lock, then resumes.
 The session uses a **single-slot `_frame_queue`** (`maxsize=1`, latest FRAME overwrites). **PREVIEW**
-messages are **subsampled** to ≈**20 Hz** (see `_PREVIEW_SAMPLE_OUT_FPS` in `session.py`).
+messages are **subsampled** to ≈**18 Hz** (see `_PREVIEW_SAMPLE_OUT_FPS` in `session.py`).
 On the **client**, `MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (default **2.5 s**) suppresses raw
 camera between PREVIEW updates to cover the LiveCC generate window without flickering.
 
-For a full narrative (30→20 phase sampling, PREVIEW caps, protocol field list), see the root
+For a full narrative (30→18 phase sampling, PREVIEW caps, protocol field list), see the root
 **Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).
 
 ---
