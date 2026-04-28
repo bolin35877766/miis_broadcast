@@ -13,7 +13,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR (OBS Virtual Camera)** — any source you route into OBS (e.g. Quest Link / game capture) and expose as **OBS Virtual Camera**; same “plain” full-frame stream as Webcam, different device index
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **15 fps send / PREVIEW throttle** vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
+- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **30 fps send / PREVIEW throttle** (baseline) vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -107,7 +107,7 @@ LiveCC itself only uses a 2 s / 2 fps clip per inference cycle regardless of sen
 the higher send rate benefits ByteTrack tracking smoothness and PREVIEW display quality.
 
 Reduce `_FRAME_SEND_FPS_MAX` and the PREVIEW throttle together if bandwidth or GPU
-becomes a constraint (e.g. 15 fps on a weaker GPU or a slow network link).
+becomes a constraint — keep both aligned so previews match the streamed frame rate.
 
 #### Why the PREVIEW display threshold is 1500 ms
 
@@ -127,7 +127,7 @@ Key modules:
 |---|---|
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
 | [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, optional thin-client diagnostics |
-| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME decode, ByteTrack, PREVIEW throttle, stdout RAM telemetry |
+| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG queue → background decode + **`_session_gpu_lock`** (serialize ByteTrack + LiveCC on one GPU), PREVIEW throttle, stdout RAM telemetry |
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel, control widgets |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
 | [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |
@@ -346,7 +346,7 @@ When inference runs on a **remote** server (`obs_track` + TCP), **RSS** readings
 | `[Server RSS] full python process (LiveCC+ByteTrack+decode): …` | **Whole** `miis_broadcast.server` process RSS (LiveCC / Qwen **and** ByteTrack / YOLO **and** JPEG decode — not split per model). Emitted every **20** ByteTrack frames (same cadence as FPS lines). |
 | `[ByteTrack] Thin-client (sender PC) RAM: …` | **Laptop / GUI machine** that encodes JPEGs and sends `FRAME`s: client RSS, outbound JPEG queue depth, and sender system RAM. The client forwards a small `CLIENT_DIAG` message so these lines appear in the **server terminal** next to FPS, not only in the GUI console. |
 
-**Tuning 15 fps send / PREVIEW:** prioritise the **`[Server RSS]`** line when asking whether the remote box is memory-bound. Sender-PC lines help if you suspect encode or TCP backlog on the client.
+**Tuning send / PREVIEW fps (default 30):** prioritise the **`[Server RSS]`** line when asking whether the remote box is memory-bound. Sender-PC lines help if you suspect encode or TCP backlog on the client.
 
 The diagnostic payload is a short JSON message (order of **hundreds of bytes** every ~2 s from the GUI timer). It does not meaningfully block other OS processes; control sends hold the client socket lock only for that small `sendall`.
 

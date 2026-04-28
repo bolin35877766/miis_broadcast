@@ -64,7 +64,7 @@ on_camera_frame / on_video_frame
 
 | Condition | Tracking runs on | Preview frames |
 |-----------|-----------------|----------------|
-| Remote connected | Server (ByteTrack inside `ClientSession`) | Server sends `MSG_PREVIEW` JPEG back (~15 fps) |
+| Remote connected | Server (ByteTrack inside `ClientSession`; decoded frames queued, GPU work serialized with LiveCC) | Server sends `MSG_PREVIEW` JPEG back (throttled to **~30 fps** by default) |
 | Local only | `CameraByteTrackThread` on client GPU | `signal_frame` emits annotated BGR directly |
 
 ---
@@ -240,7 +240,11 @@ these lines appear on the **remote machine’s** terminal (SSH/tmux). Local-only
 tracker class on **your** stdout; **`[Server RSS]`** is **whole-process** RAM (LiveCC + ByteTrack +
 decode), not ByteTrack-only, on whatever machine runs `miis_broadcast.server`.
 
-For a full narrative (15 fps send / PREVIEW, protocol field list), see the root
+**Single-GPU server (`obs_track`):** incoming `FRAME` JPEGs are decoded on a dedicated
+thread; ByteTrack (`bt.process`) shares `_session_gpu_lock` with LiveCC so YOLO and
+the captioner never run CUDA kernels concurrently (avoids rare `device-side assert` errors).
+
+For a full narrative (30 fps send / PREVIEW baseline, GPU serialization, protocol field list), see the root
 **Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).
 
 ---
