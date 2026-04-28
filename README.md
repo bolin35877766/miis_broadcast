@@ -109,17 +109,18 @@ the higher send rate benefits ByteTrack tracking smoothness and PREVIEW display 
 Reduce `_FRAME_SEND_FPS_MAX` and the PREVIEW throttle together if bandwidth or GPU
 becomes a constraint — keep both aligned so previews match the streamed frame rate.
 
-#### Why the PREVIEW display threshold is 1500 ms
+#### Why the PREVIEW display hold window (default 600 ms)
 
 The camera thread emits raw frames at 30 fps (~33 ms).  Server PREVIEW frames nominally
-arrive at ~33 ms intervals (30 fps), but ByteTrack (YOLOX) running alongside LiveCC
-inference can push actual intervals above that under GPU load.
+arrive at ~33 ms intervals (30 fps throttle), but ByteTrack + LiveCC sharing one GPU can
+stretch intervals during heavy LiveCC cycles.
 
-A 1500 ms threshold means: after the last server PREVIEW arrives, raw frames are suppressed
-for 1.5 s.  This keeps annotated frames visible even when the server is momentarily busy,
-without permanently freezing if the connection drops (after 1.5 s of silence the client
-falls back to raw camera).  A narrower threshold (e.g. 400 ms) caused the annotated and
-raw frames to alternate visibly — tracking boxes appeared to jump.
+The GUI suppresses raw-camera updates for **`MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC`**
+(**0.60 s** by default) after each incoming PREVIEW, so annotated boxes stay visible across
+small gaps without holding a stale overlay as long as the former 1500 ms default.
+
+If you see boxes flickering against raw frames, raise `_OBS_TRACK_PREVIEW_HOLD_SEC`
+in `gui.py`; if overlays feel sluggish after server stalls, lower it slightly.
 
 Key modules:
 

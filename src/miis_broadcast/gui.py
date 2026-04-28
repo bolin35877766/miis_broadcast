@@ -817,7 +817,10 @@ class ControlPanel(QtWidgets.QWidget):
 class MainWindow(QtWidgets.QMainWindow):
     signal_start_livecc = QtCore.Signal(str, str)
     signal_start_camera_livecc = QtCore.Signal(str)
-    
+
+    # Remote obs_track: suppress raw-camera overlay this long after each PREVIEW (seconds).
+    # Narrower than 1500 ms for lower perceived lag; widen if boxes flicker vs raw frames.
+    _OBS_TRACK_PREVIEW_HOLD_SEC = 0.60
 
     # signal to apply settings to tts thread to avoid calling slots directly on the main thread
     signal_tts_apply_settings = QtCore.Signal(str, float)
@@ -1808,16 +1811,17 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
         # obs_track + remote + infer: raw 30fps camera must not overwrite server PREVIEW (boxes).
-        # Threshold = 1500 ms — ByteTrack (YOLOX) + concurrent LiveCC inference can push
-        # PREVIEW intervals well above 67 ms; 400 ms was too tight and caused visible jumping
-        # between raw and annotated frames.  1500 ms still falls back to raw if the server
-        # stops sending for 1.5 s (e.g. connection lost).
+        # Hold window (_OBS_TRACK_PREVIEW_HOLD_SEC): if too tight, annotated/raw alternate visibly;
+        # if too wide, the panel keeps stale PREVIEW longer than desired when PREVIEW stalls.
         if (
             self.mode == "obs_track"
             and self._socket_runner is not None
             and self.is_inference_running
         ):
-            if time.monotonic() - self._last_track_preview_mono < 1.50:
+            if (
+                time.monotonic() - self._last_track_preview_mono
+                < self._OBS_TRACK_PREVIEW_HOLD_SEC
+            ):
                 pass  # keep last PREVIEW visible
             else:
                 self.video_panel.update_frame(frame_rgb)
