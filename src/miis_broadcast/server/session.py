@@ -343,10 +343,12 @@ class ClientSession:
 
         if bt is not None:
             # ByteTrack: process() returns annotated BGR (boxes) + subject crop (RGB) for LiveCC
+            # NOTE: no GPU lock here — locking the recv thread blocks socket reads and causes
+            # PREVIEW gaps (>1500 ms) that make the GUI flicker between raw and annotated frames.
+            # The GPU lock is held ONLY inside _inference_loop around live_cc_from_frames.
             try:
-                with self._session_gpu_lock:
-                    self._bt_frame_id += 1
-                    annotated_bgr, subject_rgb = bt.process(frame_bgr, self._bt_frame_id)
+                self._bt_frame_id += 1
+                annotated_bgr, subject_rgb = bt.process(frame_bgr, self._bt_frame_id)
 
                 # Throttle preview to ~15 fps so the thin-client UI can show boxes
                 _now = time.monotonic()
