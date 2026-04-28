@@ -109,18 +109,28 @@ the higher send rate benefits ByteTrack tracking smoothness and PREVIEW display 
 Reduce `_FRAME_SEND_FPS_MAX` and the PREVIEW throttle together if bandwidth or GPU
 becomes a constraint — keep both aligned so previews match the streamed frame rate.
 
-#### Why the PREVIEW display hold window (default 600 ms)
+#### Why the PREVIEW display hold window (default **2.5 s**)
 
-The camera thread emits raw frames at 30 fps (~33 ms).  Server PREVIEW frames nominally
-arrive at ~33 ms intervals (30 fps throttle), but ByteTrack + LiveCC sharing one GPU can
-stretch intervals during heavy LiveCC cycles.
+The camera thread emits raw frames at 30 fps.  Server **`MSG_PREVIEW`** frames are sent at
+most ~30 Hz (server throttle), but actual arrival gaps are larger whenever ByteTrack stalls
+during **LiveCC** on the shared GPU (**~2 s** per inference while `_session_gpu_lock` is held).
 
-The GUI suppresses raw-camera updates for **`MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC`**
-(**0.60 s** by default) after each incoming PREVIEW, so annotated boxes stay visible across
-small gaps without holding a stale overlay as long as the former 1500 ms default.
+Without a hold window, **`on_camera_frame`** would paint raw video between PREVIEW arrivals,
+so boxed and unboxed frames alternate visibly (and when PREVIEW resumes, the annotated frame can
+appear “behind” the raw feed — a jump-back artefact).
 
-If you see boxes flickering against raw frames, raise `_OBS_TRACK_PREVIEW_HOLD_SEC`
-in `gui.py`; if overlays feel sluggish after server stalls, lower it slightly.
+The GUI suppresses raw-camera **`video_panel`** updates for
+**`MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (2.50 s)** after each **`on_remote_track_preview`**
+delivery. That window must exceed the LiveCC GPU section so annotated overlays stay pinned
+during inference gaps; it still falls back to raw camera if the server stops sending (~2.5 s
+silence ⇒ likely disconnect). Tune in `gui.py` only after measuring your server’s worst-case
+PREVIEW gap.
+
+The server also keeps a small **`_frame_queue` (maxsize=2)** so the frame worker usually
+processes the freshest JPEGs (lower lag than a deep queue). See `server/session.py`.
+
+If you see boxes flickering against raw frames, raise `_OBS_TRACK_PREVIEW_HOLD_SEC`;
+if overlays feel stuck after a real stall, lower it only if your LiveCC cycle is shorter.
 
 Key modules:
 
@@ -128,8 +138,8 @@ Key modules:
 |---|---|
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
 | [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, optional thin-client diagnostics |
-| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG queue → background decode + **`_session_gpu_lock`** (serialize ByteTrack + LiveCC on one GPU), PREVIEW throttle, stdout RAM telemetry |
-| [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel, control widgets |
+| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **`_frame_queue`** (small backlog, **`maxsize=2`**) → background decode + **`_session_gpu_lock`** (serialize ByteTrack + LiveCC on one GPU), PREVIEW throttle, stdout RAM telemetry |
+| [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — remote `obs_track`: **`_OBS_TRACK_PREVIEW_HOLD_SEC`** (raw-camera suppression after each PREVIEW) |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
 | [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |
 | [src/miis_broadcast/core/models/bytetrack_tracker.py](src/miis_broadcast/core/models/bytetrack_tracker.py) | ByteTrackWrapper — YOLOX inference, BYTETracker association, subject crop extraction |
