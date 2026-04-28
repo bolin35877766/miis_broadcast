@@ -60,13 +60,18 @@ def _is_cuda_or_oom(exc: BaseException) -> bool:
 
 def _is_cuda_recoverable_inference_error(exc: BaseException) -> bool:
     """
-    OOM, device-side assert, or similar: clear KV and continue next cycle when possible.
-    Note: after a device-side assert the CUDA context may stay broken; users may need a
-    server process restart if failures repeat.
+    OOM, cuBLAS/cuDNN faults, device-side assert, etc.: clear KV and continue when possible.
+
+    PyTorch emits ``RuntimeError: CUDA error: CUBLAS_STATUS_*`` inside ``model.generate``;
+    treating these as fatal disconnects users unnecessarily (often recover after KV reset).
+    After a corrupted context errors may repeat until process restart — log explains that.
     """
     if _is_cuda_or_oom(exc):
         return True
     msg = str(exc).lower()
+    # cuBLAS BF16 GEMM (Qwen VL language_model), async kernel failures, etc.
+    if "cublas" in msg or "cudnn" in msg:
+        return True
     if "device-side assert" in msg:
         return True
     if "assert triggered" in msg and "cuda" in msg:
@@ -537,9 +542,8 @@ class ClientSession:
                     })
             except RuntimeError as e:
                 if _is_cuda_recoverable_inference_error(e):
-                    # KV clear + bump timer: avoids a tight retry loop while still respecting
-                    # infer_interval. ByteTrack-on-CPU largely removes concurrent-GPU asserts;
-                    # this path still handles OOM / rare Live-only CUDA faults.
+                    # KV clear + bump timer: avoids a tight retry loop while respecting
+                    # infer_interval. Covers CUBLAS / device-side asserts / OOM transient faults.
                     log.warning("[Session] LiveCC recoverable GPU error — resetting KV: %s", e)
                     try:
                         torch.cuda.synchronize()
