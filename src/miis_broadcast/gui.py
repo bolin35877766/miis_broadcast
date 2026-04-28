@@ -529,17 +529,23 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_speed.setRange(25, 150)  # 0.25x ~ 1.5x
         self.slider_speed.setValue(100)      # 預設 1.0x
 
+        # Value label: no fixed/min width — let font metrics decide the width.
+        # stretch=0 in the HBoxLayout ensures the label always gets its natural sizeHint
+        # width regardless of the parent form column width.
         self.lbl_speed_val = QtWidgets.QLabel("1.0x")
-        self.lbl_speed_val.setFixedWidth(48)
         self.lbl_speed_val.setAlignment(QtCore.Qt.AlignCenter)
 
         speed_row = QtWidgets.QHBoxLayout()
-        speed_row.setSpacing(10)
+        speed_row.setSpacing(8)
         speed_row.addWidget(self.slider_speed, stretch=1)
         speed_row.addWidget(self.lbl_speed_val, stretch=0)
 
         self._speed_row_widget = QtWidgets.QWidget()
         self._speed_row_widget.setLayout(speed_row)
+        self._speed_row_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
 
         # --- Local: Exaggeration slider (0.2~1.2) ---
         self.slider_exag = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -547,16 +553,19 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_exag.setValue(80)
 
         self.lbl_exag_val = QtWidgets.QLabel("0.8")
-        self.lbl_exag_val.setFixedWidth(48)
         self.lbl_exag_val.setAlignment(QtCore.Qt.AlignCenter)
 
         exag_row = QtWidgets.QHBoxLayout()
-        exag_row.setSpacing(10)
+        exag_row.setSpacing(8)
         exag_row.addWidget(self.slider_exag, stretch=1)
         exag_row.addWidget(self.lbl_exag_val, stretch=0)
 
         self._exag_row_widget = QtWidgets.QWidget()
         self._exag_row_widget.setLayout(exag_row)
+        self._exag_row_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
 
         # --- Local: CFG slider (0.2~1.2) ---
         self.slider_cfg = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -564,16 +573,19 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_cfg.setValue(70)
 
         self.lbl_cfg_val = QtWidgets.QLabel("0.7")
-        self.lbl_cfg_val.setFixedWidth(48)
         self.lbl_cfg_val.setAlignment(QtCore.Qt.AlignCenter)
 
         cfg_row = QtWidgets.QHBoxLayout()
-        cfg_row.setSpacing(10)
+        cfg_row.setSpacing(8)
         cfg_row.addWidget(self.slider_cfg, stretch=1)
         cfg_row.addWidget(self.lbl_cfg_val, stretch=0)
 
         self._cfg_row_widget = QtWidgets.QWidget()
         self._cfg_row_widget.setLayout(cfg_row)
+        self._cfg_row_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
 
         # --- UI scale slider ---
         self.slider_ui_scale = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -581,16 +593,19 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_ui_scale.setValue(14)
 
         self.lbl_ui_scale_val = QtWidgets.QLabel("14pt")
-        self.lbl_ui_scale_val.setFixedWidth(48)
         self.lbl_ui_scale_val.setAlignment(QtCore.Qt.AlignCenter)
 
         font_row = QtWidgets.QHBoxLayout()
-        font_row.setSpacing(10)
+        font_row.setSpacing(8)
         font_row.addWidget(self.slider_ui_scale, stretch=1)
         font_row.addWidget(self.lbl_ui_scale_val, stretch=0)
 
         self._font_row_widget = QtWidgets.QWidget()
         self._font_row_widget.setLayout(font_row)
+        self._font_row_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
 
         lbl_style = "QLabel { color: #dedede; }"
         self.l_tts = QtWidgets.QLabel("TTS Mode:")
