@@ -461,20 +461,21 @@ class ControlPanel(QtWidgets.QWidget):
 
         layout.addWidget(grp_source)
 
-        # Settings
+        # Settings — 3-column QGridLayout:
+        #   col 0 = right-aligned label  (auto width, no stretch)
+        #   col 1 = field / slider       (stretch=1, takes all spare width)
+        #   col 2 = slider value label   (no stretch, natural text width)
+        # Combo rows span col 1-2 so they stay the same width as slider+val.
         grp_settings = QtWidgets.QGroupBox("推論設定 (Settings)")
-        form = QtWidgets.QFormLayout(grp_settings)
-        form.setLabelAlignment(QtCore.Qt.AlignRight)
-        form.setFormAlignment(QtCore.Qt.AlignTop)
-        form.setSpacing(12)
-        form.setContentsMargins(14, 18, 14, 12)
-        # Without QScrollArea the form does not auto-expand field columns.
-        # AllNonFixedFieldsGrow makes slider row widgets fill the available width.
-        form.setFieldGrowthPolicy(
-            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
+        grid = QtWidgets.QGridLayout(grp_settings)
+        grid.setContentsMargins(14, 18, 14, 12)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        grid.setColumnStretch(0, 0)  # label column — natural width
+        grid.setColumnStretch(1, 1)  # field/slider column — takes all spare space
+        grid.setColumnStretch(2, 0)  # value label column — natural width
 
-        # [CSS]
+        # [CSS] — restore visible drop-down arrow
         combo_style = """
             QComboBox {
                 padding: 6px 10px;
@@ -482,7 +483,12 @@ class ControlPanel(QtWidgets.QWidget):
                 background-color: #333;
                 min-height: 30px;
             }
-            QComboBox::drop-down { border: 0px; }
+            QComboBox::drop-down {
+                width: 24px;
+                border-left: 1px solid #555;
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+            }
             QComboBox QAbstractItemView { 
                 background-color: #333; 
                 color: #fff;
@@ -491,7 +497,7 @@ class ControlPanel(QtWidgets.QWidget):
                 outline: 0px;
             }
         """
-        
+
         # [FIX] WSL 下拉選單修復 helper
         def _fix_combo_behavior(combo: QtWidgets.QComboBox):
             combo.setItemDelegate(QtWidgets.QStyledItemDelegate())
@@ -501,10 +507,18 @@ class ControlPanel(QtWidgets.QWidget):
                 combo.hidePopup()
             ))
 
+        lbl_style = "QLabel { color: #dedede; }"
+
+        def _make_lbl(text: str) -> QtWidgets.QLabel:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(lbl_style)
+            lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            return lbl
+
         # --- TTS Mode ---
+        self.l_tts = _make_lbl("TTS Mode:")
         self.cmb_tts = QtWidgets.QComboBox()
-        _fix_combo_behavior(self.cmb_tts) # [Apply Fix]
-        
+        _fix_combo_behavior(self.cmb_tts)
         self.cmb_tts.addItem("不啟用 (Mute)", userData="none")
         self.cmb_tts.addItem("OpenAI TTS", userData="openai")
         # self.cmb_tts.addItem("Local TTS", userData="local")  # [ChatterBox disabled]
@@ -512,120 +526,66 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_tts.setStyleSheet(combo_style)
 
         # --- LiveCC style ---
+        self.l_style = _make_lbl("Style:")
         self.cmb_style = QtWidgets.QComboBox()
-        _fix_combo_behavior(self.cmb_style) # [Apply Fix]
+        _fix_combo_behavior(self.cmb_style)
         self.cmb_style.setStyleSheet(combo_style)
 
         # --- OpenAI: Voice ---
+        self.l_voice = _make_lbl("Voice:")
         self.cmb_voice = QtWidgets.QComboBox()
-        _fix_combo_behavior(self.cmb_voice) # [Apply Fix]
+        _fix_combo_behavior(self.cmb_voice)
         self.cmb_voice.setStyleSheet(combo_style)
         for v in ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]:
             self.cmb_voice.addItem(v, userData=v)
         self.cmb_voice.setCurrentText("coral")
 
         # --- OpenAI: Speed slider ---
+        self.l_speed = _make_lbl("Speed:")
         self.slider_speed = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_speed.setRange(25, 150)  # 0.25x ~ 1.5x
-        self.slider_speed.setValue(100)      # 預設 1.0x
-
-        # Value label: no fixed/min width — let font metrics decide the width.
-        # stretch=0 in the HBoxLayout ensures the label always gets its natural sizeHint
-        # width regardless of the parent form column width.
+        self.slider_speed.setValue(100)
         self.lbl_speed_val = QtWidgets.QLabel("1.0x")
+        self.lbl_speed_val.setStyleSheet(lbl_style)
         self.lbl_speed_val.setAlignment(QtCore.Qt.AlignCenter)
 
-        speed_row = QtWidgets.QHBoxLayout()
-        speed_row.setSpacing(8)
-        speed_row.addWidget(self.slider_speed, stretch=1)
-        speed_row.addWidget(self.lbl_speed_val, stretch=0)
-
-        self._speed_row_widget = QtWidgets.QWidget()
-        self._speed_row_widget.setLayout(speed_row)
-        self._speed_row_widget.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-
         # --- Local: Exaggeration slider (0.2~1.2) ---
+        self.l_exag = _make_lbl("Exaggeration:")
         self.slider_exag = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_exag.setRange(20, 120)
         self.slider_exag.setValue(80)
-
         self.lbl_exag_val = QtWidgets.QLabel("0.8")
+        self.lbl_exag_val.setStyleSheet(lbl_style)
         self.lbl_exag_val.setAlignment(QtCore.Qt.AlignCenter)
 
-        exag_row = QtWidgets.QHBoxLayout()
-        exag_row.setSpacing(8)
-        exag_row.addWidget(self.slider_exag, stretch=1)
-        exag_row.addWidget(self.lbl_exag_val, stretch=0)
-
-        self._exag_row_widget = QtWidgets.QWidget()
-        self._exag_row_widget.setLayout(exag_row)
-        self._exag_row_widget.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-
         # --- Local: CFG slider (0.2~1.2) ---
+        self.l_cfg = _make_lbl("CFG:")
         self.slider_cfg = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_cfg.setRange(20, 120)
         self.slider_cfg.setValue(70)
-
         self.lbl_cfg_val = QtWidgets.QLabel("0.7")
+        self.lbl_cfg_val.setStyleSheet(lbl_style)
         self.lbl_cfg_val.setAlignment(QtCore.Qt.AlignCenter)
 
-        cfg_row = QtWidgets.QHBoxLayout()
-        cfg_row.setSpacing(8)
-        cfg_row.addWidget(self.slider_cfg, stretch=1)
-        cfg_row.addWidget(self.lbl_cfg_val, stretch=0)
-
-        self._cfg_row_widget = QtWidgets.QWidget()
-        self._cfg_row_widget.setLayout(cfg_row)
-        self._cfg_row_widget.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-
         # --- UI scale slider ---
+        self.l_ui = _make_lbl("UI Scaling:")
         self.slider_ui_scale = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_ui_scale.setRange(10, 26)
         self.slider_ui_scale.setValue(14)
-
         self.lbl_ui_scale_val = QtWidgets.QLabel("14pt")
+        self.lbl_ui_scale_val.setStyleSheet(lbl_style)
         self.lbl_ui_scale_val.setAlignment(QtCore.Qt.AlignCenter)
 
-        font_row = QtWidgets.QHBoxLayout()
-        font_row.setSpacing(8)
-        font_row.addWidget(self.slider_ui_scale, stretch=1)
-        font_row.addWidget(self.lbl_ui_scale_val, stretch=0)
-
-        self._font_row_widget = QtWidgets.QWidget()
-        self._font_row_widget.setLayout(font_row)
-        self._font_row_widget.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-
-        lbl_style = "QLabel { color: #dedede; }"
-        self.l_tts = QtWidgets.QLabel("TTS Mode:")
-        self.l_style = QtWidgets.QLabel("Style:")
-        self.l_voice = QtWidgets.QLabel("Voice:")
-        self.l_speed = QtWidgets.QLabel("Speed:")
-        self.l_exag = QtWidgets.QLabel("Exaggeration:")
-        self.l_cfg = QtWidgets.QLabel("CFG:")
-        self.l_ui = QtWidgets.QLabel("UI Scaling:")
-
-        for x in (self.l_tts, self.l_style, self.l_voice, self.l_speed, self.l_exag, self.l_cfg, self.l_ui):
-            x.setStyleSheet(lbl_style)
-
-        form.addRow(self.l_tts, self.cmb_tts)
-        form.addRow(self.l_style, self.cmb_style)
-        form.addRow(self.l_voice, self.cmb_voice)
-        form.addRow(self.l_speed, self._speed_row_widget)
-        form.addRow(self.l_exag, self._exag_row_widget)
-        form.addRow(self.l_cfg, self._cfg_row_widget)
-        form.addRow(self.l_ui, self._font_row_widget)
+        # Populate the grid
+        # row, col  (combo rows span col 1-2 so width matches slider+val column pair)
+        _R = QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+        grid.addWidget(self.l_tts,           0, 0, _R); grid.addWidget(self.cmb_tts,         0, 1, 1, 2)
+        grid.addWidget(self.l_style,         1, 0, _R); grid.addWidget(self.cmb_style,        1, 1, 1, 2)
+        grid.addWidget(self.l_voice,         2, 0, _R); grid.addWidget(self.cmb_voice,        2, 1, 1, 2)
+        grid.addWidget(self.l_speed,         3, 0, _R); grid.addWidget(self.slider_speed,     3, 1);      grid.addWidget(self.lbl_speed_val,    3, 2, _R)
+        grid.addWidget(self.l_exag,          4, 0, _R); grid.addWidget(self.slider_exag,      4, 1);      grid.addWidget(self.lbl_exag_val,     4, 2, _R)
+        grid.addWidget(self.l_cfg,           5, 0, _R); grid.addWidget(self.slider_cfg,       5, 1);      grid.addWidget(self.lbl_cfg_val,      5, 2, _R)
+        grid.addWidget(self.l_ui,            6, 0, _R); grid.addWidget(self.slider_ui_scale,  6, 1);      grid.addWidget(self.lbl_ui_scale_val, 6, 2, _R)
 
         layout.addWidget(grp_settings)
 
