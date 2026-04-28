@@ -13,6 +13,7 @@ This directory contains all `QThread` worker classes responsible for ingesting v
 | `"obs_track"` | `CameraByteTrackThread` | `camera_bytetrack.py` |
 | `"obs"` | `OBSCameraThread` | `obs_input.py` |
 | `"dual_sync"` | `DualSourceCameraThread` | `dual_source.py` |
+| `"free_switch"` | `FreeSwitchCameraThread` | `free_switch.py` |
 
 ---
 
@@ -27,8 +28,9 @@ This directory contains all `QThread` worker classes responsible for ingesting v
 | `requestOpenCameraTrack` | `on_open_camera_track_clicked()` | `CameraByteTrackThread` | `"obs_track"` |
 | `requestOpenOBS` | `on_open_obs_clicked()` | `OBSCameraThread` | `"obs"` |
 | `requestOpenDualSync` | `on_open_dual_sync_clicked()` | `DualSourceCameraThread` | `"dual_sync"` |
+| `requestOpenFreeSwitch` | `on_open_free_switch_clicked()` | `FreeSwitchCameraThread` | `"free_switch"` |
 
----
+**Free Switch extras:** `ControlPanel.requestSwitchSource(str)` is connected to `MainWindow.on_switch_source()` and forwarded to `FreeSwitchCameraThread.set_active_source()` (`"webcam"` \| `"vr"` \| `"dual"`).
 
 ## Frame Emission Signals
 
@@ -42,8 +44,8 @@ Each source thread emits one or two frame signals that `MainWindow` connects to:
 | `CameraByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` |
 | `CameraByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
 | `DualSourceCameraThread` | `signal_frame` | `combined_rgb: np.ndarray` | `on_camera_frame()` |
-
----
+| `FreeSwitchCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` (`640×480` **or** stitched `1280×480`) | `on_camera_frame()` |
+| `FreeSwitchCameraThread` | `signal_source_changed` | `str` (`webcam` / `vr` / `dual`) | `_on_free_switch_source_changed()`, also updates switch-bar highlight |
 
 ## Inference Backend: Local vs Remote
 
@@ -134,6 +136,36 @@ CAM idx=0  |  VR idx=5  |  Target: 30 FPS
 | `Gap` | Δt between the two `grab()` calls (sync quality indicator) |
 | `(reason)` | `Normal` when FPS ≥ 80 % of target; otherwise `Heavy-Decode`, `Heavy-Proc`, `Bus-Congestion`, or `System-Lag` |
 
+## Free Switch Worker (`free_switch.py`)
+
+`FreeSwitchCameraThread` opens **both** the physical webcam and the OBS Virtual Camera once at startup and keeps them alive for the session. The user selects which view is **emitted**:
+
+| Selector | Resolution | Behaviour |
+|---------|------------|-----------|
+| `webcam` (`SOURCE_WEBCAM`) | `640×480` RGB | `retrieve()` webcam only |
+| `vr` (`SOURCE_VR`) | `640×480` RGB | `retrieve()` OBS/VR only |
+| `dual` (`SOURCE_DUAL`) | `1280×480` RGB | Same `hstack` layout as **`DualSourceCameraThread`** |
+
+### Why switching feels instant
+
+Each loop iteration:
+
+1. `cap_cam.grab()` **and** `cap_vr.grab()` — both hardware buffers advance every tick (avoids stale frames when switching back to an idle source).
+2. Read `_active_source` under a mutex (set via `set_active_source()` / GUI buttons).
+3. `retrieve()` only the frame(s) needed for that composition.
+4. `signal_frame.emit()` → `MainWindow.on_camera_frame()` → `video_panel` + (when inferring) **`SocketClientRunner.send_frame`**.
+
+No `VideoCapture` reopen; switching is a Python variable flip + next-frame retrieve path.
+
+### GUI wiring
+
+- **Online ▾ → Free Switch** → modal dialog chooses **initial** source.
+- **`free_switch_bar`** (Webcam / VR / W+VR) stays visible while `mode == "free_switch"`; buttons stay enabled **during broadcasting** so the operator can swap sources mid-session.
+
+### Inference
+
+Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_switch")` routes JPEGs to the server; server treats it like plain camera ingestion (ByteTrack **not** loaded unless `obs_track`). See root [README.md](../../../README.md) **Free Switch** subsection.
+
 ---
 
 ## Subject Tracking Behavior (`camera_bytetrack.py`)
@@ -212,9 +244,9 @@ When using remote inference, the server (`python -m miis_broadcast.server`) emit
 | `rx` | Total frames decoded from client since last reset |
 | `tx_previews` | `MSG_PREVIEW` frames sent back (tracking overlay); `0` for non-tracking modes |
 | `buffer_len` | Frames currently in the LiveCC clip buffer (max 180) |
-| `mode` | Input mode from `MSG_START` — confirms which source the client is using |
+| `mode` | Input mode from `MSG_START` — confirms which source the client is using (`free_switch` is plain inference path, same as camera/dual for ByteTrack) |
 
-**`tx_previews = 0` is normal** for `camera`, `obs`, `file`, and `dual_sync` because
+**`tx_previews = 0` is normal** for `camera`, `obs`, `file`, `dual_sync`, and `free_switch` because
 `MSG_PREVIEW` is only sent in `obs_track` mode.
 
 Remote inference also uses **`MSG_CLIENT_DIAG`** (optional): the GUI sends compact JSON
