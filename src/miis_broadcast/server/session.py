@@ -479,7 +479,6 @@ class ClientSession:
                 time.sleep(0.1)
                 continue
 
-            last_infer_t = now
             inference_count += 1
             self._infer_cycles += 1
             log.info(
@@ -501,6 +500,9 @@ class ClientSession:
                             clip=clip, query=query, state=state
                         )
                     )
+                # Reset timer AFTER releasing the lock so ByteTrack gets infer_interval
+                # seconds of GPU access between consecutive LiveCC runs.
+                last_infer_t = time.time()
                 for (start_ts, stop_ts), text, state in batch:
                     if stop_event.is_set():
                         break
