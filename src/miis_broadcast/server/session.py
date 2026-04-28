@@ -211,13 +211,11 @@ class ClientSession:
         # Load ByteTrack before frame worker (worker needs bt reference).
         bt = self._maybe_load_bytetrack(mode)
 
-        # Single-GPU serialization: ByteTrack (YOLO) and LiveCC must not run concurrently.
-        # IMPORTANT: recv must NOT hold this lock — it would block disconnect/PING. We decode
-        # frames off the recv loop via _frame_queue + _frame_processor_loop (GPU work only).
-        self._session_gpu_lock = threading.Lock()
-        # Keep only the last 2 JPEG frames: processor always gets the freshest available frame.
-        # With ByteTrack Wall FPS ~15 and camera at 30 fps, maxsize=2 → latency ≈ 2/15 ≈ 0.13 s.
-        # Smaller queue = less "jump back" when PREVIEW resumes after a LiveCC GPU lock cycle.
+        # Keep only the last 2 JPEG frames so the processor stays near real-time.
+        # ByteTrack (YOLOX) and LiveCC run concurrently on the same GPU — they are separate
+        # models with separate CUDA streams and do not conflict. The earlier _session_gpu_lock
+        # was removed: the device-side assert root cause was KV cache OOB (now fixed in
+        # livecc_transformers.py), NOT concurrent GPU access.
         self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=2)
         self._logged_first_frame_decode = False
 
@@ -381,7 +379,6 @@ class ClientSession:
         stop_event: threading.Event,
     ) -> None:
         q = self._frame_queue
-        lock = self._session_gpu_lock
         while not stop_event.is_set():
             try:
                 item = q.get(timeout=0.2)
@@ -404,11 +401,10 @@ class ClientSession:
 
             if bt is not None:
                 try:
-                    with lock:
-                        self._bt_frame_id += 1
-                        annotated_bgr, subject_rgb = bt.process(
-                            frame_bgr, self._bt_frame_id
-                        )
+                    self._bt_frame_id += 1
+                    annotated_bgr, subject_rgb = bt.process(
+                        frame_bgr, self._bt_frame_id
+                    )
                 except Exception as e:
                     log.warning("[Session] ByteTrack error: %s", e)
                     if _is_cuda_recoverable_inference_error(e):
@@ -499,14 +495,11 @@ class ClientSession:
                 log.debug("[Session] State reset (count=%d)", inference_count)
 
             try:
-                with self._session_gpu_lock:
-                    batch = list(
-                        self.livecc_model.live_cc_from_frames(
-                            clip=clip, query=query, state=state
-                        )
+                batch = list(
+                    self.livecc_model.live_cc_from_frames(
+                        clip=clip, query=query, state=state
                     )
-                # Reset timer AFTER releasing the lock so ByteTrack gets infer_interval
-                # seconds of GPU access between consecutive LiveCC runs.
+                )
                 last_infer_t = time.time()
                 for (start_ts, stop_ts), text, state in batch:
                     if stop_event.is_set():
