@@ -91,13 +91,23 @@ class CameraByteTrackThread(QtCore.QThread):
 
     def run(self) -> None:
         import cv2
-        # ── Open camera ──────────────────────────────────────────
-        cap = cv2.VideoCapture(self._camera_index)
-        if not cap.isOpened():
-            self.signal_error.emit(f"[ByteTrack] Cannot open camera index {self._camera_index}")
+        # ── Open camera (Windows: try MSMF → DSHOW → any) ───────
+        cap = None
+        for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY):
+            _c = cv2.VideoCapture(self._camera_index, backend)
+            if _c.isOpened():
+                cap = _c
+                break
+            _c.release()
+        if cap is None or not cap.isOpened():
+            self.signal_error.emit(
+                f"[ByteTrack] Cannot open camera index {self._camera_index}. "
+                "Check that the webcam is connected and not in use by another app."
+            )
             return
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # minimal capture latency
         fps_raw = cap.get(cv2.CAP_PROP_FPS)
         fps = fps_raw if fps_raw and fps_raw > 0 else self.DEFAULT_FPS_FALLBACK
         frame_delay = 1.0 / fps

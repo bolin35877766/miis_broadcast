@@ -1067,8 +1067,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._client_only:
             self.control_panel.chk_remote.setEnabled(False)
 
-        # Pre-load local ByteTrack only when running locally (non-client_only)
-        if not self._client_only:
+        # Pre-load ByteTrack whenever the config section is present (runs locally
+        # regardless of client_only — tracking is now always done on the local machine).
+        if self.configs.get("bytetrack"):
             QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
 
         self._playback_sec: float = 0.0
@@ -1739,28 +1740,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def on_open_camera_track_clicked(self) -> None:
-        """Webcam + tracking: ByteTrack runs on remote server; local may show full-frame preview only (thin client)."""
+        """Webcam + tracking: ByteTrack always runs locally; only the subject crop
+        is forwarded to the remote server for LiveCC inference."""
         self.stop_inference()
         self.mode = "obs_track"
-        self.current_video_path = "Camera + ByteTrack (remote)"
-        self.control_panel.set_status("Mode: Webcam + Tracking (remote server)")
-        self.append_text("Switched to Webcam + Tracking (ByteTrack on remote; sending frames)")
-        self.append_text("已切換至「鏡頭 + 追蹤」；追蹤在遠端執行，本機只送畫面")
+        self.current_video_path = "Camera + ByteTrack (local)"
+        self.control_panel.set_status("Mode: Webcam + Tracking (local ByteTrack)")
+        self.append_text("Switched to Webcam + Tracking (ByteTrack runs locally)")
+        self.append_text("已切換至「鏡頭 + 追蹤」；ByteTrack 在本機執行，僅 subject crop 送至遠端")
         self._stop_all_source_threads()
-
-        use_remote_track = self._socket_runner is not None or self._client_only
-        if use_remote_track:
-            # Remote path: plain camera; server receives raw frames and runs ByteTrack there.
-            from .core.io.obs_input import find_physical_camera_index
-            self.camera_start_time = time.time()
-            cam_idx = find_physical_camera_index()
-            self.camera_thread = CameraThread(camera_index=cam_idx)
-            self.camera_thread.signal_frame.connect(self.on_camera_frame)
-            self.camera_thread.signal_error.connect(self.on_error)
-            self.camera_thread.start()
-            self.video_panel.slider.setEnabled(False)
-            self._update_start_button_state()
-            return
 
         bt_cfg = self.configs.get("bytetrack", {})
         repo_path = bt_cfg.get("bytetrack_repo") or None
@@ -2013,7 +2001,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         elif self.mode in ("camera", "obs", "obs_track", "dual_sync", "free_switch"):
             if self._socket_runner is not None:
-                self._socket_runner.start_inference(self.mode, prompt)
+                # For obs_track: ByteTrack runs locally; we only stream subject crops to
+                # the server, so the server just needs to run LiveCC — not ByteTrack.
+                # Send mode="camera" so the server skips its own ByteTrack loading.
+                server_mode = "camera" if self.mode == "obs_track" else self.mode
+                self._socket_runner.start_inference(server_mode, prompt)
                 if self.mode == "obs_track":
                     self._start_obs_track_ram_monitor()
             elif self.livecc_model is not None:
@@ -2096,29 +2088,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
-        # obs_track + remote + infer: raw 30fps camera must not overwrite server PREVIEW (boxes).
-        # Hold window (_OBS_TRACK_PREVIEW_HOLD_SEC): if too tight, annotated/raw alternate visibly;
-        # if too wide, the panel keeps stale PREVIEW longer than desired when PREVIEW stalls.
-        if (
-            self.mode == "obs_track"
-            and self._socket_runner is not None
-            and self.is_inference_running
-        ):
-            if (
-                time.monotonic() - self._last_track_preview_mono
-                < self._OBS_TRACK_PREVIEW_HOLD_SEC
-            ):
-                pass  # keep last PREVIEW visible
-            else:
-                self.video_panel.update_frame(frame_rgb)
-        else:
-            self.video_panel.update_frame(frame_rgb)
+        # obs_track no longer uses this slot — CameraByteTrackThread emits to
+        # on_obs_track_frame (preview) and on_obs_track_subject_frame (remote send).
+        self.video_panel.update_frame(frame_rgb)
         if not self.is_inference_running:
             return
-        # obs_track on thin client: frames come from plain CameraThread and
-        # must be forwarded to the remote server so it can run ByteTrack there.
-        # Include obs_track here for remote-only (client_only) path.
-        if self.mode not in ("camera", "obs", "dual_sync", "obs_track", "free_switch"):
+        if self.mode not in ("camera", "obs", "dual_sync", "free_switch"):
             return
 
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)

@@ -19,9 +19,9 @@ classifiers:
 # fuse           : fuse Conv+BN layers for speed
 # ---------------------------------------------------------------------------
 bytetrack:
-  bytetrack_repo: "/home/miislab-server3/ByteTrack_repo"           # leave blank → auto-detect via BYTETRACK_REPO env var
-  exp_file: "/home/miislab-server3/ByteTrack_repo/exps/example/mot/yolox_x_mix_det.py"
-  ckpt_path: "/home/miislab-server3/ByteTrack_repo/pretrained/bytetrack_x_mot17.pth.tar"
+  bytetrack_repo: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo"
+  exp_file: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/exps/example/mot/yolox_x_mix_det.py"
+  ckpt_path: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/pretrained/bytetrack_x_mot17.pth.tar"
   model_size: "x"
   device: "cuda"
   fp16: true

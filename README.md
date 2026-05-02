@@ -9,12 +9,12 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
 - **Six input modes** (matches the Source panel: **Offline** + **Online ▾** menu):
   - **Video file** — local file playback with seek bar
   - **Webcam** — physical camera only; auto-detect skips the OBS Virtual Camera device
-  - **Webcam + Tracking** — ByteTrack subject lock and box overlay; with **remote inference** the server runs ByteTrack on the received frames; with **local inference** tracking runs on this machine via `CameraByteTrackThread`
+  - **Webcam + Tracking** — ByteTrack subject lock and box overlay; **always runs locally** on the client machine via `CameraByteTrackThread` (YOLOX + BYTETracker on local GPU/CPU). Only the extracted **subject crop** is forwarded to the remote server for LiveCC inference — raw frames are never sent to the server in this mode.
   - **VR (OBS Virtual Camera)** — any source you route into OBS (e.g. Quest Link / game capture) and expose as **OBS Virtual Camera**; same “plain” full-frame stream as Webcam, different device index
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
   - **Free Switch** — both Webcam and OBS Virtual Camera are opened at startup; only the **active** source (Webcam, VR, or stitched dual) is emitted to the video panel and forwarded to LiveCC (local/remote). Switching is a **software selector** only — **no camera reconnection**, sub-frame latency typical.
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Thin-client telemetry (remote `obs_track`)**: The **inference server** prints **process RSS on the GPU host** (decode + ByteTrack + LiveCC) and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the **same stdout** as ByteTrack **Infer FPS / Wall FPS**, so tuning **30→15 phase sampling / PREVIEW caps** vs **ByteTrack Wall FPS / LiveCC gap** vs RAM is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
+- **Thin-client telemetry**: The **inference server** prints **process RSS** and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the same stdout as LiveCC timing lines, so network + GPU resource usage is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -72,12 +72,26 @@ SocketClientRunner._frame_queue
 _frame_sender_loop (background thread)
         │  TCP sendall  ─────────────────────────────────────────────►  Remote server
         │                                                               │
-        │  ◄── MSG_SEGMENT (text) ◄── LiveCC inference (GPU)  ◄────────┤
-        │  ◄── MSG_PREVIEW (JPEG) ◄── ByteTrack overlay ───────────────┘
-        │                               (obs_track mode only, capped at sample out ≈15 Hz)
+        │  ◄── MSG_SEGMENT (text) ◄── LiveCC inference (GPU)  ◄────────┘
         ▼
 on_segment → text panel + OpenAI TTS (local audio)
-on_remote_track_preview → video panel (annotated frames with tracking boxes)
+
+
+Webcam + Tracking (obs_track) — always local ByteTrack:
+
+Webcam
+  │  raw BGR frame (30 fps)
+  ▼
+CameraByteTrackThread (local)
+  ├── YOLOX detection + BYTETracker  ──► annotated BGR → video panel (local)
+  └── subject crop (640×480 BGR)
+            │  JPEG (async, phase-sampled 30→15 Hz)
+            ▼
+      SocketClientRunner → TCP → Remote server
+                                      │
+                          LiveCC inference (GPU, no ByteTrack on server)
+                                      │
+                          MSG_SEGMENT ─────────────────────────────────► text panel + TTS
 ```
 
 #### Why the frame sender is in a dedicated thread
@@ -93,7 +107,7 @@ drains the queue and calls `sendall`.  The GUI thread is never blocked by TCP I/
 If the queue is full the newest frame is silently dropped (`put_nowait`), keeping
 memory bounded and backpressure natural.
 
-#### Client send rate vs server PREVIEW (obs_track)
+#### Client send rate
 
 **Nominal capture → wire (thin client)**  
 The GUI/camera emits **~30** `send_frame()` callbacks/sec. `client.py` applies a classical **phase
@@ -103,35 +117,10 @@ the reproducible ratio is **`15 Hz = (1/2) × 30 Hz`**.
 
 **Ingress on server** uses a single-slot JPEG buffer (`maxsize=1`): each new FRAME **overwrites** pending decode work («always latest»).
 
-**PREVIEW (`MSG_PREVIEW` back)**  
-Annotated previews are gated with wall-clock spacing **`1/_PREVIEW_SAMPLE_OUT_FPS`** (≈15 Hz). If ByteTrack
-Wall FPS stays below ~15 Hz, actual PREVIEW rate follows physics.
-
 LiveCC runs on a **2 s interval** (`infer_interval = 2.0` in `session.py`), independent of frame sampling.
-
-Measured on server with ByteTrack + LiveCC sharing one GPU (obs_track):
-- **ByteTrack Wall FPS** ~10–14/s typical
-- **ByteTrack Infer FPS** (pure YOLOX forward) can be higher
-- **Server RSS** stabilises around LiveCC KV cache size, not raw frame count
-- **Client JPEG send queue** stays near 0 / 30 — minimal TCP backlog
 
 Tune **`_REMOTE_FRAME_SAMPLE_OUT_FPS`**, **`_REMOTE_INPUT_NOMINAL_FPS`** (`client.py`),
 or **`_PREVIEW_SAMPLE_OUT_FPS`** (`session.py`) together so IN/OUT stay a deliberate ratio.
-
-#### Why the PREVIEW display hold window (default **2.5 s**)
-
-The camera thread emits raw frames at 30 fps. **`MSG_PREVIEW`** is **subsampled** server-side to
-roughly **≤15 Hz** (wall-clock). Without a hold window, **`on_camera_frame`** would paint raw video
-between PREVIEW arrivals, so boxed and unboxed frames alternate visibly (jump-back artefact).
-
-The GUI suppresses raw-camera **`video_panel`** updates for
-**`MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (2.50 s)** after each **`on_remote_track_preview`**
-delivery. It falls back to raw camera if the server stops sending for 2.5 s (e.g. disconnect).
-
-The server uses a **single-slot `_frame_queue`** (`maxsize=1`): each new FRAME JPEG **overwrites**
-the pending slot. See `server/session.py`.
-
-If you see boxes flickering against raw frames, raise `_OBS_TRACK_PREVIEW_HOLD_SEC`.
 
 #### Free Switch (`free_switch` mode)
 
@@ -143,8 +132,8 @@ Key modules:
 |---|---|
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
 | [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, optional thin-client diagnostics |
-| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **single-slot queue** → decode → ByteTrack + LiveCC; PREVIEW capped at **`_PREVIEW_SAMPLE_OUT_FPS`** Hz; stdout RAM telemetry |
-| [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — remote `obs_track`: **`_OBS_TRACK_PREVIEW_HOLD_SEC`** (raw-camera suppression after each PREVIEW); **Free Switch** source bar (`切換輸入源`) |
+| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **single-slot queue** → decode → LiveCC; PREVIEW capped at **`_PREVIEW_SAMPLE_OUT_FPS`** Hz; stdout RAM telemetry |
+| [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — **Free Switch** source bar (`切換輸入源`); `obs_track` shows local ByteTrack annotated preview |
 | [src/miis_broadcast/workers/free_switch.py](src/miis_broadcast/workers/free_switch.py) | `FreeSwitchCameraThread` — dual always-on captures; selectable Webcam / VR / stitched dual (`1280×480`); same frame pipeline as `DualSourceCameraThread` for wire |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
 | [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |
@@ -174,7 +163,7 @@ Key modules:
 2. `pip install sounddevice` (or ensure `sounddevice` from `requirements.txt` is installed). If neither **sounddevice** nor **ffplay** works, the console prints an error and there will be no audio even if commentary text appears.
 3. `OPENAI_API_KEY` is valid; invalid keys stop the TTS WebSocket and also yield no sound.
 
-**Remote inference:** OpenAI TTS and audio playback run on the **client machine** (where you run the GUI) — not on the headless `miis_broadcast.server` host. The server only needs GPU for LiveCC + ByteTrack.
+**Remote inference:** OpenAI TTS and audio playback run on the **client machine** (where you run the GUI) — not on the headless `miis_broadcast.server` host. The server only needs GPU for LiveCC. ByteTrack (YOLOX) always runs on the **client machine** (local GPU or CPU).
 
 **Similar lines repeating in remote commentary?** The server builds **overlapping ~2s video clips** every inference tick; the VLM can echo the same phrasing. The server also **skips near-duplicate** segments (vs. the previous line) and periodically resets model state to mitigate loops; for variety, adjust the **commentary style** / `query` in `configs/livecc_prompts.yml` (e.g. ask for 繁體中文).
 
@@ -284,7 +273,7 @@ python -m miis_broadcast
    - **📁 Offline** — open a local video file
    - **🌐 Online ▾** — four live sources:
      - **📷 Webcam** — physical webcam, plain stream (auto-skips OBS Virtual Camera)
-     - **🎯 Webcam + Tracking** — ByteTrack; **remote** = tracking on server, **local** = `CameraByteTrackThread` on this PC
+     - **🎯 Webcam + Tracking** — ByteTrack always runs locally (`CameraByteTrackThread`); only the subject crop is forwarded to the server for LiveCC
      - **🥽 VR (OBS Virtual Camera)** — e.g. Quest Link / capture into OBS, then use OBS Virtual Camera as the device
      - **🎮 VR & Webcam (Sync)** — `1280×480` side-by-side: webcam + OBS Virtual Camera
 2. **Choose a commentary style** from the dropdown

@@ -54,21 +54,30 @@ mode routes frames to the server instead of the local LiveCC worker:
 
 ```
 on_camera_frame / on_video_frame
-        │
-        ├── remote connected? ──► SocketClientRunner.send_frame()
-        │                               └── _frame_sender_loop (background thread)
-        │                                       └── TCP → server LiveCC + ByteTrack
-        └── local model?      ──► cam_worker.push_frame() / signal_start_livecc
-                                        └── local LiveCC GPU inference
+        |
+        |-- remote connected? --> SocketClientRunner.send_frame()
+        |                               |-- _frame_sender_loop (background thread)
+        |                                       |-- TCP --> server LiveCC
+        |-- local model?      --> cam_worker.push_frame() / signal_start_livecc
+                                        |-- local LiveCC GPU inference
 ```
 
-`obs_track` has two paths depending on whether a remote server is connected:
+`obs_track` **always** runs ByteTrack on the **local (client) machine**, regardless of whether
+a remote server is connected:
 
-| Condition | Tracking runs on | Preview frames |
-|-----------|-----------------|----------------|
-| Remote connected | Server (ByteTrack inside `ClientSession`; decoded frames queued, GPU work serialized with LiveCC) | Server sends **`MSG_PREVIEW` JPEG once per tracked frame** (rate ≈ ByteTrack Wall FPS, typically well below raw 30 fps upload) |
-| Local only | `CameraByteTrackThread` on client GPU | `signal_frame` emits annotated BGR directly |
+```
+Webcam
+  |
+  v  CameraByteTrackThread (Windows: tries MSMF -> DSHOW -> any backend)
+  |-- YOLOX + BYTETracker --> annotated BGR --> on_obs_track_frame --> video panel
+  |-- subject_crop_rgb    --> on_obs_track_subject_frame
+                                    |
+                                    |-- remote? --> send_frame() --> TCP --> server LiveCC
+                                    |-- local?  --> cam_worker.push_frame()
+```
 
+The server receives **only subject-crop JPEGs** (640x480). It skips ByteTrack loading because
+the client sends `MSG_START mode="camera"` -- the server only needs GPU for LiveCC.
 ---
 
 ## Dual-Source Sync Worker (`dual_source.py`)
