@@ -128,6 +128,8 @@ class ClientSession:
         self._infer_cycles: int = 0
         # Drop near-duplicate LiveCC lines (overlapping 2s clips + KV tend to echo wording)
         self._last_segment_text: str = ""
+        # Throttle server-side RSS print (~2s, aligned with thin-client QTimer)
+        self._server_ram_last_mono: float = 0.0
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -206,6 +208,7 @@ class ClientSession:
         self._tx_segments = 0
         self._infer_cycles = 0
         self._last_segment_text = ""
+        self._server_ram_last_mono = time.monotonic() - 2.01
 
         buffer: deque[_FrameItem] = deque(maxlen=180)
         stop_event = threading.Event()
@@ -298,8 +301,8 @@ class ClientSession:
         except (TypeError, ValueError):
             return
         print(
-            f"[Client diag] sender PC RAM: {rss:.1f} MiB | "
-            f"jpeg_send_queue={qu}/{qm} | sender system_RAM_used={sp:.0f}%"
+            f"[Client] RSS={rss:.1f} MiB | JPEG send_queue={qu}/{qm} | "
+            f"system_RAM_used={sp:.0f}%"
         )
 
     @staticmethod
@@ -315,8 +318,8 @@ class ClientSession:
         except Exception:
             return
         print(
-            f"[Server RSS] python process (LiveCC+decode): {rss_mib:.1f} MiB | "
-            f"host system_RAM_used={sys_pct:.0f}% | livecc_buffer={buffer_len}"
+            f"[Server] RSS={rss_mib:.1f} MiB | livecc_buffer={buffer_len} | "
+            f"system_RAM_used={sys_pct:.0f}%"
         )
 
     # ------------------------------------------------------------------ #
@@ -429,8 +432,6 @@ class ClientSession:
                         cv2.COLOR_RGB2BGR,
                     )
                     buffer.append(_FrameItem(t=t, frame=subject_bgr))
-                if self._infer_mode == "obs_track" and self._bt_frame_id % 20 == 0:
-                    self._print_server_process_ram(len(buffer))
             else:
                 buffer.append(_FrameItem(t=t, frame=frame_bgr))
                 if self._infer_mode == "obs_track":
@@ -444,6 +445,11 @@ class ClientSession:
                         if ret:
                             self._tx_previews += 1
                             self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
+
+            _ram_now = time.monotonic()
+            if _ram_now - self._server_ram_last_mono >= 2.0:
+                self._server_ram_last_mono = _ram_now
+                self._print_server_process_ram(len(buffer))
 
     # ------------------------------------------------------------------ #
     # Inference loop (background thread)

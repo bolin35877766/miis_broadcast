@@ -211,7 +211,7 @@ class SocketClientRunner(QtCore.QThread):
         """Return (current_qsize, maxsize) for the outgoing JPEG queue (telemetry)."""
         return self._frame_queue.qsize(), _FRAME_QUEUE_MAX
 
-    def send_obs_track_diagnostic(
+    def send_client_diagnostic(
         self,
         rss_mib: float,
         jpeg_q_used: int,
@@ -219,8 +219,7 @@ class SocketClientRunner(QtCore.QThread):
         sys_ram_pct: float,
     ) -> None:
         """
-        Send optional thin-client RAM / queue stats to the server so they print on the
-        same stdout as ByteTrack FPS lines (server terminal), not only the GUI console.
+        Send thin-client RAM / JPEG queue stats so the server can print them on stdout.
         """
         if self._sock is None or self._stop_requested:
             return
