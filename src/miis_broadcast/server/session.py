@@ -286,7 +286,7 @@ class ClientSession:
             )
 
     # ------------------------------------------------------------------ #
-    # Thin-client diagnostic (same stdout as ByteTrack FPS prints in bytetrack_tracker)
+    # Thin-client CLIENT_DIAG → printed on server stdout as [Client] lines
     # ------------------------------------------------------------------ #
 
     def _handle_client_diag(self, msg: dict) -> None:

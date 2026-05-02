@@ -1379,7 +1379,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._remote_client_ram_timer = None
 
     def _start_remote_client_ram_monitor(self) -> None:
-        """Every ~2s: client RSS, JPEG out queue, system RAM; mirror to server via CLIENT_DIAG."""
+        """Every ~2s: send CLIENT_DIAG so the server prints [Client] (no duplicate GUI stdout)."""
         self._stop_remote_client_ram_monitor()
         timer = QtCore.QTimer(self)
         timer.setInterval(2000)
@@ -1403,14 +1403,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"[Client] RSS={rss_mb:.1f} MiB | JPEG send_queue={q_used}/{q_max} | "
                 f"system_RAM_used={sys_pct:.0f}%"
             )
-            print(msg)
             if hasattr(self, "session_logger") and self.session_logger.current_log_file:
                 self.session_logger.log_system("Memory", "INFO", msg)
             self._socket_runner.send_client_diagnostic(
                 rss_mb, q_used, q_max, sys_pct
             )
         except Exception as e:
-            print(f"[Client] telemetry failed: {e}")
+            print(f"[Remote] telemetry send failed: {e}")
 
     @QtCore.Slot(str, int)
     def on_remote_connect_clicked(self, host: str, port: int) -> None:

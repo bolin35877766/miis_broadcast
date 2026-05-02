@@ -14,7 +14,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
   - **Free Switch** — both Webcam and OBS Virtual Camera are opened at startup; only the **active** source (Webcam, VR, or stitched dual) is emitted to the video panel and forwarded to LiveCC (local/remote). Switching is a **software selector** only — **no camera reconnection**, sub-frame latency typical.
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Thin-client telemetry**: The **inference server** prints **process RSS** and, optionally, **sender-PC** stats (JPEG queue + client RSS) on the same stdout as LiveCC timing lines, so network + GPU resource usage is observable in one terminal. Sender stats use a tiny `CLIENT_DIAG` control message (~hundreds of bytes, no meaningful overhead).
+- **Thin-client telemetry**: During **any** remote inference, the **inference server** stdout shows **`[Client]`** (sender RSS, JPEG send queue, system RAM via `CLIENT_DIAG`) and **`[Server]`** (server process RSS, LiveCC buffer depth) on a shared ~2 s cadence. The GUI does **not** print duplicate `[Client]` lines to its own console; optional **session log** may still record the same payload under `[Memory]` for the session file.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -131,7 +131,7 @@ Key modules:
 | Path | Role |
 |---|---|
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
-| [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, optional thin-client diagnostics |
+| [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, `send_client_diagnostic` / `CLIENT_DIAG` during remote inference |
 | [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **single-slot queue** → decode → LiveCC; PREVIEW capped at **`_PREVIEW_SAMPLE_OUT_FPS`** Hz; stdout RAM telemetry |
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — **Free Switch** source bar (`切換輸入源`); `obs_track` shows local ByteTrack annotated preview |
 | [src/miis_broadcast/workers/free_switch.py](src/miis_broadcast/workers/free_switch.py) | `FreeSwitchCameraThread` — dual always-on captures; selectable Webcam / VR / stitched dual (`1280×480`); same frame pipeline as `DualSourceCameraThread` for wire |
@@ -342,19 +342,19 @@ Every message on the socket is framed as:
 | `PING` / `PONG` | bidirectional | — | — |
 | `CLIENT_DIAG` | C → S | optional `rss_mib`, `jpeg_q_used`, `jpeg_q_max`, `sys_ram_pct` | — |
 
-### Memory telemetry (remote Webcam + Tracking)
+### Memory telemetry (remote inference)
 
-When inference runs on a **remote** server (`obs_track` + TCP), **RSS** readings refer to **different machines** unless stated otherwise:
+When inference runs on a **remote** server (file, webcam, OBS, dual sync, free switch, or `obs_track` with TCP), **`[Client]`** and **`[Server]`** lines refer to **two different machines**. They are printed on the **server** terminal (the process that runs `miis_broadcast.server`).
 
-| Printed line (server **stdout**, same stream as ByteTrack FPS `print`s) | Meaning |
+| Printed line (server **stdout**) | Meaning |
 |---|---|
-| `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | Tracking throughput on the **inference host** (existing `ByteTrackWrapper` log, every 20 frames). |
-| `[Server RSS] full python process (LiveCC+ByteTrack+decode): …` | **Whole** `miis_broadcast.server` process RSS (LiveCC / Qwen **and** ByteTrack / YOLO **and** JPEG decode — not split per model). Emitted every **20** ByteTrack frames (same cadence as FPS lines). |
-| `[ByteTrack] Thin-client (sender PC) RAM: …` | **Laptop / GUI machine** that encodes JPEGs and sends `FRAME`s: client RSS, outbound JPEG queue depth, and sender system RAM. The client forwards a small `CLIENT_DIAG` message so these lines appear in the **server terminal** next to FPS, not only in the GUI console. |
+| `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | Only when **ByteTrack runs on the inference host** (e.g. server-side `obs_track`): tracker timing via `ByteTrackWrapper`, every **20** frames. |
+| `[Server] RSS=… \| livecc_buffer=… \| system_RAM_used=…%` | **This** `miis_broadcast.server` Python process RSS, LiveCC clip buffer length, and host RAM % — throttled to about **every 2 s** after a decoded JPEG (all thin-client modes). |
+| `[Client] RSS=… \| JPEG send_queue=… \| system_RAM_used=…%` | **Sender / GUI machine**: stats sampled on the client and forwarded with `CLIENT_DIAG` (~2 s). The GUI **does not** print this line again on the client console; watch **server** stdout or the session log file. |
 
-**Tuning:** prioritise **`[Server RSS]`** and **ByteTrack Wall FPS** vs **Infer FPS** on the inference host when asking whether RAM or GPU multiplexing is the limiter. Sender-PC lines help if you suspect JPEG encode or TCP backlog on the client.
+**Tuning:** use **`[Server]`** alongside **`[Client]`** on the **same** terminal to see whether the bottleneck is decode/LiveCC on the host or encode/TCP on the sender. When ByteTrack runs on the server, also compare **Wall FPS** vs **Infer FPS** in the `[ByteTrack] Frame` lines.
 
-The diagnostic payload is a short JSON message (order of **hundreds of bytes** every ~2 s from the GUI timer). It does not meaningfully block other OS processes; control sends hold the client socket lock only for that small `sendall`.
+The `CLIENT_DIAG` payload is a short JSON message (order of **hundreds of bytes** every ~2 s). Control sends hold the client socket lock only for that small `sendall`.
 
 ### Server logging
 
@@ -393,19 +393,19 @@ Inference: remote
 [HH:MM:SS] [GUI] [INFO] Starting inference (Style: …, TTS: …)
 [HH:MM:SS] [COMMENTARY] AI-generated commentary text…
 [HH:MM:SS] [GUI] [INFO] Stopping inference
-[HH:MM:SS] [Memory] [INFO] sender_PC RSS=… MiB | JPEG send_queue=… | …
+[HH:MM:SS] [Memory] [INFO] [Client] RSS=… MiB | JPEG send_queue=…/… | system_RAM_used=…%
 ```
 
 | Line type | Meaning |
 |-----------|---------|
 | `[GUI] [INFO]` | System events from the GUI (start, stop, remote connection changes, errors) |
-| `[Memory] [INFO]` | (Remote `obs_track` only) Sender-PC RSS and outbound JPEG queue depth written on the **client** while a session file is open; does **not** duplicate the server’s own RSS (see **Memory telemetry** above for server stdout). |
+| `[Memory] [INFO]` | **Remote inference only:** sender-PC RSS, JPEG send queue, and system RAM (same text as server stdout **`[Client]`**), written to the **session file** only — not echoed to the GUI console. Server RSS remains on the host **`[Server]`** stdout lines (see **Memory telemetry** above). |
 | `[COMMENTARY]` | Every segment of AI commentary as it arrives from LiveCC (remote or local) |
 | `Inference: remote` | LiveCC ran on the remote server (thin-client mode) |
 | `Inference: local` | LiveCC ran on the local GPU |
 
-All five input modes produce the same file structure.  The only differences per mode are
-the `Input Mode:` header line and the content of the `[COMMENTARY]` entries.
+All input modes share the same file layout. The `Input Mode:` header and `[COMMENTARY]`
+content differ per session.
 
 ---
 

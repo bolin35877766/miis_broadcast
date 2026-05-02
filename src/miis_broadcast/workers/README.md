@@ -258,39 +258,34 @@ When using remote inference, the server (`python -m miis_broadcast.server`) emit
 **`tx_previews = 0` is normal** for `camera`, `obs`, `file`, `dual_sync`, and `free_switch` because
 `MSG_PREVIEW` is only sent in `obs_track` mode.
 
-Remote inference also uses **`MSG_CLIENT_DIAG`** (optional): the GUI sends compact JSON
-every ~2 s with sender-PC RSS, outbound JPEG queue depth, and sender system RAM.
-The session prints one line per message on **stdout** — see below (not mixed into the
-`logging` stderr table).
+Remote inference uses **`MSG_CLIENT_DIAG`**: the GUI sends compact JSON about every **2 s**
+during **any** connected remote session (all modes that stream frames to the server)
+with sender-PC RSS, outbound JPEG queue depth, and sender system RAM.
+The session prints one **`[Client]`** line per message on **server stdout** — see below
+(not mixed into the `logging` stderr table). The GUI **does not** echo the same line
+to its own console; optional client **session log** may still record it under `[Memory]`.
 
-### Server stdout (`print`, same terminal as ByteTrack FPS)
+### Server stdout (`print`, correlates with ByteTrack FPS when applicable)
 
 The Python **`logging`** lines above go to **stderr**.  Separately, **stdout** carries
-`print()` lines from **`ByteTrackWrapper`** (YOLOX + tracker timing) and from
+`print()` lines from **`ByteTrackWrapper`** (YOLOX + tracker timing, when loaded on this host) and from
 **`ClientSession`** (`server/session.py`) so operators can correlate FPS and RAM in one stream:
 
 | Example prefix | Origin | Meaning |
 |---|---|---|
 | `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | `bytetrack_tracker.py` | Every **20** frames when ByteTrack runs on **this host** |
-| `[Server RSS] full python process (LiveCC+ByteTrack+decode): …` | `session.py` | **Entire server Python process** RSS (includes LiveCC + ByteTrack + OpenCV decode; labels next to FPS lines only for readability) (`obs_track`, every **20** BT frames) |
-| `[ByteTrack] Thin-client (sender PC) RAM: …` | `session.py` (payload from GUI via **`MSG_CLIENT_DIAG`**) | **Laptop / GUI** RSS, JPEG **send** queue, sender system RAM — upstream encode/TCP health |
+| `[Server] RSS=… \| livecc_buffer=… \| system_RAM_used=…%` | `session.py` | Entire server Python process RSS, LiveCC buffer length, host RAM — ~**every 2 s** after a decoded frame (all thin-client modes) |
+| `[Client] RSS=… \| JPEG send_queue=… \| system_RAM_used=…%` | `session.py` (`MSG_CLIENT_DIAG` from GUI) | Sender machine: encode/TCP queue health; printed on **server** terminal only |
 
-**Remote vs local:** with **thin client + `obs_track`**, tracking runs on the server, so
-these lines appear on the **remote machine’s** terminal (SSH/tmux). Local-only
-`obs_track` (`CameraByteTrackThread` on your PC) prints the first line from the same
-tracker class on **your** stdout; **`[Server RSS]`** is **whole-process** RAM (LiveCC + ByteTrack +
-decode), not ByteTrack-only, on whatever machine runs `miis_broadcast.server`.
+**Where tracking runs:** With the default **Webcam + Tracking** thin-client path, ByteTrack runs on the **client** and the server usually **does not** load ByteTrack (`MSG_START` mode `camera`). Then **`[ByteTrack] Frame`** lines appear on the **client** (local tracker), while **`[Server]`** / **`[Client]`** still print on the **server** terminal. If the server runs `obs_track` itself, ByteTrack FPS lines appear there too.
 
-**Server (`obs_track`):** incoming `FRAME` JPEGs are decoded on a dedicated thread.
-`bt.process()` and `live_cc_from_frames` run sequentially on that thread; all network I/O
-runs freely outside it. The session uses a **single-slot `_frame_queue`** (`maxsize=1`,
+**Server (`obs_track` on host):** incoming `FRAME` JPEGs are decoded on a dedicated thread.
+`bt.process()` and inference run in the pipeline described in `session.py`; network I/O
+runs outside the hot path. The session uses a **single-slot `_frame_queue`** (`maxsize=1`,
 latest FRAME overwrites). **PREVIEW** messages are **subsampled** to ≈**15 Hz** (see
-`_PREVIEW_SAMPLE_OUT_FPS` in `session.py`). On the **client**,
-`MainWindow._OBS_TRACK_PREVIEW_HOLD_SEC` (default **2.5 s**) suppresses raw camera between
-PREVIEW updates to avoid flickering.
+`_PREVIEW_SAMPLE_OUT_FPS` in `session.py`).
 
-For a full narrative (30→15 phase sampling, PREVIEW caps, protocol field list), see the root
-**Memory telemetry (remote Webcam + Tracking)** section in [README.md](../../../README.md).
+For protocol fields and tuning notes, see root **Memory telemetry (remote inference)** in [README.md](../../../README.md).
 
 ---
 
@@ -309,19 +304,20 @@ Inference: remote
 [HH:MM:SS] [COMMENTARY] AI-generated commentary text…
 [HH:MM:SS] [GUI] [INFO] [Remote] 連線中斷: …
 [HH:MM:SS] [GUI] [INFO] Stopping inference
-[HH:MM:SS] [Memory] [INFO] sender_PC RSS=… MiB | JPEG send_queue=… | sender system_RAM_used=…%
+[HH:MM:SS] [Memory] [INFO] [Client] RSS=… MiB | JPEG send_queue=… | system_RAM_used=…%
 ```
 
-**`[Memory] [INFO]`** — only when **remote `obs_track`** and a session file is active:
-sender-PC RSS / outbound queue (see **`MSG_CLIENT_DIAG`** above). Does **not** include
-server-side RSS; watch the inference host **stdout** lines for remote process RAM.
+**`[Memory] [INFO]`** — when **remote inference** is active and a session file is open:
+sender-PC stats (same payload as **`MSG_CLIENT_DIAG`** / server **`[Client]`** line).
+This is **not** printed to the GUI console; it exists for the session log. Server-side
+RSS appears only on the inference host **stdout** **`[Server]`** lines.
 
-**All five input modes produce this same structure** (except optional `[Memory]` lines).
-The `Input Mode:` header and `[COMMENTARY]` content differ; everything else is identical.
+**All input modes produce this same structure** (optional **`[Memory]`** lines appear only
+when inference is **remote**; local-only sessions omit them).
 
 | Header field | Values |
 |---|---|
-| `Input Mode` | `camera` / `obs` / `obs_track` / `file` / `dual_sync` |
+| `Input Mode` | `camera` / `obs` / `obs_track` / `file` / `dual_sync` / `free_switch` |
 | `Inference` | `remote` (server TCP) / `local` (on-device LiveCC) / `unknown` |
 
 ---

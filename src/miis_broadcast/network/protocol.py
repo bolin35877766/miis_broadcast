@@ -29,7 +29,7 @@ MSG_STOP    = "STOP"
 MSG_PING    = "PING"
 MSG_PONG    = "PONG"
 MSG_PREVIEW = "PREVIEW"  # JPEG frame with tracking overlay for thin-client GUI
-# Thin-client telemetry (optional) — echoed on server stdout next to ByteTrack FPS prints
+# Thin-client telemetry — echoed on server stdout as [Client] lines (~2s, remote inference)
 MSG_CLIENT_DIAG = "CLIENT_DIAG"
 
 _HEADER_FMT  = ">II"
