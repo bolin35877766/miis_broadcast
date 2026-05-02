@@ -15,6 +15,7 @@ import os
 import time
 import types
 import logging
+import warnings
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -125,6 +126,13 @@ class ByteTrackWrapper:
             sys.path.insert(0, str(repo))
         logger.info(f"[ByteTrack] repo path: {repo}")
         print(f"[ByteTrack] 使用 repo: {repo}")
+
+        # Silence PyTorch UserWarning from YOLOX internals (meshgrid indexing).
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*torch\.meshgrid.*",
+            category=UserWarning,
+        )
 
         # ── 2. Import yolox after path is set ──────────────────────────────
         import torch

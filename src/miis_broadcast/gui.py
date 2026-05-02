@@ -1929,7 +1929,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.set_start_button_state(True)
         self.control_panel.set_tts_controls_enabled(False)  # Lock during inference
         self.text_output.setText("")
-        self._obs_drop_logged = False
 
         self.append_text(f"Starting inference (Style: {style_label}, TTS: {self.tts_mode})")
         self.append_text(f"開始推論 (Style: {style_label}, TTS: {self.tts_mode})")
@@ -2084,11 +2083,10 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(np.ndarray)
     def on_obs_track_subject_frame(self, subject_crop_rgb: np.ndarray) -> None:
         """Forward the padded subject crop (RGB) to LiveCC inference (local or remote)."""
-        if not self.is_inference_running or self.mode != "obs_track":
-            if not hasattr(self, '_obs_drop_logged'):
-                self._obs_drop_logged = True
-                print(f"[GUI] ⚠️  on_obs_track_subject_frame dropped: "
-                      f"is_inference_running={self.is_inference_running}, mode='{self.mode}'")
+        if self.mode != "obs_track":
+            return
+        # Before Start: thread still emits subject crops — expected; do not warn.
+        if not self.is_inference_running:
             return
 
         fixed = cv2.resize(subject_crop_rgb, (640, 480))
