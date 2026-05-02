@@ -14,7 +14,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
   - **Free Switch** — both Webcam and OBS Virtual Camera are opened at startup; only the **active** source (Webcam, VR, or stitched dual) is emitted to the video panel and forwarded to LiveCC (local/remote). Switching is a **software selector** only — **no camera reconnection**, sub-frame latency typical.
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Thin-client telemetry**: During **any** remote inference, the **inference server** stdout shows **`[Client]`** (sender RSS, JPEG send queue, system RAM via `CLIENT_DIAG`) and **`[Server]`** (server process RSS, LiveCC buffer depth) on a shared ~2 s cadence. The GUI does **not** print duplicate `[Client]` lines to its own console; optional **session log** may still record the same payload under `[Memory]` for the session file.
+- **Thin-client telemetry**: During **any** remote inference, the **inference server** stdout shows **`[Client]`** and **`[Server]`** lines: host **RAM** (RSS, system %) plus **CUDA VRAM** on **device 0** where available (global used/total, `torch_alloc` for this process). Lines are on a shared ~2 s cadence via `CLIENT_DIAG` and decode-thread sampling. The GUI does **not** print duplicate `[Client]` lines to its own console; optional **session log** may still record the same payload under `[Memory]`.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -142,6 +142,7 @@ Key modules:
 | [src/miis_broadcast/core/models/openai_tts.py](src/miis_broadcast/core/models/openai_tts.py) | OpenAI Realtime WebSocket TTS engine |
 | [src/miis_broadcast/core/models/chatterbox_tts.py](src/miis_broadcast/core/models/chatterbox_tts.py) | Local ChatterBox TTS engine |
 | [src/miis_broadcast/core/utils/session_logger.py](src/miis_broadcast/core/utils/session_logger.py) | SessionLogger — handles unified logging of system events and commentary |
+| [src/miis_broadcast/core/utils/gpu_telemetry.py](src/miis_broadcast/core/utils/gpu_telemetry.py) | CUDA VRAM snapshot (`torch.cuda.mem_get_info`, `memory_allocated`) for `[Client]` / `[Server]` lines |
 | [src/miis_broadcast/core/prompt/prompt_manager.py](src/miis_broadcast/core/prompt/prompt_manager.py) | Loads and builds commentary style prompts from YAML |
 | [configs/livecc_prompts.yml](configs/livecc_prompts.yml) | Commentary style definitions |
 | [configs/models.yml](configs/models.yml) | Model registry — LiveCC and ByteTrack configs |
@@ -340,7 +341,7 @@ Every message on the socket is framed as:
 | `ERROR` | S → C | `msg` | — |
 | `STOP` | C → S | — | — |
 | `PING` / `PONG` | bidirectional | — | — |
-| `CLIENT_DIAG` | C → S | optional `rss_mib`, `jpeg_q_used`, `jpeg_q_max`, `sys_ram_pct` | — |
+| `CLIENT_DIAG` | C → S | `rss_mib`, `jpeg_q_used`, `jpeg_q_max`, `sys_ram_pct`; optional `gpu_vram_used_mib`, `gpu_vram_total_mib`, `gpu_torch_alloc_mib` (CUDA device **0**, when available) | — |
 
 ### Memory telemetry (remote inference)
 
@@ -349,8 +350,8 @@ When inference runs on a **remote** server (file, webcam, OBS, dual sync, free s
 | Printed line (server **stdout**) | Meaning |
 |---|---|
 | `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | Only when **ByteTrack runs on the inference host** (e.g. server-side `obs_track`): tracker timing via `ByteTrackWrapper`, every **20** frames. |
-| `[Server] RSS=… \| livecc_buffer=… \| system_RAM_used=…%` | **This** `miis_broadcast.server` Python process RSS, LiveCC clip buffer length, and host RAM % — throttled to about **every 2 s** after a decoded JPEG (all thin-client modes). |
-| `[Client] RSS=… \| JPEG send_queue=… \| system_RAM_used=…%` | **Sender / GUI machine**: stats sampled on the client and forwarded with `CLIENT_DIAG` (~2 s). The GUI **does not** print this line again on the client console; watch **server** stdout or the session log file. |
+| `[Server] RSS=… \| livecc_buffer=… \| system_RAM_used=…% \| GPU_VRAM=…` | Same as before, plus **CUDA device 0** VRAM: global used/total MiB (from `torch.cuda.mem_get_info`), **%**, and `torch_alloc` = PyTorch allocator bytes for **this process** on that device. `GPU_VRAM=n/a` if CUDA is unavailable. |
+| `[Client] RSS=… \| JPEG send_queue=… \| system_RAM_used=…% \| GPU_VRAM=…` | Same for the **sender** machine; GPU fields come from the GUI’s snapshot (also device **0**). Printed on **server** stdout from `CLIENT_DIAG`; session log file may duplicate under `[Memory]`. |
 
 **Tuning:** use **`[Server]`** alongside **`[Client]`** on the **same** terminal to see whether the bottleneck is decode/LiveCC on the host or encode/TCP on the sender. When ByteTrack runs on the server, also compare **Wall FPS** vs **Infer FPS** in the `[ByteTrack] Frame` lines.
 
@@ -393,13 +394,13 @@ Inference: remote
 [HH:MM:SS] [GUI] [INFO] Starting inference (Style: …, TTS: …)
 [HH:MM:SS] [COMMENTARY] AI-generated commentary text…
 [HH:MM:SS] [GUI] [INFO] Stopping inference
-[HH:MM:SS] [Memory] [INFO] [Client] RSS=… MiB | JPEG send_queue=…/… | system_RAM_used=…%
+[HH:MM:SS] [Memory] [INFO] [Client] RSS=… MiB | JPEG send_queue=…/… | system_RAM_used=…% | GPU_VRAM=… or n/a …
 ```
 
 | Line type | Meaning |
 |-----------|---------|
 | `[GUI] [INFO]` | System events from the GUI (start, stop, remote connection changes, errors) |
-| `[Memory] [INFO]` | **Remote inference only:** sender-PC RSS, JPEG send queue, and system RAM (same text as server stdout **`[Client]`**), written to the **session file** only — not echoed to the GUI console. Server RSS remains on the host **`[Server]`** stdout lines (see **Memory telemetry** above). |
+| `[Memory] [INFO]` | **Remote inference only:** sender PC metrics (same as server stdout **`[Client]`**), including **`GPU_VRAM`** when CUDA is available on the sender — written to the **session file** only, not the GUI console. Server RSS and server GPU stay on the host **`[Server]`** lines. |
 | `[COMMENTARY]` | Every segment of AI commentary as it arrives from LiveCC (remote or local) |
 | `Inference: remote` | LiveCC ran on the remote server (thin-client mode) |
 | `Inference: local` | LiveCC ran on the local GPU |

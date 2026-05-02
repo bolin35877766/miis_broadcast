@@ -259,8 +259,9 @@ When using remote inference, the server (`python -m miis_broadcast.server`) emit
 `MSG_PREVIEW` is only sent in `obs_track` mode.
 
 Remote inference uses **`MSG_CLIENT_DIAG`**: the GUI sends compact JSON about every **2 s**
-during **any** connected remote session (all modes that stream frames to the server)
-with sender-PC RSS, outbound JPEG queue depth, and sender system RAM.
+during **any** connected remote session with sender-PC RSS, outbound JPEG queue, system RAM,
+and optional **CUDA device 0** fields (`gpu_vram_used_mib`, `gpu_vram_total_mib`, `gpu_torch_alloc_mib`)
+when PyTorch sees CUDA on the client.
 The session prints one **`[Client]`** line per message on **server stdout** — see below
 (not mixed into the `logging` stderr table). The GUI **does not** echo the same line
 to its own console; optional client **session log** may still record it under `[Memory]`.
@@ -274,8 +275,8 @@ The Python **`logging`** lines above go to **stderr**.  Separately, **stdout** c
 | Example prefix | Origin | Meaning |
 |---|---|---|
 | `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | `bytetrack_tracker.py` | Every **20** frames when ByteTrack runs on **this host** |
-| `[Server] RSS=… \| livecc_buffer=… \| system_RAM_used=…%` | `session.py` | Entire server Python process RSS, LiveCC buffer length, host RAM — ~**every 2 s** after a decoded frame (all thin-client modes) |
-| `[Client] RSS=… \| JPEG send_queue=… \| system_RAM_used=…%` | `session.py` (`MSG_CLIENT_DIAG` from GUI) | Sender machine: encode/TCP queue health; printed on **server** terminal only |
+| `[Server] RSS=… \| livecc_buffer=… \| system_RAM_used=…% \| GPU_VRAM=…` | `session.py` | Host RAM + **CUDA 0** global VRAM + PyTorch `torch_alloc` for this process (`GPU_VRAM=n/a` without CUDA) |
+| `[Client] RSS=… \| JPEG send_queue=… \| system_RAM_used=…% \| GPU_VRAM=…` | `session.py` (`MSG_CLIENT_DIAG`) | Sender machine: same metrics; GPU from client snapshot |
 
 **Where tracking runs:** With the default **Webcam + Tracking** thin-client path, ByteTrack runs on the **client** and the server usually **does not** load ByteTrack (`MSG_START` mode `camera`). Then **`[ByteTrack] Frame`** lines appear on the **client** (local tracker), while **`[Server]`** / **`[Client]`** still print on the **server** terminal. If the server runs `obs_track` itself, ByteTrack FPS lines appear there too.
 
@@ -304,13 +305,13 @@ Inference: remote
 [HH:MM:SS] [COMMENTARY] AI-generated commentary text…
 [HH:MM:SS] [GUI] [INFO] [Remote] 連線中斷: …
 [HH:MM:SS] [GUI] [INFO] Stopping inference
-[HH:MM:SS] [Memory] [INFO] [Client] RSS=… MiB | JPEG send_queue=… | system_RAM_used=…%
+[HH:MM:SS] [Memory] [INFO] [Client] RSS=… | JPEG send_queue=… | system_RAM_used=…% | GPU_VRAM=…
 ```
 
 **`[Memory] [INFO]`** — when **remote inference** is active and a session file is open:
-sender-PC stats (same payload as **`MSG_CLIENT_DIAG`** / server **`[Client]`** line).
+sender-PC stats (same payload as **`MSG_CLIENT_DIAG`** / server **`[Client]`** line), including **`GPU_VRAM`** when the client has CUDA.
 This is **not** printed to the GUI console; it exists for the session log. Server-side
-RSS appears only on the inference host **stdout** **`[Server]`** lines.
+RSS and VRAM appear only on the inference host **stdout** **`[Server]`** lines.
 
 **All input modes produce this same structure** (optional **`[Memory]`** lines appear only
 when inference is **remote**; local-only sessions omit them).

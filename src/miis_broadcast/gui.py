@@ -22,6 +22,7 @@ from .workers.free_switch import FreeSwitchCameraThread, SOURCE_WEBCAM, SOURCE_V
 # so this process never loads the VLM on a thin client.
 from .core.prompt.prompt_manager import PromptManager
 from .core.utils.session_logger import SessionLogger
+from .core.utils.gpu_telemetry import cuda_vram_snapshot, vram_log_suffix
 from .network.client import SocketClientRunner
 from collections import deque
 
@@ -1399,14 +1400,29 @@ class MainWindow(QtWidgets.QMainWindow):
             rss_mb = psutil.Process().memory_info().rss / (1024.0**2)
             sys_pct = psutil.virtual_memory().percent
             q_used, q_max = self._socket_runner.get_frame_send_queue_levels()
+            gpu_snap = cuda_vram_snapshot(0)
+            gpu_suffix = vram_log_suffix(gpu_snap)
             msg = (
                 f"[Client] RSS={rss_mb:.1f} MiB | JPEG send_queue={q_used}/{q_max} | "
-                f"system_RAM_used={sys_pct:.0f}%"
+                f"system_RAM_used={sys_pct:.0f}%{gpu_suffix}"
             )
             if hasattr(self, "session_logger") and self.session_logger.current_log_file:
                 self.session_logger.log_system("Memory", "INFO", msg)
+            gu = gt = None
+            if gpu_snap is not None:
+                gu = gpu_snap.used_mib
+                gt = gpu_snap.total_mib
+                g_torch = gpu_snap.torch_alloc_mib
+            else:
+                g_torch = None
             self._socket_runner.send_client_diagnostic(
-                rss_mb, q_used, q_max, sys_pct
+                rss_mb,
+                q_used,
+                q_max,
+                sys_ram_pct=sys_pct,
+                gpu_vram_used_mib=gu,
+                gpu_vram_total_mib=gt,
+                gpu_torch_alloc_mib=g_torch,
             )
         except Exception as e:
             print(f"[Remote] telemetry send failed: {e}")

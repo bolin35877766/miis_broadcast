@@ -33,6 +33,11 @@ from ..network.protocol import (
     MSG_STATUS, MSG_STOP,
     PROTOCOL_VERSION, pack_message, read_message,
 )
+from ..core.utils.gpu_telemetry import (
+    cuda_vram_snapshot,
+    vram_log_suffix,
+    vram_log_suffix_from_wire,
+)
 
 log = logging.getLogger(__name__)
 
@@ -300,9 +305,19 @@ class ClientSession:
             sp = float(msg.get("sys_ram_pct", 0.0))
         except (TypeError, ValueError):
             return
+        gu = msg.get("gpu_vram_used_mib")
+        gt = msg.get("gpu_vram_total_mib")
+        gto = msg.get("gpu_torch_alloc_mib")
+        try:
+            gu_f = float(gu) if gu is not None else None
+            gt_f = float(gt) if gt is not None else None
+            gto_f = float(gto) if gto is not None else None
+        except (TypeError, ValueError):
+            gu_f = gt_f = gto_f = None
+        gpu_sfx = vram_log_suffix_from_wire(gu_f, gt_f, gto_f)
         print(
             f"[Client] RSS={rss:.1f} MiB | JPEG send_queue={qu}/{qm} | "
-            f"system_RAM_used={sp:.0f}%"
+            f"system_RAM_used={sp:.0f}%{gpu_sfx}"
         )
 
     @staticmethod
@@ -317,9 +332,11 @@ class ClientSession:
             sys_pct = psutil.virtual_memory().percent
         except Exception:
             return
+        snap = cuda_vram_snapshot(0)
+        gpu_sfx = vram_log_suffix(snap)
         print(
             f"[Server] RSS={rss_mib:.1f} MiB | livecc_buffer={buffer_len} | "
-            f"system_RAM_used={sys_pct:.0f}%"
+            f"system_RAM_used={sys_pct:.0f}%{gpu_sfx}"
         )
 
     # ------------------------------------------------------------------ #

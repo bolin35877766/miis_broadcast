@@ -217,23 +217,29 @@ class SocketClientRunner(QtCore.QThread):
         jpeg_q_used: int,
         jpeg_q_max: int,
         sys_ram_pct: float,
+        gpu_vram_used_mib: Optional[float] = None,
+        gpu_vram_total_mib: Optional[float] = None,
+        gpu_torch_alloc_mib: Optional[float] = None,
     ) -> None:
         """
-        Send thin-client RAM / JPEG queue stats so the server can print them on stdout.
+        Send thin-client RAM / JPEG queue / optional CUDA VRAM stats for server stdout.
         """
         if self._sock is None or self._stop_requested:
             return
-        self._send_ctrl(
-            pack_message(
-                {
-                    "type": MSG_CLIENT_DIAG,
-                    "rss_mib": float(rss_mib),
-                    "jpeg_q_used": int(jpeg_q_used),
-                    "jpeg_q_max": int(jpeg_q_max),
-                    "sys_ram_pct": float(sys_ram_pct),
-                }
-            )
-        )
+        payload: dict = {
+            "type": MSG_CLIENT_DIAG,
+            "rss_mib": float(rss_mib),
+            "jpeg_q_used": int(jpeg_q_used),
+            "jpeg_q_max": int(jpeg_q_max),
+            "sys_ram_pct": float(sys_ram_pct),
+        }
+        if gpu_vram_used_mib is not None:
+            payload["gpu_vram_used_mib"] = float(gpu_vram_used_mib)
+        if gpu_vram_total_mib is not None:
+            payload["gpu_vram_total_mib"] = float(gpu_vram_total_mib)
+        if gpu_torch_alloc_mib is not None:
+            payload["gpu_torch_alloc_mib"] = float(gpu_torch_alloc_mib)
+        self._send_ctrl(pack_message(payload))
 
     def start_inference(self, mode: str, query: str) -> None:
         """Tell server to begin inference with given mode and query prompt."""
