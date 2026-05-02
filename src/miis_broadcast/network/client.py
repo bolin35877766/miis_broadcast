@@ -26,7 +26,7 @@ from PySide6 import QtCore
 
 from .protocol import (
     MSG_ACK, MSG_CLIENT_DIAG, MSG_ERROR, MSG_FRAME, MSG_HELLO,
-    MSG_PING, MSG_PONG, MSG_PREVIEW, MSG_SEGMENT, MSG_START,
+    MSG_PING, MSG_PONG, MSG_SEGMENT, MSG_START,
     MSG_STATUS, MSG_STOP,
     PROTOCOL_VERSION, pack_message, read_message,
 )
@@ -54,7 +54,6 @@ class SocketClientRunner(QtCore.QThread):
         signal_segment(f, f, s) — start_t, stop_t, text from server
         signal_status(str)      — informational message from server
         signal_error(str)       — error message from server
-        signal_preview(object)  — BGR ndarray from server tracking overlay
     """
 
     signal_connected     = QtCore.Signal()
@@ -63,8 +62,6 @@ class SocketClientRunner(QtCore.QThread):
     signal_segment       = QtCore.Signal(float, float, str)
     signal_status        = QtCore.Signal(str)
     signal_error         = QtCore.Signal(str)
-    # BGR numpy (HxWx3 uint8) — server-side tracking preview with boxes
-    signal_preview       = QtCore.Signal(object)
 
     def __init__(
         self,
@@ -299,11 +296,3 @@ class SocketClientRunner(QtCore.QThread):
             self.signal_error.emit(str(msg.get("msg", "")))
         elif t == MSG_PING:
             self._send_ctrl(pack_message({"type": MSG_PONG}))
-        elif t == MSG_PREVIEW:
-            if not binary:
-                return
-            nparr = np.frombuffer(binary, dtype=np.uint8)
-            bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if bgr is not None:
-                # copy(): recv buffer may be reused; GUI thread must own the array
-                self.signal_preview.emit(bgr.copy())

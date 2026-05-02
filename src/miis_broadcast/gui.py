@@ -1985,11 +1985,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         elif self.mode in ("camera", "obs", "obs_track", "dual_sync", "free_switch"):
             if self._socket_runner is not None:
-                # For obs_track: ByteTrack runs locally; we only stream subject crops to
-                # the server, so the server just needs to run LiveCC — not ByteTrack.
-                # Send mode="camera" so the server skips its own ByteTrack loading.
-                server_mode = "camera" if self.mode == "obs_track" else self.mode
-                self._socket_runner.start_inference(server_mode, prompt)
+                # ByteTrack runs only on the client; the server decodes JPEG + LiveCC. Report real
+                # mode so server logs match the GUI (MSG_START "mode" is informational only).
+                self._socket_runner.start_inference(self.mode, prompt)
                 self._start_remote_client_ram_monitor()
             elif self.livecc_model is not None:
                 self.signal_start_camera_livecc.emit(prompt)

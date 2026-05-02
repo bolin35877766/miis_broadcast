@@ -76,8 +76,8 @@ Webcam
                                     |-- local?  --> cam_worker.push_frame()
 ```
 
-The server receives **only subject-crop JPEGs** (640x480). It skips ByteTrack loading because
-the client sends `MSG_START mode="camera"` -- the server only needs GPU for LiveCC.
+The server receives **only subject-crop JPEGs** (640×480) in this path — **no** ByteTrack on the
+host; the server decodes JPEG and runs LiveCC only.
 ---
 
 ## Dual-Source Sync Worker (`dual_source.py`)
@@ -173,7 +173,7 @@ No `VideoCapture` reopen; switching is a Python variable flip + next-frame retri
 
 ### Inference
 
-Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_switch")` routes JPEGs to the server; server treats it like plain camera ingestion (ByteTrack **not** loaded unless `obs_track`). See root [README.md](../../../README.md) **Free Switch** subsection.
+Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_switch")` routes JPEGs to the server; the headless server never loads ByteTrack. See root [README.md](../../../README.md) **Free Switch** subsection.
 
 ---
 
