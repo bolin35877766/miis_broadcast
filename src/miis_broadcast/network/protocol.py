@@ -28,7 +28,7 @@ MSG_ERROR   = "ERROR"
 MSG_STOP    = "STOP"
 MSG_PING    = "PING"
 MSG_PONG    = "PONG"
-MSG_PREVIEW = "PREVIEW"  # JPEG frame with tracking overlay for thin-client GUI
+MSG_PREVIEW = "PREVIEW"  # Reserved: optional JPEG from server to client (not used by headless server)
 # CLIENT_DIAG: thin-client stats (RAM + optional CUDA VRAM on device 0) for server stdout
 MSG_CLIENT_DIAG = "CLIENT_DIAG"
 

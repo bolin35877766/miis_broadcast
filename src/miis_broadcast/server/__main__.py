@@ -58,14 +58,12 @@ def main() -> None:
     args = parser.parse_args()
 
     # ------------------------------------------------------------------ #
-    # Load model config
+    # Validate / load model config (paths, YAML). Server does not load ByteTrack on host.
     # ------------------------------------------------------------------ #
-    bytetrack_cfg: dict = {}
     try:
         from miis_broadcast.core.utils.config import parse_configs
-        model_cfg = parse_configs(args.config)
-        # YAML null or missing key must not leave None (breaks "if not bytetrack_cfg")
-        bytetrack_cfg = model_cfg.get("bytetrack") or {}
+
+        parse_configs(args.config)
         log.info("Loaded model config from %s", args.config)
     except Exception as e:
         log.warning("Could not load model config %s: %s", args.config, e)
@@ -98,11 +96,11 @@ def main() -> None:
             log.info("New client connected: %s", addr)
 
             from miis_broadcast.server.session import ClientSession
+
             session = ClientSession(
                 sock=client_sock,
                 addr=addr,
                 livecc_model=livecc_model,
-                bytetrack_cfg=bytetrack_cfg,
             )
             t = threading.Thread(target=session.run, daemon=True, name=f"session-{addr}")
             t.start()

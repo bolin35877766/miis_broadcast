@@ -237,26 +237,22 @@ When using remote inference, the server (`python -m miis_broadcast.server`) emit
 |----------|---------|
 | `MSG_START mode=obs query_len=N` | Client clicked Start; `mode` is the input source |
 | `Inference START mode=obs` | Inference loop thread started |
-| `ByteTrack loaded for mode=obs_track` | ByteTrack model loaded successfully (**obs_track only**) |
-| `obs_track but ByteTrack not loaded — …` | ByteTrack load failed; preview will be raw frames (**obs_track only**) |
 | `First FRAME decoded shape=… t=…` | First frame successfully decoded from client |
-| `FRAME stats rx=120 tx_previews=0 buffer_len=119 mode=obs` | Periodic stats every 120 received frames |
+| `FRAME stats rx=120 pending_jpeg=0 mode=obs` | Periodic stats every 120 received frames |
 | `LiveCC run #N buffer_size=M clip_ok` | Background inference cycle started (≈ every 2 s) |
 | `SEGMENT out #N t=[s,e] text…` | Commentary sent to client (logged on #1 and every 10th; others at DEBUG) |
-| `MSG_STOP rx_frames=N tx_previews=M tx_segments=K` | Client clicked Stop |
-| `Inference STOP rx_frames=N tx_previews=M tx_segments=K infer_cycles=J` | Session totals |
+| `MSG_STOP rx_frames=N tx_segments=K` | Client clicked Stop |
+| `Inference STOP rx_frames=N tx_segments=K infer_cycles=J` | Session totals |
 
 **`FRAME stats` field meanings**
 
 | Field | Meaning |
 |-------|---------|
-| `rx` | Total frames decoded from client since last reset |
-| `tx_previews` | `MSG_PREVIEW` frames sent back (tracking overlay); `0` for non-tracking modes |
-| `buffer_len` | Frames currently in the LiveCC clip buffer (max 180) |
-| `mode` | Input mode from `MSG_START` — confirms which source the client is using (`free_switch` is plain inference path, same as camera/dual for ByteTrack) |
+| `rx` | Total frames received from client since last reset |
+| `pending_jpeg` | JPEG items waiting in the single-slot decode queue (0 or 1) |
+| `mode` | Input mode from `MSG_START` — confirms which source the client is using (`free_switch` is plain inference path) |
 
-**`tx_previews = 0` is normal** for `camera`, `obs`, `file`, `dual_sync`, and `free_switch` because
-`MSG_PREVIEW` is only sent in `obs_track` mode.
+The headless server does **not** run ByteTrack and does **not** send `MSG_PREVIEW`; tracking and overlay are **client-side** (`CameraByteTrackThread`, etc.).
 
 Remote inference uses **`MSG_CLIENT_DIAG`**: the GUI sends compact JSON about every **2 s**
 during **any** connected remote session with sender-PC RSS, outbound JPEG queue, system RAM,
@@ -266,25 +262,19 @@ The session prints one **`[Client]`** line per message on **server stdout** — 
 (not mixed into the `logging` stderr table). The GUI **does not** echo the same line
 to its own console; optional client **session log** may still record it under `[Memory]`.
 
-### Server stdout (`print`, correlates with ByteTrack FPS when applicable)
+### Server stdout (`print`, correlates with LiveCC buffer / client telemetry)
 
 The Python **`logging`** lines above go to **stderr**.  Separately, **stdout** carries
-`print()` lines from **`ByteTrackWrapper`** (YOLOX + tracker timing, when loaded on this host) and from
-**`ClientSession`** (`server/session.py`) so operators can correlate FPS and RAM in one stream:
+`print()` lines from **`ClientSession`** (`server/session.py`) so operators can correlate RAM and client health in one stream:
 
 | Example prefix | Origin | Meaning |
 |---|---|---|
-| `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | `bytetrack_tracker.py` | Every **20** frames when ByteTrack runs on **this host** |
 | `[Server] RSS=… \| livecc_buffer=… \| system_RAM_used=…% \| GPU_VRAM=…` | `session.py` | Host RAM + **CUDA 0** global VRAM + PyTorch `torch_alloc` for this process (`GPU_VRAM=n/a` without CUDA) |
 | `[Client] RSS=… \| JPEG send_queue=… \| system_RAM_used=…% \| GPU_VRAM=…` | `session.py` (`MSG_CLIENT_DIAG`) | Sender machine: same metrics; GPU from client snapshot |
 
-**Where tracking runs:** With the default **Webcam + Tracking** thin-client path, ByteTrack runs on the **client** and the server usually **does not** load ByteTrack (`MSG_START` mode `camera`). Then **`[ByteTrack] Frame`** lines appear on the **client** (local tracker), while **`[Server]`** / **`[Client]`** still print on the **server** terminal. If the server runs `obs_track` itself, ByteTrack FPS lines appear there too.
+**Where tracking runs:** **Webcam + Tracking** runs ByteTrack on the **client** (`CameraByteTrackThread`); **`[ByteTrack] Frame`** lines (when enabled) appear on the **client** process. The headless remote server decodes incoming JPEGs and runs LiveCC only — **`[Server]`** / **`[Client]`** telemetry still prints on the **server** terminal from `session.py`.
 
-**Server (`obs_track` on host):** incoming `FRAME` JPEGs are decoded on a dedicated thread.
-`bt.process()` and inference run in the pipeline described in `session.py`; network I/O
-runs outside the hot path. The session uses a **single-slot `_frame_queue`** (`maxsize=1`,
-latest FRAME overwrites). **PREVIEW** messages are **subsampled** to ≈**15 Hz** (see
-`_PREVIEW_SAMPLE_OUT_FPS` in `session.py`).
+**Server hot path:** incoming `FRAME` JPEGs are decoded on a dedicated thread into a rolling buffer for LiveCC. Network I/O stays on the session thread; a **single-slot `_frame_queue`** (`maxsize=1`, latest FRAME overwrites) feeds the decoder.
 
 For protocol fields and tuning notes, see root **Memory telemetry (remote inference)** in [README.md](../../../README.md).
 

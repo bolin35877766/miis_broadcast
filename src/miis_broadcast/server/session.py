@@ -7,12 +7,12 @@ Lifecycle:
                for each inferred segment: send SEGMENT
     STOP   →  inference thread stops, wait for next START or close
 
-ByteTrack (mode=obs_track):
-    Server runs ByteTrack on raw client frames, extracts subject crop,
-    feeds the crop into the LiveCC inference pipeline.
+The server runs LiveCC on decoded BGR frames from JPEG only. ByteTrack and subject
+cropping run on the thin client when needed; the wire carries full frames or
+pre-cropped images per ``MSG_START`` mode. There is no server-side tracking and
+no ``MSG_PREVIEW`` to the client.
 """
 from __future__ import annotations
-
 import difflib
 import logging
 import socket
@@ -21,15 +21,13 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from queue import Empty, Full, Queue
-from typing import Any, Dict, Optional
-
+from typing import Any, Dict
 import cv2
 import numpy as np
 import torch
-
 from ..network.protocol import (
     MSG_ACK, MSG_CLIENT_DIAG, MSG_ERROR, MSG_FRAME, MSG_HELLO,
-    MSG_PING, MSG_PONG, MSG_PREVIEW, MSG_SEGMENT, MSG_START,
+    MSG_PING, MSG_PONG, MSG_SEGMENT, MSG_START,
     MSG_STATUS, MSG_STOP,
     PROTOCOL_VERSION, pack_message, read_message,
 )
@@ -38,11 +36,7 @@ from ..core.utils.gpu_telemetry import (
     vram_log_suffix,
     vram_log_suffix_from_wire,
 )
-
 log = logging.getLogger(__name__)
-
-# PREVIEW(MSG_PREVIEW back to thin client): max rate (aligned with thin-client FRAME sample; 15 Hz).
-_PREVIEW_SAMPLE_OUT_FPS = 15.0
 
 
 def _commentary_too_similar(prev: str, cur: str, *, ratio: float = 0.86) -> bool:
@@ -69,7 +63,6 @@ def _is_cuda_or_oom(exc: BaseException) -> bool:
 def _is_cuda_recoverable_inference_error(exc: BaseException) -> bool:
     """
     OOM, cuBLAS/cuDNN faults, device-side assert, etc.: clear KV and continue when possible.
-
     PyTorch emits ``RuntimeError: CUDA error: CUBLAS_STATUS_*`` inside ``model.generate``;
     treating these as fatal disconnects users unnecessarily (often recover after KV reset).
     After a corrupted context errors may repeat until process restart — log explains that.
@@ -91,12 +84,10 @@ def _is_cuda_recoverable_inference_error(exc: BaseException) -> bool:
 
 def _is_oob_vocab_value_error(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and "input_ids out of vocab" in str(exc).lower()
-
-
-
 # ---------------------------------------------------------------------------
 # FrameItem: mirrors workers/livecc.py to avoid circular import
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _FrameItem:
@@ -108,38 +99,31 @@ class _FrameItem:
 # ClientSession
 # ---------------------------------------------------------------------------
 
+
 class ClientSession:
     """Manages one connected client from HELLO to disconnect."""
-
     def __init__(
         self,
         sock: socket.socket,
         addr: tuple,
         livecc_model: Any,
-        bytetrack_cfg: Dict[str, Any],
     ) -> None:
         self.sock = sock
         self.addr = addr
         self.livecc_model = livecc_model
-        self.bytetrack_cfg = bytetrack_cfg or {}
-
         self._stop = False
         self._mode = "camera"
-        self._bt_frame_id: int = 0
         self._infer_mode: str = "camera"
         self._rx_frames: int = 0
-        self._tx_previews: int = 0
         self._tx_segments: int = 0
         self._infer_cycles: int = 0
         # Drop near-duplicate LiveCC lines (overlapping 2s clips + KV tend to echo wording)
         self._last_segment_text: str = ""
         # Throttle server-side RSS print (~2s, aligned with thin-client QTimer)
         self._server_ram_last_mono: float = 0.0
-
     # ------------------------------------------------------------------ #
     # Public entry point
     # ------------------------------------------------------------------ #
-
     def run(self) -> None:
         try:
             self._handle_session()
@@ -151,11 +135,9 @@ class ClientSession:
             except Exception:
                 pass
             log.info("[Session %s] Disconnected", self.addr)
-
     # ------------------------------------------------------------------ #
     # Session flow
     # ------------------------------------------------------------------ #
-
     def _handle_session(self) -> None:
         # Expect HELLO
         result = read_message(self.sock)
@@ -165,7 +147,6 @@ class ClientSession:
         if hello.get("type") != MSG_HELLO:
             self._send({"type": MSG_ERROR, "msg": "Expected HELLO"})
             return
-
         client_ver = hello.get("protocol_version", 0)
         if client_ver != PROTOCOL_VERSION:
             self._send({
@@ -173,18 +154,15 @@ class ClientSession:
                 "msg": f"Protocol version mismatch: got {client_ver}, expected {PROTOCOL_VERSION}",
             })
             return
-
         self._mode = hello.get("mode", "camera")
         self._send({"type": MSG_ACK, "protocol_version": PROTOCOL_VERSION})
         log.info("[Session %s] HELLO ok, mode=%s", self.addr, self._mode)
-
         # Wait for START messages
         while not self._stop:
             result = read_message(self.sock)
             if result is None:
                 return
             msg, binary = result
-
             if msg.get("type") == MSG_START:
                 mode  = msg.get("mode",  self._mode)
                 query = msg.get("query", "")
@@ -197,54 +175,31 @@ class ClientSession:
                 break
             elif msg.get("type") == MSG_PING:
                 self._send({"type": MSG_PONG})
-
     # ------------------------------------------------------------------ #
     # Inference session (one START → STOP cycle)
     # ------------------------------------------------------------------ #
-
     def _run_inference_session(self, mode: str, query: str) -> None:
         log.info("[Session %s] Inference START mode=%s", self.addr, mode)
         self._send({"type": MSG_STATUS, "msg": f"Inference started (mode={mode})"})
-
-        self._bt_frame_id = 0
         self._infer_mode = mode
         self._rx_frames = 0
-        self._tx_previews = 0
         self._tx_segments = 0
         self._infer_cycles = 0
         self._last_segment_text = ""
         self._server_ram_last_mono = time.monotonic() - 2.01
-
         buffer: deque[_FrameItem] = deque(maxlen=180)
         stop_event = threading.Event()
-        # Load ByteTrack before frame worker (worker needs bt reference).
-        bt = self._maybe_load_bytetrack(mode)
-
         # Single-slot pending JPEG: recv overwrites with the latest FRAME (temporal sampling —
         # track always the freshest frame, not a multi-frame FIFO that discards by order).
         self._frame_queue: Queue[tuple[float, bytes]] = Queue(maxsize=1)
         self._logged_first_frame_decode = False
-        self._preview_sample_last_emit_mono = 0.0
-
         frame_thread = threading.Thread(
             target=self._frame_processor_loop,
-            args=(buffer, bt, stop_event),
-            name="session-frame-gpu",
+            args=(buffer, stop_event),
+            name="session-frame-decode",
             daemon=True,
         )
         frame_thread.start()
-
-        if mode == "obs_track" and bt is None:
-            log.warning(
-                "[Session %s] obs_track but ByteTrack not loaded — "
-                "check configs/models.yml bytetrack paths; preview will be raw frames only",
-                self.addr,
-            )
-            self._send({
-                "type": MSG_STATUS,
-                "msg": "ByteTrack unavailable: using full frame (no boxes). Check server bytetrack config.",
-            })
-
         # Inference loop runs in a separate thread so the main thread can
         # keep receiving frames without blocking.
         infer_thread = threading.Thread(
@@ -253,7 +208,6 @@ class ClientSession:
             daemon=True,
         )
         infer_thread.start()
-
         # Frame-receive loop (main thread of this session)
         try:
             while not self._stop and not stop_event.is_set():
@@ -261,18 +215,16 @@ class ClientSession:
                 if result is None:
                     break
                 msg, binary = result
-
                 if msg.get("type") == MSG_STOP:
                     log.info(
-                        "[Session %s] MSG_STOP  rx_frames=%d tx_previews=%d tx_segments=%d",
+                        "[Session %s] MSG_STOP  rx_frames=%d tx_segments=%d",
                         self.addr,
                         self._rx_frames,
-                        self._tx_previews,
                         self._tx_segments,
                     )
                     break
                 elif msg.get("type") == MSG_FRAME:
-                    self._handle_frame(msg, binary, buffer, bt)
+                    self._handle_frame(msg, binary)
                 elif msg.get("type") == MSG_CLIENT_DIAG:
                     self._handle_client_diag(msg)
                 elif msg.get("type") == MSG_PING:
@@ -282,18 +234,15 @@ class ClientSession:
             frame_thread.join(timeout=5.0)
             infer_thread.join(timeout=5.0)
             log.info(
-                "[Session %s] Inference STOP  rx_frames=%d tx_previews=%d tx_segments=%d infer_cycles=%d",
+                "[Session %s] Inference STOP  rx_frames=%d tx_segments=%d infer_cycles=%d",
                 self.addr,
                 self._rx_frames,
-                self._tx_previews,
                 self._tx_segments,
                 self._infer_cycles,
             )
-
     # ------------------------------------------------------------------ #
     # Thin-client CLIENT_DIAG → printed on server stdout as [Client] lines
     # ------------------------------------------------------------------ #
-
     def _handle_client_diag(self, msg: dict) -> None:
         """
         Stats from the thin client's machine (JPEG encode + tcp send queue), not from this server.
@@ -319,7 +268,6 @@ class ClientSession:
             f"[Client] RSS={rss:.1f} MiB | JPEG send_queue={qu}/{qm} | "
             f"system_RAM_used={sp:.0f}%{gpu_sfx}"
         )
-
     @staticmethod
     def _print_server_process_ram(buffer_len: int) -> None:
         """
@@ -327,7 +275,6 @@ class ClientSession:
         """
         try:
             import psutil
-
             rss_mib = psutil.Process().memory_info().rss / (1024.0**2)
             sys_pct = psutil.virtual_memory().percent
         except Exception:
@@ -338,17 +285,13 @@ class ClientSession:
             f"[Server] RSS={rss_mib:.1f} MiB | livecc_buffer={buffer_len} | "
             f"system_RAM_used={sys_pct:.0f}%{gpu_sfx}"
         )
-
     # ------------------------------------------------------------------ #
-    # Frame handling (recv: enqueue JPEG only; GPU in _frame_processor_loop)
+    # Frame handling (recv: enqueue JPEG only; decode in _frame_processor_loop)
     # ------------------------------------------------------------------ #
-
     def _handle_frame(
         self,
         msg: dict,
         binary: bytes,
-        buffer: deque,
-        bt: Any,
     ) -> None:
         if not binary:
             return
@@ -362,15 +305,15 @@ class ClientSession:
                 t,
             )
         elif self._rx_frames % 120 == 0:
+            q = getattr(self, "_frame_queue", None)
+            pending = q.qsize() if q is not None else 0
             log.info(
-                "[Session %s] FRAME stats  rx=%d tx_previews=%d buffer_len=%d mode=%s",
+                "[Session %s] FRAME stats  rx=%d pending_jpeg=%d mode=%s",
                 self.addr,
                 self._rx_frames,
-                self._tx_previews,
-                len(buffer),
+                pending,
                 self._infer_mode,
             )
-
         q = getattr(self, "_frame_queue", None)
         if q is None:
             return
@@ -383,15 +326,12 @@ class ClientSession:
                 q.put_nowait((t, binary))
             except (Empty, Full):
                 pass
-
     # ------------------------------------------------------------------ #
-    # JPEG decode + ByteTrack (+ optional PREVIEW/buffer): dedicated thread.
+    # JPEG decode → LiveCC buffer (dedicated thread; no server-side ByteTrack)
     # ------------------------------------------------------------------ #
-
     def _frame_processor_loop(
         self,
         buffer: deque,
-        bt: Any,
         stop_event: threading.Event,
     ) -> None:
         q = self._frame_queue
@@ -405,7 +345,6 @@ class ClientSession:
             frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if frame_bgr is None:
                 continue
-
             if not self._logged_first_frame_decode:
                 self._logged_first_frame_decode = True
                 log.info(
@@ -414,64 +353,14 @@ class ClientSession:
                     getattr(frame_bgr, "shape", "?"),
                     t,
                 )
-
-            if bt is not None:
-                try:
-                    self._bt_frame_id += 1
-                    annotated_bgr, subject_rgb = bt.process(
-                        frame_bgr, self._bt_frame_id
-                    )
-                except Exception as e:
-                    log.warning("[Session] ByteTrack error: %s", e)
-                    if _is_cuda_recoverable_inference_error(e):
-                        try:
-                            torch.cuda.synchronize()
-                            torch.cuda.empty_cache()
-                        except Exception:
-                            pass
-                    continue
-
-                # PREVIEW return path: at most `_PREVIEW_SAMPLE_OUT_FPS` Hz (consistent 15fps cap).
-                gap = 1.0 / _PREVIEW_SAMPLE_OUT_FPS
-                pn = time.monotonic()
-                if pn - self._preview_sample_last_emit_mono >= gap:
-                    self._preview_sample_last_emit_mono = pn
-                    ret, jbuf = cv2.imencode(
-                        ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, 78]
-                    )
-                    if ret:
-                        self._tx_previews += 1
-                        self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
-
-                if subject_rgb is not None:
-                    subject_bgr = cv2.cvtColor(
-                        cv2.resize(subject_rgb, (640, 480)),
-                        cv2.COLOR_RGB2BGR,
-                    )
-                    buffer.append(_FrameItem(t=t, frame=subject_bgr))
-            else:
-                buffer.append(_FrameItem(t=t, frame=frame_bgr))
-                if self._infer_mode == "obs_track":
-                    _now = time.monotonic()
-                    _gap = 1.0 / _PREVIEW_SAMPLE_OUT_FPS
-                    if _now - self._preview_sample_last_emit_mono >= _gap:
-                        self._preview_sample_last_emit_mono = _now
-                        ret, jbuf = cv2.imencode(
-                            ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75]
-                        )
-                        if ret:
-                            self._tx_previews += 1
-                            self._send({"type": MSG_PREVIEW, "t": t}, jbuf.tobytes())
-
+            buffer.append(_FrameItem(t=t, frame=frame_bgr))
             _ram_now = time.monotonic()
             if _ram_now - self._server_ram_last_mono >= 2.0:
                 self._server_ram_last_mono = _ram_now
                 self._print_server_process_ram(len(buffer))
-
     # ------------------------------------------------------------------ #
     # Inference loop (background thread)
     # ------------------------------------------------------------------ #
-
     def _inference_loop(
         self,
         buffer: deque,
@@ -479,22 +368,18 @@ class ClientSession:
         stop_event: threading.Event,
     ) -> None:
         from ..workers.livecc import build_clip_from_buffer
-
         state: Dict[str, Any] = {}
         inference_count = 0
         infer_interval = 2.0
         last_infer_t = time.time()
-
         while not stop_event.is_set():
             now = time.time()
             if now - last_infer_t < infer_interval:
                 time.sleep(0.1)
                 continue
-
             if len(buffer) < 3:
                 time.sleep(0.1)
                 continue
-
             # Build clip from shared buffer (thread-safe read for deque)
             clip = build_clip_from_buffer(
                 buffer, window_sec=2.0, target_fps=2.0
@@ -502,7 +387,6 @@ class ClientSession:
             if clip is None:
                 time.sleep(0.1)
                 continue
-
             inference_count += 1
             self._infer_cycles += 1
             log.info(
@@ -511,12 +395,10 @@ class ClientSession:
                 self._infer_cycles,
                 len(buffer),
             )
-
             # Periodic state reset: overlapping 2s clips + KV make echo outputs; clear more often on server
             if inference_count % 3 == 0:
                 state = {}
                 log.debug("[Session] State reset (count=%d)", inference_count)
-
             try:
                 batch = list(
                     self.livecc_model.live_cc_from_frames(
@@ -593,50 +475,9 @@ class ClientSession:
                 log.exception("[Session] Inference error: %s", e)
                 self._send({"type": MSG_ERROR, "msg": str(e)})
                 stop_event.set()
-
-    # ------------------------------------------------------------------ #
-    # ByteTrack loader
-    # ------------------------------------------------------------------ #
-
-    def _maybe_load_bytetrack(self, mode: str) -> Optional[Any]:
-        if mode != "obs_track":
-            return None
-        if not self.bytetrack_cfg:
-            log.warning(
-                "[Session] bytetrack section missing or empty in model config — "
-                "cannot load ByteTrack for obs_track"
-            )
-            return None
-        try:
-            from ..core.models.bytetrack_tracker import ByteTrackWrapper
-            cfg = self.bytetrack_cfg
-            bt = ByteTrackWrapper(
-                ckpt_path              = cfg.get("ckpt_path", ""),
-                exp_file               = cfg.get("exp_file",  ""),
-                bytetrack_repo         = cfg.get("bytetrack_repo") or None,
-                device                 = cfg.get("device", "cuda"),
-                fp16                   = bool(cfg.get("fp16", True)),
-                fuse                   = bool(cfg.get("fuse", True)),
-                track_thresh           = float(cfg.get("track_thresh", 0.5)),
-                match_thresh           = float(cfg.get("match_thresh", 0.8)),
-                track_buffer           = int(cfg.get("track_buffer", 30)),
-                aspect_ratio_thresh    = float(cfg.get("aspect_ratio_thresh", 1.6)),
-                min_box_area           = float(cfg.get("min_box_area", 10)),
-                subject_only           = bool(cfg.get("subject_only", True)),
-                subject_pad            = float(cfg.get("subject_pad", 0.15)),
-                min_subject_area_ratio = float(cfg.get("min_subject_area_ratio", 0.03)),
-                preempt_ratio          = float(cfg.get("preempt_ratio", 4.0)),
-            )
-            log.info("[Session] ByteTrack loaded for mode=obs_track")
-            return bt
-        except Exception as e:
-            log.warning("[Session] ByteTrack load failed: %s", e, exc_info=True)
-            return None
-
     # ------------------------------------------------------------------ #
     # Socket send helper
     # ------------------------------------------------------------------ #
-
     def _send(self, msg: dict, binary: bytes = b"") -> None:
         try:
             self.sock.sendall(pack_message(msg, binary))

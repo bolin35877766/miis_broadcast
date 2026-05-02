@@ -85,7 +85,7 @@ Webcam
 CameraByteTrackThread (local)
   ├── YOLOX detection + BYTETracker  ──► annotated BGR → video panel (local)
   └── subject crop (640×480 BGR)
-            │  JPEG (async, phase-sampled 30→15 Hz)
+            │  JPEG (async, matches callback rate)
             ▼
       SocketClientRunner → TCP → Remote server
                                       │
@@ -96,8 +96,9 @@ CameraByteTrackThread (local)
 
 #### Why the frame sender is in a dedicated thread
 
-`sock.sendall()` blocks the caller until the TCP send buffer is drained.  At 30 fps the
-client produces ~90 KB/s of JPEG data; if the server GPU is busy the kernel buffer fills
+`sock.sendall()` blocks the caller until the TCP send buffer is drained.  At typical camera
+rates the client produces a much higher JPEG bitrate than before when every frame is sent; if the
+server or network is slow the kernel buffer fills
 and `sendall` stalls for tens of milliseconds — long enough to freeze the Qt event loop
 and make the GUI unresponsive.
 
@@ -109,18 +110,15 @@ memory bounded and backpressure natural.
 
 #### Client send rate
 
-**Nominal capture → wire (thin client)**  
-The GUI/camera emits **~30** `send_frame()` callbacks/sec. `client.py` applies a classical **phase
-accumulator**: each callback adds `STEP = OUT/IN = 15/30` to phase; whenever phase ≥ **1**, one FRAME
-JPEG is queued and phase subtracts **1**. Long-term average ≈ **15** frames/sec wired to the server —
-the reproducible ratio is **`15 Hz = (1/2) × 30 Hz`**.
+**Thin client:** each `send_frame()` call queues **one** `FRAME` JPEG.  The **wired FPS** therefore tracks
+how often the GUI / worker invokes `send_frame` (commonly **~30 Hz** for live camera sources; file
+playback follows the video thread).  There is **no** client-side downsampling.
 
 **Ingress on server** uses a single-slot JPEG buffer (`maxsize=1`): each new FRAME **overwrites** pending decode work («always latest»).
 
-LiveCC runs on a **2 s interval** (`infer_interval = 2.0` in `session.py`), independent of frame sampling.
+LiveCC runs on a **2 s interval** (`infer_interval = 2.0` in `session.py`), independent of wire FPS.
 
-Tune **`_REMOTE_FRAME_SAMPLE_OUT_FPS`**, **`_REMOTE_INPUT_NOMINAL_FPS`** (`client.py`),
-or **`_PREVIEW_SAMPLE_OUT_FPS`** (`session.py`) together so IN/OUT stay a deliberate ratio.
+Tune **`_FRAME_QUEUE_MAX`** (`client.py`, default 30) or JPEG quality if you need different backpressure.
 
 #### Free Switch (`free_switch` mode)
 
@@ -132,7 +130,7 @@ Key modules:
 |---|---|
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
 | [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, `send_client_diagnostic` / `CLIENT_DIAG` during remote inference |
-| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME JPEG **single-slot queue** → decode → LiveCC; PREVIEW capped at **`_PREVIEW_SAMPLE_OUT_FPS`** Hz; stdout RAM telemetry |
+| [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME → JPEG decode → LiveCC buffer (**no** ByteTrack or `PREVIEW` on the server; tracking overlay stays on the client) |
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — **Free Switch** source bar (`切換輸入源`); `obs_track` shows local ByteTrack annotated preview |
 | [src/miis_broadcast/workers/free_switch.py](src/miis_broadcast/workers/free_switch.py) | `FreeSwitchCameraThread` — dual always-on captures; selectable Webcam / VR / stitched dual (`1280×480`); same frame pipeline as `DualSourceCameraThread` for wire |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
@@ -335,7 +333,7 @@ Every message on the socket is framed as:
 | `ACK` | S → C | `protocol_version` | — |
 | `START` | C → S | `mode`, `query` | — |
 | `FRAME` | C → S | `frame_id`, `t` | JPEG bytes |
-| `PREVIEW` | S → C | `t` | JPEG bytes (annotated BGR) |
+| `PREVIEW` | S → C *(optional / legacy)* | `t` | JPEG bytes; **not** sent by the current headless server (preview/overlay is client-side) |
 | `SEGMENT` | S → C | `start_t`, `stop_t`, `text` | — |
 | `STATUS` | S → C | `msg` | — |
 | `ERROR` | S → C | `msg` | — |
@@ -349,11 +347,11 @@ When inference runs on a **remote** server (file, webcam, OBS, dual sync, free s
 
 | Printed line (server **stdout**) | Meaning |
 |---|---|
-| `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | Only when **ByteTrack runs on the inference host** (e.g. server-side `obs_track`): tracker timing via `ByteTrackWrapper`, every **20** frames. |
+| `[ByteTrack] Frame … \| Infer FPS … \| Wall FPS …` | Only when **ByteTrack runs in this process** (GUI / local workers). The headless remote server does **not** load ByteTrack. |
 | `[Server] RSS=… \| livecc_buffer=… \| system_RAM_used=…% \| GPU_VRAM=…` | Same as before, plus **CUDA device 0** VRAM: global used/total MiB (from `torch.cuda.mem_get_info`), **%**, and `torch_alloc` = PyTorch allocator bytes for **this process** on that device. `GPU_VRAM=n/a` if CUDA is unavailable. |
 | `[Client] RSS=… \| JPEG send_queue=… \| system_RAM_used=…% \| GPU_VRAM=…` | Same for the **sender** machine; GPU fields come from the GUI’s snapshot (also device **0**). Printed on **server** stdout from `CLIENT_DIAG`; session log file may duplicate under `[Memory]`. |
 
-**Tuning:** use **`[Server]`** alongside **`[Client]`** on the **same** terminal to see whether the bottleneck is decode/LiveCC on the host or encode/TCP on the sender. When ByteTrack runs on the server, also compare **Wall FPS** vs **Infer FPS** in the `[ByteTrack] Frame` lines.
+**Tuning:** use **`[Server]`** alongside **`[Client]`** on the **same** terminal to see whether the bottleneck is decode/LiveCC on the host or encode/TCP on the sender.
 
 The `CLIENT_DIAG` payload is a short JSON message (order of **hundreds of bytes** every ~2 s). Control sends hold the client socket lock only for that small `sendall`.
 
