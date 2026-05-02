@@ -14,7 +14,8 @@ classifiers:
 #                  or an absolute path
 # ckpt_path      : path to the .pth checkpoint file
 # model_size     : informational only (x / l / m / s)
-# device         : "cuda" or "cpu"
+# device         : "cuda", "cuda:0", "gpu", or "cpu" (if CUDA requested but PyTorch
+#                  has no GPU build, console prints install hint and falls back to CPU)
 # fp16           : half-precision inference (requires CUDA)
 # fuse           : fuse Conv+BN layers for speed
 # ---------------------------------------------------------------------------

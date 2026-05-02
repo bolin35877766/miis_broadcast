@@ -79,6 +79,54 @@ class _Timer:
         return self._total / max(1, self._count)
 
 
+def _resolve_track_device(device_cfg: str) -> "torch.device":
+    """
+    Map models.yml ``device`` to ``torch.device``.
+
+    Accepts ``cpu``, ``cuda``, ``cuda:N``, ``gpu``, or a numeric string ``N`` (GPU index).
+    """
+    import torch
+
+    raw = str(device_cfg or "cpu").strip()
+    low = raw.lower()
+
+    if low == "cpu":
+        dev = torch.device("cpu")
+        print(f"[ByteTrack] 使用裝置: {dev}")
+        return dev
+
+    # GPU requested
+    if low in ("gpu", "cuda"):
+        spec = "cuda:0"
+    elif low.startswith("cuda:"):
+        spec = raw  # cuda:0, cuda:1, ...
+    elif raw.isdigit():
+        spec = f"cuda:{int(raw)}"
+    else:
+        print(f"[ByteTrack] Unknown device {device_cfg!r}; using CPU.")
+        dev = torch.device("cpu")
+        print(f"[ByteTrack] 使用裝置: {dev}")
+        return dev
+
+    if not torch.cuda.is_available():
+        print(
+            "[ByteTrack] 設定要求 GPU，但 torch.cuda.is_available() 為 False。\n"
+            f"  目前 PyTorch {torch.__version__} | torch.version.cuda={torch.version.cuda!r}\n"
+            "  Windows 請安裝含 CUDA 的 PyTorch，例如 (依你的 CUDA 版本調整 cu124/cu118)：\n"
+            "    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124\n"
+            "  已改為使用 CPU。"
+        )
+        dev = torch.device("cpu")
+        print(f"[ByteTrack] 使用裝置: {dev}")
+        return dev
+
+    dev = torch.device(spec)
+    idx = dev.index if dev.index is not None else 0
+    name = torch.cuda.get_device_name(idx)
+    print(f"[ByteTrack] 使用裝置: {dev} ({name})")
+    return dev
+
+
 # ---------------------------------------------------------------------------
 # ByteTrackWrapper
 # ---------------------------------------------------------------------------
@@ -166,8 +214,7 @@ class ByteTrackWrapper:
         self.preempt_ratio = preempt_ratio
 
         # ── 4. Load YOLOX model ────────────────────────────────────────────
-        self.device = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
-        print(f"[ByteTrack] 使用裝置: {self.device}")
+        self.device = _resolve_track_device(device)
 
         exp = get_exp(exp_file, None)
         model = exp.get_model().to(self.device)
