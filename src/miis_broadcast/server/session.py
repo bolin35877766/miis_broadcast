@@ -289,7 +289,6 @@ class ClientSession:
     def _handle_client_diag(self, msg: dict) -> None:
         """
         Stats from the thin client's machine (JPEG encode + tcp send queue), not from this server.
-        Printed beside ByteTrack lines so operators know which machine each line refers to.
         """
         try:
             rss = float(msg.get("rss_mib", 0.0))
@@ -299,15 +298,14 @@ class ClientSession:
         except (TypeError, ValueError):
             return
         print(
-            f"[ByteTrack] Thin-client (sender PC) RAM: {rss:.1f} MiB | "
+            f"[Client diag] sender PC RAM: {rss:.1f} MiB | "
             f"jpeg_send_queue={qu}/{qm} | sender system_RAM_used={sp:.0f}%"
         )
 
     @staticmethod
     def _print_server_process_ram(buffer_len: int) -> None:
         """
-        RSS of this server's Python process (inference host: decode, ByteTrack, LiveCC).
-        Printed every 20 ByteTrack frames (same rhythm as Infer/Wall FPS in bytetrack_tracker).
+        RSS of this server's Python process (inference host: LiveCC + JPEG decode).
         """
         try:
             import psutil
@@ -317,8 +315,8 @@ class ClientSession:
         except Exception:
             return
         print(
-            f"[Server RSS] full python process (LiveCC+ByteTrack+decode): {rss_mib:.1f} MiB | "
-            f"host system_RAM_used={sys_pct:.0f}% | livecc_subject_buffer={buffer_len}"
+            f"[Server RSS] python process (LiveCC+decode): {rss_mib:.1f} MiB | "
+            f"host system_RAM_used={sys_pct:.0f}% | livecc_buffer={buffer_len}"
         )
 
     # ------------------------------------------------------------------ #

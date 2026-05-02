@@ -150,15 +150,11 @@ class CameraByteTrackThread(QtCore.QThread):
         while not self._stop_requested:
             t_start = time.perf_counter()
 
-            # Read frame
-            ret, frame_bgr_raw = cap.read()
+            # Read frame — OpenCV gives BGR directly; no RGB conversion needed
+            ret, frame_bgr = cap.read()
             if not ret:
                 self.signal_error.emit("[ByteTrack] Camera read failed")
                 break
-            frame_rgb = cv2.cvtColor(frame_bgr_raw, cv2.COLOR_BGR2RGB)
-
-            # Convert to BGR for YOLOX (OpenCV convention)
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
             frame_id += 1
 

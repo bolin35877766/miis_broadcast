@@ -993,11 +993,6 @@ class MainWindow(QtWidgets.QMainWindow):
     signal_start_livecc = QtCore.Signal(str, str)
     signal_start_camera_livecc = QtCore.Signal(str)
 
-    # Remote obs_track: suppress raw-camera overlay this long after each PREVIEW (seconds).
-    # Keeps the last annotated frame visible between PREVIEW deliveries (~15 Hz).
-    # Falls back to raw camera if no PREVIEW arrives for this long (e.g. disconnect).
-    _OBS_TRACK_PREVIEW_HOLD_SEC = 2.50
-
     # signal to apply settings to tts thread to avoid calling slots directly on the main thread
     signal_tts_apply_settings = QtCore.Signal(str, float)
     signal_tts_stop = QtCore.Signal()
@@ -1042,8 +1037,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._socket_runner: Optional[SocketClientRunner] = None
         # Periodic RAM/JPEG-queue telemetry during remote obs_track (see _start_obs_track_ram_monitor)
         self._obs_track_ram_timer: Optional[QtCore.QTimer] = None
-        # When remote sends PREVIEW (boxes), avoid raw camera overwriting it for ~one frame period
-        self._last_track_preview_mono: float = 0.0
 
         # client_only: only controls whether local LiveCC/ByteTrack are loaded at startup.
         # All GUI behavior is identical once connected; default = True (don't load 7B locally).
@@ -1386,7 +1379,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._obs_track_ram_timer = None
 
     def _start_obs_track_ram_monitor(self) -> None:
-        """Log sender-PC RAM + JPEG queue (optional); server-side RAM prints on inference host."""
+        """Periodic local telemetry: client RAM + JPEG queue + ByteTrack subject-send count."""
         self._stop_obs_track_ram_monitor()
         timer = QtCore.QTimer(self)
         timer.setInterval(2000)
@@ -1400,7 +1393,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if (
             self.mode != "obs_track"
             or not self.is_inference_running
-            or self._socket_runner is None
         ):
             self._stop_obs_track_ram_monitor()
             return
@@ -1408,17 +1400,16 @@ class MainWindow(QtWidgets.QMainWindow):
             import psutil
 
             rss_mb = psutil.Process().memory_info().rss / (1024.0**2)
-            q_used, q_max = self._socket_runner.get_frame_send_queue_levels()
             sys_pct = psutil.virtual_memory().percent
+            q_info = ""
+            if self._socket_runner is not None:
+                q_used, q_max = self._socket_runner.get_frame_send_queue_levels()
+                q_info = f" | JPEG send_queue={q_used}/{q_max}"
             msg = (
-                f"sender_PC RSS={rss_mb:.1f} MiB | JPEG send_queue={q_used}/{q_max} | "
-                f"sender system_RAM_used={sys_pct:.0f}%"
+                f"[ByteTrack] Client RSS={rss_mb:.1f} MiB{q_info} | "
+                f"system_RAM_used={sys_pct:.0f}%"
             )
-            # Remote: forward to server so it prints on the same stdout as ByteTrack FPS
-            # (see server session _handle_client_diag); keep session file on this machine.
-            self._socket_runner.send_obs_track_diagnostic(
-                rss_mb, q_used, q_max, sys_pct
-            )
+            print(msg)
             if hasattr(self, "session_logger") and self.session_logger.current_log_file:
                 self.session_logger.log_system("Memory", "INFO", msg)
         except Exception as e:
@@ -1441,9 +1432,6 @@ class MainWindow(QtWidgets.QMainWindow):
         runner.signal_segment.connect(self.on_segment)
         runner.signal_status.connect(self.on_remote_status)
         runner.signal_error.connect(self.on_remote_server_error)
-        runner.signal_preview.connect(
-            self.on_remote_track_preview, QtCore.Qt.QueuedConnection
-        )
         self._socket_runner = runner
         runner.start()
 
@@ -1486,22 +1474,6 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(str)
     def on_remote_status(self, msg: str) -> None:
         self.statusBar().showMessage(f"[Remote] {msg}", 3000)
-
-    @QtCore.Slot(object)
-    def on_remote_track_preview(self, frame_bgr: object) -> None:
-        # Server sends annotated BGR with ByteTrack boxes (throttled) during obs_track
-        if not isinstance(frame_bgr, np.ndarray) or self.mode != "obs_track":
-            return
-        if not self._socket_runner:
-            return
-        if not self.is_inference_running:
-            return
-        # First PREVIEW arrival — confirm ByteTrack is active on server
-        if self._last_track_preview_mono == 0.0:
-            self.statusBar().showMessage("[Remote] ByteTrack tracking active ✓", 3000)
-            print("[Remote] First tracking PREVIEW received — ByteTrack is running on server")
-        self._last_track_preview_mono = time.monotonic()
-        self.video_panel.update_frame(frame_bgr, is_bgr=True)
 
     @QtCore.Slot(str)
     def on_remote_server_error(self, msg: str) -> None:
