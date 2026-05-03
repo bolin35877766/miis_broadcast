@@ -229,8 +229,8 @@ Required when using OBS + tracking mode:
 ```yaml
 bytetrack:
   bytetrack_repo: "/path/to/ByteTrack_repo"   # or set BYTETRACK_REPO env var
-  exp_file: "/path/to/yolox_x_mix_det.py"
-  ckpt_path: "/path/to/bytetrack_x_mot17.pth.tar"
+  exp_file: "/path/to/yolox_s_mix_det.py"
+  ckpt_path: "/path/to/bytetrack_s_mot17.pth.tar"
   device: "cuda"
   fp16: true
   # Subject quality gates

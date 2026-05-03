@@ -13,7 +13,10 @@ classifiers:
 # exp_file       : YOLOX experiment config (.py) relative to repo root,
 #                  or an absolute path
 # ckpt_path      : path to the .pth checkpoint file
-# model_size     : informational only (x / l / m / s)
+# model_size     : informational (tiny / nano / s / m / l / x)
+# Light checkpoints (download from ByteTrack README "Model zoo" if missing):
+#   S   — yolox_s_mix_det.py  + pretrained/bytetrack_s_mot17.pth.tar  (accuracy/speed balance)
+#   Tiny — yolox_tiny_mix_det.py + pretrained/bytetrack_tiny_mot17.pth.tar (fastest, weaker)
 # device         : "cuda", "cuda:0", "gpu", or "cpu" (if CUDA requested but PyTorch
 #                  has no GPU build, console prints install hint and falls back to CPU)
 # fp16           : half-precision inference (requires CUDA)
@@ -21,9 +24,9 @@ classifiers:
 # ---------------------------------------------------------------------------
 bytetrack:
   bytetrack_repo: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo"
-  exp_file: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/exps/example/mot/yolox_x_mix_det.py"
-  ckpt_path: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/pretrained/bytetrack_x_mot17.pth.tar"
-  model_size: "x"
+  exp_file: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/exps/example/mot/yolox_s_mix_det.py"
+  ckpt_path: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/pretrained/bytetrack_s_mot17.pth.tar"
+  model_size: "s"
   device: "cuda"
   fp16: true
   fuse: true

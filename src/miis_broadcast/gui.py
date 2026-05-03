@@ -1171,8 +1171,8 @@ class MainWindow(QtWidgets.QMainWindow):
         switching to OBS+Track is instant."""
         bt_cfg = self.configs.get("bytetrack", {})
         repo_path = bt_cfg.get("bytetrack_repo") or None
-        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_x_mix_det.py")
-        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_x_mot17.pth.tar")
+        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_s_mix_det.py")
+        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_s_mot17.pth.tar")
 
         import os
         if repo_path and not os.path.isabs(exp_file):
@@ -1736,8 +1736,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         bt_cfg = self.configs.get("bytetrack", {})
         repo_path = bt_cfg.get("bytetrack_repo") or None
-        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_x_mix_det.py")
-        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_x_mot17.pth.tar")
+        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_s_mix_det.py")
+        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_s_mot17.pth.tar")
 
         import os
         if repo_path and not os.path.isabs(exp_file):
