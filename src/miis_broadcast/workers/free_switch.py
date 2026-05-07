@@ -45,7 +45,8 @@ class FreeSwitchCameraThread(QtCore.QThread):
     signal_source_changed(str) — emitted after set_active_source takes effect
     """
 
-    signal_frame          = QtCore.Signal(np.ndarray)  # RGB ndarray
+    signal_frame          = QtCore.Signal(np.ndarray)  # RGB ndarray — active source for first frontend
+    signal_vr_frame       = QtCore.Signal(np.ndarray)  # RGB ndarray — always VR, for audience second screen
     signal_error          = QtCore.Signal(str)
     signal_source_changed = QtCore.Signal(str)
 
@@ -133,30 +134,33 @@ class FreeSwitchCameraThread(QtCore.QThread):
             with self._source_lock:
                 src = self._active_source
 
+            # Always retrieve both cameras so signal_vr_frame can always emit
+            ret_cam, f_cam = cap_cam.retrieve()
+            ret_vr,  f_vr  = cap_vr.retrieve()
+
             frame_out: Optional[np.ndarray] = None
 
             if src == SOURCE_DUAL:
-                ret_cam, f_cam = cap_cam.retrieve()
-                ret_vr,  f_vr  = cap_vr.retrieve()
                 if ret_cam and ret_vr:
-                    # Ensure same height for hstack
                     if f_cam.shape[0] != f_vr.shape[0]:
                         f_vr = cv2.resize(f_vr, (f_cam.shape[1], f_cam.shape[0]))
                     combined_bgr = np.hstack((f_cam, f_vr))   # 1280×480 BGR
                     frame_out = cv2.cvtColor(combined_bgr, cv2.COLOR_BGR2RGB)
 
             elif src == SOURCE_VR:
-                ret, f = cap_vr.retrieve()
-                if ret:
-                    frame_out = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+                if ret_vr:
+                    frame_out = cv2.cvtColor(f_vr, cv2.COLOR_BGR2RGB)
 
             else:  # SOURCE_WEBCAM (default)
-                ret, f = cap_cam.retrieve()
-                if ret:
-                    frame_out = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+                if ret_cam:
+                    frame_out = cv2.cvtColor(f_cam, cv2.COLOR_BGR2RGB)
 
             if frame_out is not None:
                 self.signal_frame.emit(frame_out)
+
+            # Audience second screen: always emit VR frame regardless of active source
+            if ret_vr:
+                self.signal_vr_frame.emit(cv2.cvtColor(f_vr, cv2.COLOR_BGR2RGB))
 
             # Pace loop to target FPS
             elapsed = time.perf_counter() - t_loop

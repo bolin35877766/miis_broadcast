@@ -45,6 +45,7 @@ Each source thread emits one or two frame signals that `MainWindow` connects to:
 | `CameraByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
 | `DualSourceCameraThread` | `signal_frame` | `combined_rgb: np.ndarray` | `on_camera_frame()` |
 | `FreeSwitchCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` (`640×480` **or** stitched `1280×480`) | `on_camera_frame()` |
+| `FreeSwitchCameraThread` | `signal_vr_frame` | `frame_rgb: np.ndarray` — **always OBS/VR**, 640×480 RGB, for audience LiveKit `vr_program` | `MainWindow._deliver_audience_vr_frame()` → `AudiencePublisher.push_video_frame()` |
 | `FreeSwitchCameraThread` | `signal_source_changed` | `str` (`webcam` / `vr` / `dual`) | `_on_free_switch_source_changed()`, also updates switch-bar highlight |
 
 ## Inference Backend: Local vs Remote
@@ -174,6 +175,12 @@ No `VideoCapture` reopen; switching is a Python variable flip + next-frame retri
 ### Inference
 
 Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_switch")` routes JPEGs to the server; the headless server never loads ByteTrack. See root [README.md](../../../README.md) **Free Switch** subsection.
+
+### Audience second screen (LiveKit)
+
+When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** always carries the **VR** line for the browser viewer, while **`signal_frame`** remains the operator’s **active** source for the GUI and LiveCC. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code).
+
+👉 Full setup, flowcharts, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
 
 ---
 

@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MIIS Broadcast — Audience</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    #video-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    video {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    #overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      background: rgba(0,0,0,0.75);
+      z-index: 10;
+      transition: opacity 0.4s;
+    }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+
+    #logo {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: #3a86ff;
+      text-transform: uppercase;
+    }
+
+    #status {
+      font-size: 0.95rem;
+      color: #aaa;
+      min-height: 1.2em;
+    }
+
+    #start-btn {
+      padding: 14px 40px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      background: #3a86ff;
+      color: #fff;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+    #start-btn:hover { background: #2563eb; transform: scale(1.03); }
+    #start-btn:active { transform: scale(0.98); }
+    #start-btn:disabled { background: #555; cursor: not-allowed; }
+
+    #controls {
+      position: absolute;
+      bottom: 18px;
+      right: 18px;
+      display: flex;
+      gap: 10px;
+      z-index: 20;
+    }
+
+    .ctrl-btn {
+      background: rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+      transition: background 0.2s;
+    }
+    .ctrl-btn:hover { background: rgba(255,255,255,0.15); }
+
+    /* Mute: strikethrough reflects "sound is off" (muted), not the action label */
+    #mute-btn.is-muted .mute-txt {
+      text-decoration: line-through;
+    }
+
+    #status-bar {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.5);
+      border-radius: 20px;
+      padding: 4px 16px;
+      font-size: 0.78rem;
+      color: #ccc;
+      z-index: 20;
+      display: none;
+    }
+    #status-bar.visible { display: block; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+    .dot.live { background: #22c55e; animation: pulse 1.5s infinite; }
+    .dot.reconnect { background: #f59e0b; }
+    .dot.offline { background: #ef4444; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="video-container">
+  <video id="video" autoplay playsinline muted></video>
+
+  <div id="overlay">
+    <div id="logo">MIIS Broadcast</div>
+    <div id="status">等待連線…</div>
+    <button id="start-btn">▶ 開始觀看</button>
+  </div>
+
+  <div id="status-bar">
+    <span class="dot" id="state-dot"></span>
+    <span id="state-text">直播中</span>
+  </div>
+
+  <div id="controls" style="display:none">
+    <button type="button" class="ctrl-btn" id="mute-btn" title="靜音播報">
+      <span class="mute-ico">🔊</span> <span class="mute-txt">靜音</span>
+    </button>
+    <button class="ctrl-btn" id="fs-btn">⛶ 全螢幕</button>
+    <button class="ctrl-btn" id="reconnect-btn">↺ 重連</button>
+  </div>
+</div>
+
+<script type="module">
+  import { Room, RoomEvent, Track, ConnectionState }
+    from "https://cdn.jsdelivr.net/npm/livekit-client@2/+esm";
+
+  const videoEl    = document.getElementById("video");
+  const overlay    = document.getElementById("overlay");
+  const statusTxt  = document.getElementById("status");
+  const startBtn   = document.getElementById("start-btn");
+  const statusBar  = document.getElementById("status-bar");
+  const stateDot   = document.getElementById("state-dot");
+  const stateText  = document.getElementById("state-text");
+  const controls   = document.getElementById("controls");
+  const muteBtn    = document.getElementById("mute-btn");
+  const fsBtn      = document.getElementById("fs-btn");
+  const reconnBtn  = document.getElementById("reconnect-btn");
+
+  let room = null;
+  let muted = false;
+  // Key = track name (e.g. "narration"); removes stale element when publisher reconnects
+  const audioEls = new Map();
+
+  function removeAudioByName(name) {
+    if (audioEls.has(name)) {
+      const el = audioEls.get(name);
+      el.pause();
+      el.srcObject = null;
+      el.remove();
+      audioEls.delete(name);
+    }
+  }
+
+  function setStatus(msg) { statusTxt.textContent = msg; }
+
+  function syncMuteButton() {
+    muteBtn.classList.toggle("is-muted", muted);
+    muteBtn.title = muted ? "點擊恢復播報聲音" : "點擊靜音播報";
+    muteBtn.innerHTML = muted
+      ? '<span class="mute-ico">🔇</span> <span class="mute-txt">已靜音</span>'
+      : '<span class="mute-ico">🔊</span> <span class="mute-txt">靜音</span>';
+  }
+
+  function showLive() {
+    overlay.classList.add("hidden");
+    statusBar.classList.add("visible");
+    controls.style.display = "flex";
+    stateDot.className = "dot live";
+    stateText.textContent = "直播中";
+  }
+
+  function showReconnecting() {
+    stateDot.className = "dot reconnect";
+    stateText.textContent = "重連中…";
+  }
+
+  function showOffline(reason) {
+    stateDot.className = "dot offline";
+    stateText.textContent = reason || "中斷";
+  }
+
+  async function connect() {
+    startBtn.disabled = true;
+    setStatus("正在取得連線資訊…");
+
+    try {
+      const res = await fetch("/api/audience/join", { method: "POST" });
+      if (!res.ok) throw new Error(`join failed: ${res.status}`);
+      const { url, token } = await res.json();
+
+      setStatus("連線中…");
+
+      room = new Room({
+        // Disable adaptive stream to reduce latency on local network
+        adaptiveStream: false,
+        dynacast: false,
+      });
+
+      room.on(RoomEvent.TrackSubscribed, (track, _pub, _participant) => {
+        const tname = track.name || track.sid;
+        if (track.kind === Track.Kind.Video) {
+          track.attach(videoEl);
+          showLive();
+        }
+        if (track.kind === Track.Kind.Audio) {
+          // Always remove existing element for same track name before creating new one.
+          // This prevents double audio when the publisher reconnects and republishes
+          // a track with the same name but a new SID.
+          removeAudioByName(tname);
+          const audioEl = track.attach();
+          audioEl.muted = muted;
+          audioEl.dataset.trackName = tname;
+          document.body.appendChild(audioEl);
+          audioEls.set(tname, audioEl);
+          audioEl.play().catch(() => {});
+          console.log("[AUDIO] subscribed track:", tname, "total audio els:", audioEls.size);
+        }
+      });
+
+      room.on(RoomEvent.TrackUnsubscribed, (track) => {
+        track.detach();
+        if (track.kind === Track.Kind.Audio) {
+          const tname = track.name || track.sid;
+          removeAudioByName(tname);
+          console.log("[AUDIO] unsubscribed track:", tname, "remaining:", audioEls.size);
+        }
+      });
+
+      room.on(RoomEvent.ConnectionStateChanged, (state) => {
+        if (state === ConnectionState.Reconnecting) showReconnecting();
+        if (state === ConnectionState.Connected)    showLive();
+        if (state === ConnectionState.Disconnected) showOffline("已中斷");
+      });
+
+      room.on(RoomEvent.Disconnected, () => showOffline("已中斷"));
+
+      await room.connect(url, token);
+
+    } catch (err) {
+      setStatus(`連線失敗：${err.message}`);
+      startBtn.disabled = false;
+    }
+  }
+
+  startBtn.addEventListener("click", connect);
+
+  muteBtn.addEventListener("click", () => {
+    muted = !muted;
+    document.querySelectorAll("audio").forEach((a) => { a.muted = muted; });
+    syncMuteButton();
+  });
+
+  fsBtn.addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  });
+
+  reconnBtn.addEventListener("click", async () => {
+    if (room) { await room.disconnect(); room = null; }
+    // Remove all lingering audio elements before reconnecting
+    audioEls.forEach((el, name) => removeAudioByName(name));
+    audioEls.clear();
+    overlay.classList.remove("hidden");
+    startBtn.disabled = false;
+    setStatus("點擊重新連線");
+    statusBar.classList.remove("visible");
+    controls.style.display = "none";
+  });
+</script>
+</body>
+</html>

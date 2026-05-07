@@ -2,6 +2,7 @@
 
 import os
 import time
+import time as _t
 import threading
 import queue
 import asyncio
@@ -174,6 +175,36 @@ _tts_threads_started = False
 _interrupt_event = threading.Event()
 
 # ==========================================
+# 🎙️ PCM Sink (audience second screen)
+# ==========================================
+# When registered, each PCM chunk is forwarded to the sink callback
+# (e.g. AudiencePublisher.push_audio_chunk) in addition to or instead of
+# local playback depending on _pcm_sink_mute_local.
+_pcm_sink: Optional[callable] = None
+_pcm_sink_mute_local: bool = False
+_pcm_sink_flush: Optional[callable] = None  # e.g. flush LiveKit audio queue on interrupt
+
+def register_pcm_sink(
+    callback: Optional[callable],
+    mute_local: bool = True,
+    flush_callback: Optional[callable] = None,
+) -> None:
+    """Register a PCM sink for the audience publisher.
+
+    Args:
+        callback: called with each np.ndarray int16 chunk, or None to clear.
+        mute_local: if True, suppress local audio playback while sink is active.
+        flush_callback: called inside clear_audio_queue() to drop audience-side buffers
+            (e.g. LiveKit pending queue) so interrupted TTS does not overlap on viewers.
+    """
+    global _pcm_sink, _pcm_sink_mute_local, _pcm_sink_flush
+    _pcm_sink = callback
+    _pcm_sink_mute_local = mute_local if callback is not None else False
+    _pcm_sink_flush = flush_callback if callback is not None else None
+    tag = "[AUDIO] PCM sink registered" if callback is not None else "[AUDIO] PCM sink cleared"
+    print(f"{time.strftime('%H:%M:%S')} | {tag} | mute_local={_pcm_sink_mute_local}")
+
+# ==========================================
 # 🎛️ Runtime TTS Settings
 # ==========================================
 _TTS_VOICES = {"alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"}
@@ -227,6 +258,24 @@ def clear_audio_queue() -> None:
     while not _audio_output_queue.empty():
         try: _audio_output_queue.get_nowait()
         except queue.Empty: break
+    if _pcm_sink_flush is not None:
+        try:
+            _pcm_sink_flush()
+        except Exception:
+            pass
+
+
+def _flush_audience_pcm_buffer_only() -> None:
+    """Flush publisher-side PCM waiting for LiveKit (not _audio_output_queue).
+
+    Used when preempting with response.cancel so remote tail is trimmed without
+    clearing local playback queue (matches original smooth local behavior).
+    """
+    if _pcm_sink_flush is not None:
+        try:
+            _pcm_sink_flush()
+        except Exception:
+            pass
 
 def interrupt_tts(clear_text: bool = True) -> None:
     """手動強制中斷 (例如按了 Stop 按鈕)"""
@@ -318,6 +367,9 @@ async def _openai_realtime_worker():
                                 if is_response_active:
                                     await websocket.send(json.dumps({"type": "response.cancel"}))
                                     awaiting_cancel_ack = True
+                                    # Trim only LiveKit backlog; do not clear _audio_output_queue —
+                                    # clearing that caused constant cut-offs (unlike original behavior).
+                                    _flush_audience_pcm_buffer_only()
                                     # [修改] 把這句 (text, ts) 塞回去 Queue 的最前面
                                     _text_queue.put((target_text, ref_ts)) 
                                     continue # 跳出本次循環，去聽事件 (D)
@@ -421,10 +473,24 @@ def _audio_player_worker_sounddevice() -> None:
         except queue.Empty:
             continue
         _apply_audio_chunk_latency_stats()
+
+        # Forward to audience PCM sink if registered
+        if _pcm_sink is not None and audio_chunk is not None:
+            try:
+                _pcm_sink(np.ascontiguousarray(audio_chunk, dtype=np.int16))
+            except Exception:
+                pass
+
         try:
             if audio_chunk is not None and getattr(audio_chunk, "size", 0) > 0:
                 x = np.ascontiguousarray(audio_chunk, dtype=np.int16).reshape(-1, 1)
-                stream.write(x)
+                if _pcm_sink_mute_local:
+                    # Write silence to keep hardware clock pacing — without this the worker
+                    # races through _audio_output_queue at CPU speed, dumping all PCM into
+                    # the LiveKit queue in one burst then going silent (sounds "cut off").
+                    stream.write(np.zeros_like(x))
+                else:
+                    stream.write(x)
         except Exception as e:
             _log.debug("sounddevice write: %s", e)
 
@@ -452,6 +518,13 @@ def _audio_player_worker_ffplay() -> None:
 
         _apply_audio_chunk_latency_stats()
 
+        # Forward to audience PCM sink if registered
+        if _pcm_sink is not None and audio_chunk is not None:
+            try:
+                _pcm_sink(np.ascontiguousarray(audio_chunk, dtype=np.int16))
+            except Exception:
+                pass
+
         if process is None or process.poll() is not None:
             try:
                 process = subprocess.Popen(
@@ -463,7 +536,14 @@ def _audio_player_worker_ffplay() -> None:
 
         if process and process.stdin:
             try:
-                process.stdin.write(audio_chunk.tobytes())
+                # Send silence when muted to keep ffplay's internal clock running (same
+                # reason as sounddevice: prevents burst-then-silence on LiveKit side).
+                payload = (
+                    np.zeros(len(audio_chunk), dtype=np.int16).tobytes()
+                    if _pcm_sink_mute_local
+                    else audio_chunk.tobytes()
+                )
+                process.stdin.write(payload)
                 process.stdin.flush()
             except (BrokenPipeError, OSError, ValueError):
                 process = None

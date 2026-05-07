@@ -18,6 +18,8 @@ from .workers.obs_input import OBSCameraThread
 from .workers.camera_bytetrack import CameraByteTrackThread
 from .workers.dual_source import DualSourceCameraThread
 from .workers.free_switch import FreeSwitchCameraThread, SOURCE_WEBCAM, SOURCE_VR, SOURCE_DUAL
+from .audience.livekit_publisher import AudiencePublisher
+from .audience.token_server import AudienceTokenServer
 # LiveCCWorker / LiveCCCameraWorker are imported lazily only when not using client-only mode
 # so this process never loads the VLM on a thin client.
 from .core.prompt.prompt_manager import PromptManager
@@ -1026,6 +1028,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_fps: float = 30.0
         self.tts_mode: str = "none"
 
+        # Audience second-screen services (Free Switch mode only)
+        self._audience_publisher: Optional[AudiencePublisher] = None
+        self._audience_token_server: Optional[AudienceTokenServer] = None
+
         self.font_family = "Sans Serif"
         self.font_size = 14
 
@@ -1300,6 +1306,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # Remote control panel signals
         self.control_panel.requestRemoteConnect.connect(self.on_remote_connect_clicked)
         self.control_panel.requestRemoteDisconnect.connect(self.on_remote_disconnect_clicked)
+
+        # Audience viewer page (HTTP) — start early so http://localhost:8080/audience works
+        # before entering Free Switch. LiveKit publisher still starts with Free Switch only.
+        self._ensure_audience_token_server()
 
     def _init_prompt_manager_and_fill_styles(self) -> None:
         try:
@@ -1673,10 +1683,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.dual_sync_thread.wait(1000)
             self.dual_sync_thread = None
         if self.free_switch_thread:
+            # Must run before thread is nulled so signal_vr_frame disconnect works
+            self._stop_audience_publisher_only()
             self.free_switch_thread.requestStop()
             try:
                 self.free_switch_thread.signal_frame.disconnect()
                 self.free_switch_thread.signal_source_changed.disconnect()
+                self.free_switch_thread.signal_vr_frame.disconnect(
+                    self._deliver_audience_vr_frame
+                )
             except RuntimeError:
                 pass
             if not self.free_switch_thread.wait(3000):
@@ -1873,6 +1888,93 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.set_free_switch_bar_visible(True, initial_source)
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
+
+        # Start audience second-screen services
+        self._start_audience_services()
+
+    def _ensure_audience_token_server(self) -> None:
+        """HTTP server for /audience + /api/audience/join — runs for app lifetime when enabled."""
+        audience_cfg = self.configs.get("audience", {})
+        if not audience_cfg.get("enabled", False):
+            return
+        if self._audience_token_server is not None:
+            return
+        lk_url = audience_cfg.get("livekit_url", "ws://localhost:7880")
+        api_key = audience_cfg.get("api_key", "devkey")
+        api_secret = audience_cfg.get("api_secret", "")
+        room_name = audience_cfg.get("room", "broadcast-room")
+        port = int(audience_cfg.get("port", 8080))
+        self._audience_token_server = AudienceTokenServer(
+            lk_url, api_key, api_secret, room_name, port=port
+        )
+        self._audience_token_server.start()
+
+    def _stop_audience_token_server(self) -> None:
+        if self._audience_token_server is not None:
+            self._audience_token_server.stop()
+            self._audience_token_server = None
+
+    @QtCore.Slot(np.ndarray)
+    def _deliver_audience_vr_frame(self, frame_rgb: np.ndarray) -> None:
+        """Forward VR frames to LiveKit publisher.
+
+        Use this stable MainWindow slot instead of connecting worker signals directly to
+        AudiencePublisher.push_video_frame — bound publisher methods + QueuedConnection
+        can invoke the slot with a broken ``self`` (method-wrapper), raising AttributeError.
+        """
+        pub = self._audience_publisher
+        if pub is not None:
+            pub.push_video_frame(frame_rgb)
+
+    def _stop_audience_publisher_only(self) -> None:
+        """Tear down LiveKit publisher + TTS sink; keep HTTP token server running."""
+        from .core.models import openai_tts as _tts_mod
+        _tts_mod.register_pcm_sink(None, mute_local=False)
+        if self._audience_publisher is not None:
+            try:
+                if self.free_switch_thread is not None:
+                    self.free_switch_thread.signal_vr_frame.disconnect(
+                        self._deliver_audience_vr_frame
+                    )
+            except (RuntimeError, AttributeError, TypeError):
+                pass
+            self._audience_publisher.stop()
+            self._audience_publisher = None
+
+    def _start_audience_services(self) -> None:
+        """Free Switch: LiveKit publisher + TTS PCM sink (HTTP server already up)."""
+        audience_cfg = self.configs.get("audience", {})
+        if not audience_cfg.get("enabled", False):
+            return
+
+        self._ensure_audience_token_server()
+        self._stop_audience_publisher_only()
+
+        lk_url = audience_cfg.get("livekit_url", "ws://localhost:7880")
+        api_key = audience_cfg.get("api_key", "devkey")
+        api_secret = audience_cfg.get("api_secret", "devsecret")
+        room_name = audience_cfg.get("room", "broadcast-room")
+
+        from .core.models import openai_tts as _tts_mod
+
+        self._audience_publisher = AudiencePublisher(lk_url, api_key, api_secret, room_name)
+        self._audience_publisher.start()
+
+        if self.free_switch_thread is not None:
+            self.free_switch_thread.signal_vr_frame.connect(
+                self._deliver_audience_vr_frame,
+                QtCore.Qt.QueuedConnection,
+            )
+
+        _tts_mod.register_pcm_sink(
+            self._audience_publisher.push_audio_chunk,
+            mute_local=True,
+            flush_callback=self._audience_publisher.flush_pending_audio,
+        )
+
+    def _stop_audience_services(self) -> None:
+        """Tear down publisher only (HTTP /audience stays up for the app lifetime)."""
+        self._stop_audience_publisher_only()
 
     @QtCore.Slot(str)
     def on_switch_source(self, source: str) -> None:
@@ -2348,5 +2450,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "local_tts_thread") and self.local_tts_thread:
             self.local_tts_thread.quit()
             self.local_tts_thread.wait(2000)
+
+        self._stop_audience_publisher_only()
+        self._stop_audience_token_server()
 
         super().closeEvent(event)
