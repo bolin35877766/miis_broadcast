@@ -137,7 +137,7 @@ flowchart LR
 | `_video_pump_vr_pip` | Immediately | **No** | Async pacing at 30 fps; **cv2** composite on **`_vr_executor`** only |
 | `_avatar_frame_reader_task` | Immediately | Yes (up to 30 s wait) | Async `VideoStream`; **cv2** decode + PiP tile on **`_avatar_executor`** → `_liveavatar_pip_tile` |
 | `_audio_pump_liveavatar` | Immediately | No | Drains TTS PCM → WebSocket `agent.speak` + delay queue |
-| `_audio_delay_relay` | Immediately | No | Forwards delayed PCM → local `narration` AudioSource |
+| `_audio_delay_relay` | Immediately | No | Delayed PCM → local `narration`; **gapless** schedule (`max` of prior chunk end, dequeue + `audio_delay_ms`, now) so chunks do not stack on overlapping deadlines |
 
 **LiveAvatar mode — steps (match numbered bands above)**
 
@@ -171,7 +171,7 @@ sequenceDiagram
   end
 ```
 
-**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** by `liveavatar.audio_delay_ms` (default **750**) so it lines up with lip motion in the PiP. The delay **deadline is set when each PCM chunk is dequeued** from the TTS path (not after WebSocket `send_pcm_chunk` returns), so variable encode/network time does not jitter playout timing. **Override** without editing YAML: set **`LIVEAVATAR_AUDIO_DELAY_MS`** in project-root `.env`. **Tune:** if the **mouth visibly lags** the sound you hear in the browser, **increase** the delay; if sound is clearly **after** the mouth, **decrease** it (try steps of ~50 ms).
+**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** by `liveavatar.audio_delay_ms` (default **750**) so it lines up with lip motion in the PiP. The pump records an **earliest** play time per chunk at **TTS dequeue** plus `audio_delay_ms` (not when WebSocket `send_pcm_chunk` returns), so variable Base64/network time does not smear rhythm. **`_audio_delay_relay`** then emits audio on a **gapless** timeline: actual start is `max(previous_chunk_end, earliest, now)`, preserving PCM duration between chunks. Without that chaining, many small chunks would schedule nearly the same deadline and **compress** the narration track, which makes lip-sync tuning feel ineffective. **Override** without editing YAML: set **`LIVEAVATAR_AUDIO_DELAY_MS`** in project-root `.env`. **Tune:** if the **mouth visibly lags** the sound you hear in the browser, **increase** the delay; if sound is clearly **after** the mouth, **decrease** it (try steps of ~50 ms).
 
 ```mermaid
 sequenceDiagram
@@ -356,7 +356,7 @@ Rust lines such as `failed to negotiate the publisher` may appear in **`docker c
 | `[MEDIA] fps=…` not ~30 in LiveAvatar/VR mode | Current build uses **deadline-based** pacing; sustained **~60+** may indicate an old build or clock skew. |
 | Playback stutters when TTS / LiveAvatar is active | **Same asyncio loop** runs VR pacing and WebSocket audio. Heavy **Base64 / `json.dumps`** for `agent.speak` used to block that loop (`liveavatar_session.py` now uses **`asyncio.to_thread`**). Also check client **`JPEG send_queue` full** or **high RAM** (whole GUI starves). VR/avatar **cv2** uses `_vr_executor` / `_avatar_executor`. |
 | Stutter with remote inference; server stdout shows `JPEG send_queue=30/30` | TCP/client cannot drain frames as fast as produced; often **high client RAM** or network. Root README → *Client send rate* / `_FRAME_QUEUE_MAX`. |
-| PiP lip sync off | Tune `liveavatar.audio_delay_ms` or **`LIVEAVATAR_AUDIO_DELAY_MS`** (mouth **lags** sound → **increase**; sound **lags** mouth → **decrease**). Delay is anchored at TTS chunk dequeue so WebSocket timing does not smear rhythm. |
+| PiP lip sync off | Tune `liveavatar.audio_delay_ms` or **`LIVEAVATAR_AUDIO_DELAY_MS`** (mouth **lags** sound → **increase**; sound **lags** mouth → **decrease**). Dequeue anchors earliest play time; relay uses a gapless timeline so steps of ~50 ms behave as expected. |
 | `QThread: Destroyed while thread '' is still running` on exit | A background thread (e.g. publisher) may still be stopping; ensure Free Switch / audience teardown completes before closing the app window, or wait for `[MEDIA] publisher stopped`. |
 
 ---
