@@ -25,90 +25,93 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 
 ## End-to-end flow
 
-### VR mode (default)
+**At a glance — how the two modes differ**
+
+| Topic | **VR mode** (`heygen.enabled: false`) | **HeyGen mode** (`heygen.enabled: true`) |
+|------|--------------------------------------|------------------------------------------|
+| **Prerequisite** | **Free Switch** must be on | Same |
+| **What viewers see** | Full-screen VR only | Full-screen VR + **bottom-right avatar (PiP)** |
+| **Narration audio** | Straight to **local** LiveKit | One path to **HeyGen** (drives mouth); one **~300 ms delayed** path to **local** LiveKit (A/V alignment) |
+| **How viewers join** | Same for both: `http://…:8080/audience` → JWT → WebRTC to **local** LiveKit | Same |
+
+The two diagrams below use the **same node IDs** (`VR`, `PCM`, `PUB`, `LK`, `HTTP`, `BR`). HeyGen mode adds only the **cloud** block in the middle.
+
+---
+
+### VR mode (narration + full-screen VR)
 
 ```mermaid
 flowchart LR
-  subgraph Control["First screen (GUI)"]
-    FS[FreeSwitchCameraThread]
-    GUI[MainWindow]
-    TTS[OpenAI TTS player thread]
-    PUB[AudiencePublisher]
+  subgraph SRC["① Sources (Free Switch on)"]
+    direction TB
+    VR["VR video<br/>FreeSwitch → MainWindow"]
+    PCM["Narration PCM<br/>OpenAI TTS → push_audio_chunk"]
   end
 
-  subgraph Infra["Local infra"]
-    LK[(LiveKit Docker)]
-    HTTP[AudienceTokenServer :8080]
+  PUB["② AudiencePublisher"]
+
+  subgraph LOC["③ Local SFU"]
+    LK["LiveKit (Docker)<br/>room · signaling :7880"]
   end
 
-  subgraph View["Second screen (browser)"]
-    PG[static/index.html]
-    LKJS[livekit-client]
+  subgraph AUD["④ Audience"]
+    direction TB
+    HTTP["FastAPI :8080<br/>/audience · /api/audience/join"]
+    BR["Browser<br/>livekit-client"]
   end
 
-  FS -->|signal_vr_frame| GUI
-  GUI -->|_deliver_audience_vr_frame| PUB
-  TTS -->|PCM sink push_audio_chunk| PUB
-  PUB -->|WebRTC publish avatar_video + narration| LK
-  HTTP -->|HTML + JWT join API| PG
-  PG -->|wss + token| LKJS
-  LKJS -->|subscribe| LK
+  VR --> PUB
+  PCM --> PUB
+  PUB -->|"publish avatar_video + narration"| LK
+  HTTP -->|"HTML + JWT"| BR
+  BR <-->|"subscribe"| LK
 ```
 
-### HeyGen avatar mode
+---
 
-Same **entry condition** as VR mode: the operator must be in **Free Switch** so `signal_vr_frame` feeds `_video_q` (VR full-frame background for PiP). The diagram shows VR path + cloud avatar path.
+### HeyGen mode (VR background + avatar PiP + narration)
 
 ```mermaid
 flowchart LR
-  subgraph Control["First screen (GUI) — Free Switch"]
-    FS[FreeSwitchCameraThread]
-    GUI[MainWindow]
-    TTS[OpenAI TTS player thread]
-    PUB[AudiencePublisher]
+  subgraph SRC["① Sources (Free Switch on)"]
+    direction TB
+    VR["VR video<br/>FreeSwitch → MainWindow"]
+    PCM["Narration PCM<br/>OpenAI TTS → push_audio_chunk"]
   end
 
-  subgraph HeyGenCloud["HeyGen cloud"]
-    HYLK[(HeyGen LiveKit room)]
-    HYAvatar[Avatar renderer]
+  PUB["② AudiencePublisher<br/>(PiP composite · delayed narration)"]
+
+  subgraph CLD["③ HeyGen cloud (only in this mode)"]
+    HG["HeyGen LiveKit room<br/>PCM drives lips · avatar video back"]
   end
 
-  subgraph Infra["Local infra"]
-    LK[(LiveKit Docker :7880)]
-    HTTP[AudienceTokenServer :8080]
+  subgraph LOC["④ Local SFU (viewers connect here only)"]
+    LK["LiveKit (Docker)<br/>room · signaling :7880"]
   end
 
-  subgraph View["Second screen (browser)"]
-    PG[static/index.html]
-    LKJS[livekit-client]
+  subgraph AUD["⑤ Audience"]
+    direction TB
+    HTTP["FastAPI :8080<br/>/audience · /api/audience/join"]
+    BR["Browser<br/>livekit-client"]
   end
 
-  FS -->|signal_vr_frame| GUI
-  GUI -->|_deliver_audience_vr_frame → _video_q| PUB
-  TTS -->|PCM push_audio_chunk| PUB
-  PUB -->|"audio (immediate)"| HYLK
-  HYLK --> HYAvatar
-  HYAvatar -->|avatar video| HYLK
-  HYLK -->|VideoStream frames| PUB
-  PUB -->|compose VR + PiP avatar → avatar_video| LK
-  PUB -->|"narration audio (delayed ~300ms)"| LK
-  HTTP -->|HTML + JWT| PG
-  PG -->|wss + token| LKJS
-  LKJS -->|subscribe| LK
+  VR --> PUB
+  PCM --> PUB
+  PUB <-->|"PCM up · avatar video down"| HG
+  PUB -->|"publish composited avatar_video + delayed narration"| LK
+  HTTP -->|"HTML + JWT"| BR
+  BR <-->|"subscribe"| LK
 ```
 
-**Step-by-step (HeyGen mode)**
+**HeyGen mode — steps (match numbered bands above)**
 
-| Step | Component | Action |
-|------|-----------|--------|
-| 0 | Operator / GUI | **Free Switch** on: `signal_vr_frame` → VR frames enqueued for PiP background |
-| 1 | Python backend | Calls OpenAI TTS API → PCM chunks |
-| 2 | Python backend | Sends PCM to `heygen_room` (drives avatar mouth) |
-| 3 | Python backend | Sends PCM to `local_room` with ~300 ms delay (audience hears speech after video arrives) |
-| 4 | HeyGen cloud | Renders avatar video and streams back via `heygen_room` |
-| 5 | Python backend | Subscribes to HeyGen video; composites **VR from `_video_q` (full frame) + avatar (bottom-right PiP)**; publishes to local room |
-| 6 | HTML frontend | Subscribes `avatar_video` + `narration` from `local_room` — video is the composited VR + avatar PiP |
-
+| Step | Who | What happens |
+|:--:|--|--|
+| ① | GUI + TTS | Free Switch feeds VR; TTS feeds PCM into `AudiencePublisher` |
+| ② | `AudiencePublisher` | Sends PCM to cloud; receives avatar stream; **composites PiP** with VR; sends **delayed** narration to local |
+| ③ | HeyGen | Cloud renders avatar; **HeyGen** LiveKit carries PCM + returned video |
+| ④ | Local LiveKit | Receives **composited** `avatar_video` + `narration` only |
+| ⑤ | Audience | Same as VR mode: open :8080 → JWT → subscribe **local** room |
 ### TTS path (why it matches first-screen timing)
 
 PCM still flows through a **single** `_audio_output_queue`. The player thread forwards each chunk to `push_audio_chunk` **and**, when `mute_local=True`, feeds **silence** to the local audio device so **hardware playback timing** stays aligned with unmuted mode. That keeps the LiveKit audio stream paced like normal local playback (see [openai_tts.py](../core/models/openai_tts.py)).
