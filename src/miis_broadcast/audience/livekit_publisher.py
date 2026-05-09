@@ -18,15 +18,20 @@ Two operating modes
    - TTS PCM is sent to LiveAvatar via **WebSocket** ``agent.speak`` (not a LiveKit mic track)
    - The same TTS PCM is also delayed and published as ``narration`` on the local room for lip-sync
    - Local audio gets a ~300 ms delay buffer to align lip sync with cloud video round-trip
-   - Each outgoing video frame composites the **VR program** (full frame from ``_video_q``)
-     with the **LiveAvatar** feed in a **bottom-right picture-in-picture** tile, then publishes
-     to local_room as ``broadcast_video``.
+   - VR video is published at a fixed 30 fps **independently** of the avatar cloud stream.
+     When an avatar frame is available it is composited as a bottom-right PiP tile.
+     If the cloud stream stalls or has not yet delivered a frame, the VR-only output is
+     published without interruption.
    - Track names: broadcast_video (video), narration (audio)
 
-Thread model
-------------
-  Qt main thread  → push_video_frame() / push_audio_chunk()  (non-blocking enqueue)
-  asyncio thread  ← drains queues, manages rooms, pumps A/V
+Thread / task model (LiveAvatar mode)
+--------------------------------------
+  Qt main thread → push_video_frame() / push_audio_chunk()   (non-blocking enqueue)
+  asyncio thread  ← four fully independent concurrent tasks:
+    _video_pump_vr_pip        – fixed 30 fps VR + optional avatar PiP (never waits for cloud)
+    _avatar_frame_reader_task – cloud frames → self._liveavatar_last_avatar_bgr cache only
+    _audio_pump_liveavatar    – TTS PCM → WebSocket agent.speak + delay queue
+    _audio_delay_relay        – delayed PCM → local narration AudioSource
 """
 
 from __future__ import annotations
@@ -54,7 +59,7 @@ class AudiencePublisher:
 
     When liveavatar_cfg is supplied the publisher manages a **LiveAvatar LITE** session (REST +
     WebSocket audio), subscribes to the cloud avatar video, and composites PiP onto the VR frame
-    for the local audience room.
+    for the local audience room.  VR publishing is fully independent of avatar availability.
     """
 
     VIDEO_W = 640
@@ -101,7 +106,7 @@ class AudiencePublisher:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
-        # VR frame queue (only used in VR mode)
+        # VR frame queue (both modes)
         self._video_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=3)
 
         # TTS PCM queue – LiveAvatar WebSocket + delayed local narration relay
@@ -112,8 +117,11 @@ class AudiencePublisher:
 
         self._liveavatar_session = None  # LiveAvatarSession | None
 
-        # Latest VR RGB frame for avatar PiP compositing (updated when _video_q is drained)
+        # Latest VR RGB frame cached for compositing (updated from _video_q)
         self._liveavatar_last_vr_rgb: Optional[np.ndarray] = None
+
+        # Latest decoded avatar BGR frame from cloud stream (updated by _avatar_frame_reader_task)
+        self._liveavatar_last_avatar_bgr: Optional[np.ndarray] = None
 
         self._connected = False
 
@@ -123,6 +131,7 @@ class AudiencePublisher:
         self._stop_event.clear()
         if self._liveavatar_cfg:
             self._liveavatar_last_vr_rgb = None
+            self._liveavatar_last_avatar_bgr = None
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="AudiencePublisher"
         )
@@ -178,14 +187,11 @@ class AudiencePublisher:
         - sends a short silence chunk over the events WebSocket (optional mouth settle)
         - sends `agent.interrupt` on that WebSocket (best-effort)
         """
-        # Clear the main TTS queue
         _drain_queue(self._audio_q)
 
-        # Clear the asyncio-side delay queue (thread-safe via put_nowait from event loop)
         if self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._flush_delay_queue_sync)
 
-        # Send silence + interrupt on LiveAvatar WebSocket (asyncio thread)
         if self._liveavatar_cfg and self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._liveavatar_interrupt_async())
@@ -282,7 +288,18 @@ class AudiencePublisher:
     # ── LiveAvatar LITE mode ───────────────────────────────────────────────
 
     async def _async_main_liveavatar(self) -> None:
-        """LiveAvatar LITE: WebSocket PCM + cloud LiveKit video subscribe + local PiP."""
+        """LiveAvatar LITE: four fully independent tasks running in parallel.
+
+        Task layout
+        -----------
+        _video_pump_vr_pip        VR at fixed 30 fps; overlays avatar PiP if cache is populated.
+                                  Starts immediately – never blocked by cloud avatar availability.
+        _avatar_frame_reader_task Subscribes to cloud avatar LiveKit room and continuously
+                                  updates self._liveavatar_last_avatar_bgr.  Failure or stall
+                                  has zero impact on VR publishing.
+        _audio_pump_liveavatar    Drains TTS PCM queue → WebSocket agent.speak + delay queue.
+        _audio_delay_relay        Forwards delayed PCM to local narration AudioSource.
+        """
         from livekit import rtc
         from .liveavatar_session import LiveAvatarSession
 
@@ -296,7 +313,6 @@ class AudiencePublisher:
         )
         self._liveavatar_session = session
 
-        # 1. LiveAvatar token + start (opens events WebSocket)
         try:
             await session.create()
             await session.start()
@@ -307,21 +323,19 @@ class AudiencePublisher:
         avatar_room_url = session.room_url
         avatar_room_token = session.access_token
 
-        # 2. Connect local room
         local_token = _make_publisher_token(
             self._api_key, self._api_secret, self._room_name
         )
         local_room = rtc.Room()
         avatar_room = rtc.Room()
 
-        # asyncio queue for the delayed local audio relay
         self._local_audio_delay_q = asyncio.Queue()
 
+        tasks: list[asyncio.Task] = []
         try:
             await local_room.connect(self._url, local_token)
             print(f"{_ts()} | [MEDIA] local_room connected | room={self._room_name}")
 
-            # 3. Publish broadcast_video + narration tracks to local room
             local_video_source = rtc.VideoSource(self.VIDEO_W, self.VIDEO_H)
             local_video_track = rtc.LocalVideoTrack.create_video_track(
                 "broadcast_video", local_video_source
@@ -344,22 +358,39 @@ class AudiencePublisher:
             )
             print(f"{_ts()} | [AUDIO] publish_start track=narration (liveavatar mode)")
 
-            # 4. Cloud room: subscribe to avatar video only (PCM goes via WebSocket)
             await avatar_room.connect(avatar_room_url, avatar_room_token)
             print(f"{_ts()} | [LIVEAVATAR] avatar_room connected | url={avatar_room_url}")
 
             self._connected = True
 
-            # 5. Run all concurrent tasks
-            await asyncio.gather(
-                self._audio_pump_liveavatar(session),
-                self._audio_delay_relay(local_audio_source),
-                self._video_pump_liveavatar(avatar_room, local_video_source),
-            )
+            # All four tasks are independent; cancellation is handled in the finally block.
+            tasks = [
+                asyncio.create_task(
+                    self._video_pump_vr_pip(local_video_source),
+                    name="vr_pip",
+                ),
+                asyncio.create_task(
+                    self._avatar_frame_reader_task(avatar_room),
+                    name="avatar_reader",
+                ),
+                asyncio.create_task(
+                    self._audio_pump_liveavatar(session),
+                    name="audio_pump",
+                ),
+                asyncio.create_task(
+                    self._audio_delay_relay(local_audio_source),
+                    name="audio_relay",
+                ),
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as exc:
             print(f"{_ts()} | [ERR] publisher session (liveavatar): {exc}")
         finally:
+            for t in tasks:
+                t.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
             self._connected = False
             await _safe_disconnect(local_room)
             await _safe_disconnect(avatar_room)
@@ -371,7 +402,7 @@ class AudiencePublisher:
     async def _video_pump_vr(self, source) -> None:
         """VR mode: drain _video_q → local VideoSource at a fixed 30 fps.
 
-        Repeats the last received frame when the queue is momentarily empty so
+        Holds the last received frame when the queue is momentarily empty so
         the output stream stays smooth even if the VR thread stalls briefly.
         """
         from livekit import rtc
@@ -386,13 +417,11 @@ class AudiencePublisher:
         while not self._stop_event.is_set():
             t0 = time.perf_counter()
 
-            # Drain queue and keep only the latest frame (drop stale ones).
             latest = self._drain_video_q_latest()
             if latest is not None:
                 last_frame_rgb = latest
 
             if last_frame_rgb is None:
-                # No frame yet – just wait one frame interval and try again.
                 await asyncio.sleep(frame_interval)
                 continue
 
@@ -424,25 +453,13 @@ class AudiencePublisher:
             if sleep_t > 0:
                 await asyncio.sleep(sleep_t)
 
-    async def _video_pump_liveavatar(
-        self, avatar_room, local_video_source
-    ) -> None:
-        """LiveAvatar: cloud avatar video + VR from _video_q → composite (PiP) → local room.
+    async def _video_pump_vr_pip(self, local_video_source) -> None:
+        """LiveAvatar mode: VR at fixed 30 fps with optional avatar PiP overlay.
 
-        Architecture
-        ------------
-        Two concurrent sub-tasks share a ``latest_avatar_bgr`` cell:
-
-        * ``_avatar_frame_reader`` – continuously reads frames from the cloud
-          LiveKit VideoStream and caches the latest decoded BGR image.  It never
-          blocks the compositor; a slow or jittery cloud stream only affects the
-          freshness of the avatar PiP, not the output frame rate.
-
-        * ``_compositor_loop`` – runs at a fixed 30 fps, composites the latest
-          VR background with the latest avatar PiP (or VR-only if no avatar frame
-          has arrived yet), and pushes the result to the local_room VideoSource.
-          This guarantees smooth output even when the cloud avatar stream has
-          network hiccups.
+        This task is completely independent of the avatar cloud stream.  It reads
+        self._liveavatar_last_avatar_bgr (updated by _avatar_frame_reader_task) and
+        overlays it as a PiP if a frame is available.  If the cloud stream stalls or
+        has not delivered a frame yet, plain VR is published without any interruption.
         """
         from livekit import rtc
 
@@ -451,11 +468,72 @@ class AudiencePublisher:
 
         fps_count = 0
         fps_ts = time.perf_counter()
+
+        while not self._stop_event.is_set():
+            t0 = time.perf_counter()
+
+            latest_vr = self._drain_video_q_latest()
+            if latest_vr is not None:
+                self._liveavatar_last_vr_rgb = latest_vr
+
+            vr_rgb = self._liveavatar_last_vr_rgb
+            if vr_rgb is None:
+                await asyncio.sleep(frame_interval)
+                continue
+
+            avatar_bgr = self._liveavatar_last_avatar_bgr
+
+            if avatar_bgr is not None:
+                out_rgb = _composite_vr_avatar_pip(
+                    vr_rgb,
+                    avatar_bgr,
+                    self.VIDEO_W,
+                    self.VIDEO_H,
+                    max_frac=_PIP_MAX_FRAC,
+                    margin=_PIP_MARGIN_PX,
+                )
+            else:
+                # Avatar not yet available – publish VR only.
+                bg = cv2.resize(vr_rgb, (self.VIDEO_W, self.VIDEO_H))
+                out_rgb = bg if bg.shape[2] == 3 else cv2.cvtColor(bg, cv2.COLOR_BGR2RGB)
+
+            frame_rgba = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2RGBA)
+            out_frame = rtc.VideoFrame(
+                width=self.VIDEO_W,
+                height=self.VIDEO_H,
+                type=rtc.VideoBufferType.RGBA,
+                data=bytearray(frame_rgba.tobytes()),
+            )
+            local_video_source.capture_frame(out_frame)
+
+            fps_count += 1
+            now = time.perf_counter()
+            if now - fps_ts >= self.STATS_INTERVAL_S:
+                fps = fps_count / (now - fps_ts)
+                pip_state = "pip" if avatar_bgr is not None else "vr-only"
+                vr_drop = self._video_q.qsize()
+                print(
+                    f"{_ts()} | [MEDIA] fps={fps:.1f} ({pip_state}) vr_q={vr_drop}"
+                )
+                fps_count = 0
+                fps_ts = now
+
+            elapsed = time.perf_counter() - t0
+            sleep_t = frame_interval - elapsed
+            if sleep_t > 0:
+                await asyncio.sleep(sleep_t)
+
+    async def _avatar_frame_reader_task(self, avatar_room) -> None:
+        """Subscribe to cloud avatar LiveKit video and update self._liveavatar_last_avatar_bgr.
+
+        This task runs independently of VR publishing.  If the cloud stream stalls,
+        delivers corrupt frames, or disconnects, the exception is caught and logged;
+        the VR compositor continues to run using the last cached frame (or no PiP).
+        """
+        from livekit import rtc
+
         video_stream = None
         track_found = asyncio.Event()
-
-        # Shared mutable cell: latest decoded avatar BGR frame (or None).
-        latest_avatar_bgr: list = [None]
 
         def _on_track_subscribed(track, pub, participant):
             nonlocal video_stream
@@ -469,20 +547,17 @@ class AudiencePublisher:
                 )
                 track_found.set()
 
-        # Python livekit.rtc uses string event names (unlike JS SDK's RoomEvent enum).
         avatar_room.on("track_subscribed", _on_track_subscribed)
 
-        # Wait for cloud avatar video (up to 30s)
         try:
             await asyncio.wait_for(track_found.wait(), timeout=30)
         except asyncio.TimeoutError:
-            print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar video track not received in 30s")
+            print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar video track not received in 30s; PiP disabled")
             return
 
-        print(f"{_ts()} | [LIVEAVATAR] starting avatar video relay → local_room (VR + PiP)")
+        print(f"{_ts()} | [LIVEAVATAR] avatar frame reader started")
 
-        async def _avatar_frame_reader() -> None:
-            """Decode incoming cloud frames and update latest_avatar_bgr cache."""
+        try:
             async for frame_event in video_stream:
                 if self._stop_event.is_set():
                     break
@@ -497,70 +572,13 @@ class AudiencePublisher:
                     if img_data.size != h * w * 3:
                         continue
                     img_rgb = img_data.reshape(h, w, 3)
-                    latest_avatar_bgr[0] = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                    self._liveavatar_last_avatar_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
                 except Exception as exc:
                     print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar frame decode: {exc}")
-
-        async def _compositor_loop() -> None:
-            """Fixed-rate compositor: composite VR + avatar PiP and publish."""
-            nonlocal fps_count, fps_ts
-
-            while not self._stop_event.is_set():
-                t0 = time.perf_counter()
-
-                avatar_bgr = latest_avatar_bgr[0]
-
-                latest_vr = self._drain_video_q_latest()
-                if latest_vr is not None:
-                    self._liveavatar_last_vr_rgb = latest_vr
-                vr_rgb = self._liveavatar_last_vr_rgb
-                if vr_rgb is None:
-                    vr_rgb = np.zeros(
-                        (self.VIDEO_H, self.VIDEO_W, 3), dtype=np.uint8
-                    )
-
-                if avatar_bgr is not None:
-                    out_rgb = _composite_vr_avatar_pip(
-                        vr_rgb,
-                        avatar_bgr,
-                        self.VIDEO_W,
-                        self.VIDEO_H,
-                        max_frac=_PIP_MAX_FRAC,
-                        margin=_PIP_MARGIN_PX,
-                    )
-                else:
-                    # Avatar stream not yet available – publish VR only.
-                    bg = cv2.resize(vr_rgb, (self.VIDEO_W, self.VIDEO_H))
-                    out_rgb = cv2.cvtColor(
-                        cv2.cvtColor(bg, cv2.COLOR_RGB2BGR), cv2.COLOR_BGR2RGB
-                    )
-
-                frame_rgba = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2RGBA)
-                out_frame = rtc.VideoFrame(
-                    width=self.VIDEO_W,
-                    height=self.VIDEO_H,
-                    type=rtc.VideoBufferType.RGBA,
-                    data=bytearray(frame_rgba.tobytes()),
-                )
-                local_video_source.capture_frame(out_frame)
-
-                fps_count += 1
-                now = time.perf_counter()
-                if now - fps_ts >= self.STATS_INTERVAL_S:
-                    fps = fps_count / (now - fps_ts)
-                    vr_drop = self._video_q.qsize()
-                    print(
-                        f"{_ts()} | [MEDIA] fps={fps:.1f} (liveavatar+vr pip) vr_q={vr_drop}"
-                    )
-                    fps_count = 0
-                    fps_ts = now
-
-                elapsed = time.perf_counter() - t0
-                sleep_t = frame_interval - elapsed
-                if sleep_t > 0:
-                    await asyncio.sleep(sleep_t)
-
-        await asyncio.gather(_avatar_frame_reader(), _compositor_loop())
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar frame reader stopped: {exc}")
 
     async def _audio_pump_direct(self, source) -> None:
         """VR mode: drain _audio_q → local AudioSource (no delay)."""

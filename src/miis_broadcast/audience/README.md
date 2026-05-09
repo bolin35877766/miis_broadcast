@@ -7,7 +7,7 @@ Two operating modes are supported (toggled by `configs/app.yml`):
 | Mode | Video source | Audio path |
 |------|-------------|------------|
 | **VR mode** (default, `liveavatar.enabled: false`) | VR camera frames from `FreeSwitchCameraThread` | TTS PCM → local room directly |
-| **LiveAvatar mode** (`liveavatar.enabled: true`) | VR full screen + LiveAvatar avatar as **picture-in-picture** (bottom-right) | TTS PCM → LiveAvatar **WebSocket** (`agent.speak`) **and** local room (delayed ~300 ms for A/V sync) |
+| **LiveAvatar mode** (`liveavatar.enabled: true`) | VR full screen + LiveAvatar avatar as **picture-in-picture** (bottom-right, optional) | TTS PCM → LiveAvatar **WebSocket** (`agent.speak`) **and** local room (delayed ~300 ms for A/V sync) |
 
 Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_server`, `_start_audience_services`, `_deliver_audience_vr_frame`). For input workers and frame contracts, see [workers/README.md](../workers/README.md).
 
@@ -35,6 +35,9 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 | **How viewers join** | Same for both: `http://…:8080/audience` → JWT → WebRTC to **local** LiveKit | Same |
 
 The LiveAvatar diagram below splits **control-plane** (REST, once per run) from **media**: **WebSocket** carries narration PCM (`agent.speak`); **LiveAvatar LiveKit** carries the rendered avatar video back. Local Docker LiveKit is unchanged for the browser.
+
+> **VR is fully independent of the avatar cloud stream.**
+> `_video_pump_vr_pip` runs at a fixed **30 fps** from the moment Free Switch starts, regardless of whether the avatar track has arrived.  The avatar PiP is overlaid only when a cached frame is available; if the cloud stalls the VR output continues uninterrupted.  The four tasks below run in parallel with no shared blocking dependency.
 
 ---
 
@@ -81,7 +84,13 @@ flowchart LR
     PCM["Narration PCM<br/>OpenAI TTS → push_audio_chunk"]
   end
 
-  PUB["② AudiencePublisher<br/>PiP composite · delayed local narration"]
+  subgraph PUB["② AudiencePublisher — 4 independent asyncio tasks"]
+    direction TB
+    TVRPIP["_video_pump_vr_pip<br/>VR 30 fps (always on)<br/>+ avatar PiP when cached"]
+    TAVR["_avatar_frame_reader_task<br/>cloud frames → cache<br/>(does NOT block VR)"]
+    TAPU["_audio_pump_liveavatar<br/>PCM → WebSocket + delay queue"]
+    TREL["_audio_delay_relay<br/>delayed PCM → local narration"]
+  end
 
   subgraph CLD["③ LiveAvatar LITE cloud"]
     direction TB
@@ -99,23 +108,34 @@ flowchart LR
     BR["Browser livekit-client"]
   end
 
-  VR --> PUB
-  PCM --> PUB
-  PUB -->|"agent.speak"| WS
-  PUB <-->|"WebRTC client"| CLK
-  PUB -->|"broadcast_video VR+PiP + narration"| LK
+  VR --> TVRPIP
+  PCM --> TAPU
+  CLK -->|"avatar frames"| TAVR
+  TAVR -.->|"cached BGR frame"| TVRPIP
+  TAPU -->|"agent.speak"| WS
+  TVRPIP -->|"broadcast_video VR+PiP"| LK
+  TREL -->|"narration (delayed)"| LK
   HTTP -->|"HTML + JWT"| BR
   BR <-->|"subscribe"| LK
 ```
+
+**LiveAvatar mode — tasks (match ② above)**
+
+| Task | Starts | Depends on cloud? | What it does |
+|--|--|--|--|
+| `_video_pump_vr_pip` | Immediately | **No** | VR at fixed 30 fps; overlays PiP from cache if available |
+| `_avatar_frame_reader_task` | Immediately | Yes (up to 30 s wait) | Reads cloud avatar frames, updates `_liveavatar_last_avatar_bgr` only |
+| `_audio_pump_liveavatar` | Immediately | No | Drains TTS PCM → WebSocket `agent.speak` + delay queue |
+| `_audio_delay_relay` | Immediately | No | Forwards delayed PCM → local `narration` AudioSource |
 
 **LiveAvatar mode — steps (match numbered bands above)**
 
 | Step | Who | What happens |
 |:--:|--|--|
 | ① | GUI + TTS | Free Switch feeds VR; TTS feeds PCM into `AudiencePublisher` |
-| ② | `AudiencePublisher` | After REST bootstrap: holds **WebSocket** + **cloud LiveKit** client; sends PCM with **`agent.speak`**; reads avatar **video** from cloud LiveKit; **composites PiP**; publishes **delayed** `narration` locally |
-| ③ | LiveAvatar | **WebSocket** ingests PCM for lip sync; **cloud LiveKit** delivers avatar video to the publisher |
-| ④ | Local LiveKit | Receives **composited** `broadcast_video` + `narration` only |
+| ② | `AudiencePublisher` | Four tasks start in parallel; VR publishing never waits for avatar; PiP appears once first cloud frame is cached |
+| ③ | LiveAvatar | **WebSocket** ingests PCM for lip sync; **cloud LiveKit** delivers avatar video to `_avatar_frame_reader_task` |
+| ④ | Local LiveKit | Receives `broadcast_video` (VR or VR+PiP) + delayed `narration` |
 | ⑤ | Audience | Same as VR: :8080 → JWT → subscribe **local** room |
 
 ### TTS path (why it matches first-screen timing)
@@ -265,7 +285,8 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[MEDIA] publish_start track=broadcast_video (vr mode)` | VR-only pixels on the shared video track name. |
 | `[MEDIA] publish_start track=broadcast_video (liveavatar mode)` | VR + PiP composite on the same track name. |
 | `[MEDIA] fps=29.0 drop=0 (vr)` | VR pump stats; `drop` = backpressure. |
-| `[MEDIA] fps=29.0 (liveavatar+vr pip) vr_q=…` | LiveAvatar PiP composite pump stats; `vr_q` = pending VR queue depth. |
+| `[MEDIA] fps=29.0 (pip) vr_q=…` | LiveAvatar mode; avatar PiP overlay active; `vr_q` = pending VR queue depth. |
+| `[MEDIA] fps=29.0 (vr-only) vr_q=…` | LiveAvatar mode; avatar cache empty (cloud not ready / stalled); VR published without PiP. |
 | `[MEDIA] disconnected from LiveKit` | Clean disconnect. |
 | `[MEDIA] publisher stopped` | Thread joined after `stop()`. |
 | `[WARN] [MEDIA] publisher thread hung; forcing event loop stop` | Graceful shutdown timed out. |
@@ -279,12 +300,13 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[LIVEAVATAR] session token created` | Token OK; about to start session. |
 | `[LIVEAVATAR] session started \| session_id=… livekit=…` | POST `/v1/sessions/start` + WebSocket ready. |
 | `[LIVEAVATAR] avatar_room connected \| url=…` | Connected to cloud LiveKit (video subscribe). |
-| `[LIVEAVATAR] avatar video track subscribed \| participant=…` | Avatar video track received. |
-| `[LIVEAVATAR] starting avatar video relay → local_room (VR + PiP)` | PiP composite loop started (local `broadcast_video`). |
+| `[LIVEAVATAR] avatar video track subscribed \| participant=…` | Cloud avatar video track received; frame reader starts decoding. |
+| `[LIVEAVATAR] avatar frame reader started` | Frame decode loop active; PiP will appear on next compositor tick. |
+| `[WARN] [LIVEAVATAR] avatar frame not received in 30s; PiP disabled` | Cloud track never arrived; VR continues without PiP. |
 | `[LIVEAVATAR] interrupt sent` | WebSocket `agent.interrupt` (TTS preempted). |
 | `[LIVEAVATAR] silence chunk sent (100 ms)` | Short silence after interrupt / flush. |
 | `[LIVEAVATAR] session stopped \| session_id=…` | POST `/v1/sessions/stop` on clean shutdown. |
-| `[WARN] [LIVEAVATAR] avatar video track not received in 30s` | No video from cloud; check API key / network. |
+| `[WARN] [LIVEAVATAR] avatar video track not received in 30s; PiP disabled` | No video from cloud; VR continues; check API key / network. |
 | `[ERR] [LIVEAVATAR] failed to start session: …` | REST or WebSocket error; check `LIVEAVATAR_API_KEY` / `avatar_id`. |
 
 ### `[AUDIO]` — publisher narration track + PCM hook
