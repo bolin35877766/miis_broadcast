@@ -422,7 +422,9 @@ class AudiencePublisher:
                     f"{_ts()} | [LIVEAVATAR] avatar video track subscribed | "
                     f"participant={participant.identity}"
                 )
-                video_stream = rtc.VideoStream(track)
+                video_stream = rtc.VideoStream(
+                    track, format=rtc.VideoBufferType.RGB24
+                )
                 track_found.set()
 
         # Python livekit.rtc uses string event names (unlike JS SDK's RoomEvent enum).
@@ -444,20 +446,17 @@ class AudiencePublisher:
             raw_frame = frame_event.frame
 
             try:
-                img_data = np.frombuffer(raw_frame.data, dtype=np.uint8)
-                src_h = raw_frame.height
-                src_w = raw_frame.width
-                buf_type = raw_frame.type
-
-                if buf_type == rtc.VideoBufferType.RGBA:
-                    img = img_data.reshape(src_h, src_w, 4)
-                    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-                elif buf_type == rtc.VideoBufferType.RGB24:
-                    img = img_data.reshape(src_h, src_w, 3)
-                    img_bgr = img
-                else:
-                    img = img_data.reshape(src_h, src_w, 4)
-                    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+                # Remote tracks often use I420/NV12; buffer size != width*height*4. Use SDK convert.
+                conv = raw_frame.convert(rtc.VideoBufferType.RGB24)
+                img_data = np.frombuffer(conv.data, dtype=np.uint8)
+                h, w = conv.height, conv.width
+                need = h * w * 3
+                if img_data.size != need:
+                    raise ValueError(
+                        f"RGB24 size mismatch: got {img_data.size} need {need} ({w}x{h})"
+                    )
+                img_rgb = img_data.reshape(h, w, 3)
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
                 latest_vr = self._drain_video_q_latest()
                 if latest_vr is not None:
