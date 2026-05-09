@@ -1958,11 +1958,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Build HeyGen config if enabled; passing None falls back to VR-frame mode
         heygen_raw = self.configs.get("heygen", {})
         heygen_cfg = None
-        if heygen_raw.get("enabled", False) and heygen_raw.get("api_key", ""):
+        raw_key = (heygen_raw.get("api_key") or "").strip()
+        if heygen_raw.get("enabled", False) and raw_key:
             heygen_cfg = {
-                "api_key":    heygen_raw.get("api_key", ""),
-                "avatar_id":  heygen_raw.get("avatar_id", ""),
-                "voice_id":   heygen_raw.get("voice_id", ""),
+                "api_key":    raw_key,
+                "avatar_id":  (heygen_raw.get("avatar_id") or "").strip(),
+                "voice_id":   (heygen_raw.get("voice_id") or "").strip(),
                 "quality":    heygen_raw.get("quality", "medium"),
                 "audio_delay_ms": int(heygen_raw.get("audio_delay_ms", 300)),
             }

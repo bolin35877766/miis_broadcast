@@ -181,6 +181,16 @@ sequenceDiagram
 
 ## Configuration reference ([configs/app.yml](../../../configs/app.yml))
 
+### Local secrets (`configs/app.local.yml`)
+
+Do **not** commit HeyGen API keys (or other production secrets) in `app.yml` if the repo is shared or public. Use a **gitignored** file:
+
+1. Copy [`app.local.example.yml`](../../../configs/app.local.example.yml) → `configs/app.local.yml`
+2. Set `heygen.api_key`, `heygen.avatar_id`, etc. there
+3. At startup, `app.yml` is loaded and then **merged** with `app.local.yml` (local wins)
+
+If credentials were pushed to GitHub: **rotate them** in the HeyGen dashboard; consider [removing secrets from git history](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository) for a public repo.
+
 ### `audience` section
 
 | Key | Meaning |

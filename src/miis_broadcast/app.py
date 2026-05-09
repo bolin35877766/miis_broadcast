@@ -3,7 +3,7 @@ import sys
 from PySide6 import QtWidgets
 
 from .gui import MainWindow
-from .core.utils.config import parse_configs
+from .core.utils.config import load_app_config_with_local, parse_configs
 
 CONFIG_PATH = './configs/app.yml'
 MODEL_CONFIG_PATH = './configs/models.yml'
@@ -12,8 +12,8 @@ def main():
     logging.basicConfig(filename='logs/app_error.log', level=logging.INFO)
     app = QtWidgets.QApplication([])
 
-    # Config parsing
-    configs = parse_configs(CONFIG_PATH)
+    # Config parsing (merge configs/app.local.yml when present — keep secrets out of git)
+    configs = load_app_config_with_local(CONFIG_PATH)
     model_configs = parse_configs(MODEL_CONFIG_PATH)
     classifier_configs = model_configs['classifiers']
 

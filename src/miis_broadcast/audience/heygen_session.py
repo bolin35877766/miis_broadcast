@@ -225,6 +225,6 @@ class HeyGenSession:
 
     def _headers(self) -> dict:
         return {
-            "X-Api-Key": self._api_key,
+            "X-Api-Key": (self._api_key or "").strip(),
             "Content-Type": "application/json",
         }

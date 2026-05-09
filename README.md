@@ -228,6 +228,8 @@ audience:
   port: 8080
 ```
 
+**HeyGen / other secrets:** keep production keys out of git. Copy [`configs/app.local.example.yml`](configs/app.local.example.yml) to **`configs/app.local.yml`** (ignored by git). The app loads `app.yml` first, then merges `app.local.yml` on top. **If a key was ever pushed to GitHub, revoke it in the vendor dashboard and create a new key** — rewriting git history does not undo a leaked credential.
+
 ### Commentary styles ([configs/livecc_prompts.yml](configs/livecc_prompts.yml))
 
 Add or edit styles under the `styles` key. Each style needs:

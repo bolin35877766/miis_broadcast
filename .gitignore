@@ -5,6 +5,9 @@ examples/
 # Environment variables
 .env
 
+# Local-only secrets (HeyGen API key, etc.) — copy from configs/app.local.example.yml
+configs/app.local.yml
+
 # Logs
 logs/
 
