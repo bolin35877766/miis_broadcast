@@ -458,10 +458,8 @@ class AudiencePublisher:
         loop = asyncio.get_running_loop()
 
         fps_count = 0
-        skip_count = 0
         fps_ts = time.perf_counter()
         last_frame_rgb: Optional[np.ndarray] = None
-        last_lk_frame = None
         next_deadline = time.perf_counter()
 
         while not self._stop_event.is_set():
@@ -477,35 +475,26 @@ class AudiencePublisher:
                 await _async_sleep_until_deadline(next_deadline)
                 continue
 
-            behind = time.perf_counter() - next_deadline
-            if behind > frame_interval and last_lk_frame is not None:
-                source.capture_frame(last_lk_frame)
-                skip_count += 1
-            else:
-                # Dedicated VR executor – never shares threads with avatar decode.
-                buf = await loop.run_in_executor(
-                    self._vr_executor, _build_vr_only_frame_sync,
-                    last_frame_rgb, self.VIDEO_W, self.VIDEO_H,
-                )
-                last_lk_frame = rtc.VideoFrame(
-                    width=self.VIDEO_W,
-                    height=self.VIDEO_H,
-                    type=rtc.VideoBufferType.RGBA,
-                    data=buf,
-                )
-                source.capture_frame(last_lk_frame)
+            # Dedicated VR executor – never shares threads with avatar decode.
+            buf = await loop.run_in_executor(
+                self._vr_executor, _build_vr_only_frame_sync,
+                last_frame_rgb, self.VIDEO_W, self.VIDEO_H,
+            )
+            lk_frame = rtc.VideoFrame(
+                width=self.VIDEO_W,
+                height=self.VIDEO_H,
+                type=rtc.VideoBufferType.RGBA,
+                data=buf,
+            )
+            source.capture_frame(lk_frame)
 
             fps_count += 1
             now = time.perf_counter()
             if now - fps_ts >= self.STATS_INTERVAL_S:
                 fps = fps_count / (now - fps_ts)
                 drop = self._video_q.qsize()
-                print(
-                    f"{_ts()} | [MEDIA] fps={fps:.1f} drop={drop} (vr)"
-                    + (f" skip={skip_count}" if skip_count else "")
-                )
+                print(f"{_ts()} | [MEDIA] fps={fps:.1f} drop={drop} (vr)")
                 fps_count = 0
-                skip_count = 0
                 fps_ts = now
 
             next_deadline += frame_interval
@@ -528,14 +517,8 @@ class AudiencePublisher:
         loop = asyncio.get_running_loop()
 
         fps_count = 0
-        skip_count = 0
         fps_ts = time.perf_counter()
         next_deadline = time.perf_counter()
-
-        # Cache the last rendered RGBA buffer so we can re-publish it without
-        # going through the executor when the machine is behind schedule.
-        last_buf: bytearray | None = None
-        last_lk_frame: "rtc.VideoFrame | None" = None
 
         while not self._stop_event.is_set():
             latest_vr = self._drain_video_q_latest()
@@ -555,28 +538,17 @@ class AudiencePublisher:
             pip_snapshot = self._liveavatar_pip_tile
             pip_state = "pip" if pip_snapshot is not None else "vr-only"
 
-            # If we are already more than one frame behind, skip the expensive
-            # executor composite and re-publish the last buffer instead.
-            # This prevents the executor queue from backing up when the OS is
-            # under memory/CPU pressure (e.g. JPEG send_queue full, RAM ~86%).
-            behind = time.perf_counter() - next_deadline
-            if behind > frame_interval and last_lk_frame is not None:
-                local_video_source.capture_frame(last_lk_frame)
-                skip_count += 1
-            else:
-                # Dedicated VR executor – never shares threads with avatar decode.
-                buf = await loop.run_in_executor(
-                    self._vr_executor, _build_vr_pip_frame_sync,
-                    vr_rgb, pip_snapshot, self.VIDEO_W, self.VIDEO_H,
-                )
-                last_buf = buf
-                last_lk_frame = rtc.VideoFrame(
-                    width=self.VIDEO_W,
-                    height=self.VIDEO_H,
-                    type=rtc.VideoBufferType.RGBA,
-                    data=buf,
-                )
-                local_video_source.capture_frame(last_lk_frame)
+            buf = await loop.run_in_executor(
+                self._vr_executor, _build_vr_pip_frame_sync,
+                vr_rgb, pip_snapshot, self.VIDEO_W, self.VIDEO_H,
+            )
+            out_frame = rtc.VideoFrame(
+                width=self.VIDEO_W,
+                height=self.VIDEO_H,
+                type=rtc.VideoBufferType.RGBA,
+                data=buf,
+            )
+            local_video_source.capture_frame(out_frame)
 
             fps_count += 1
             now = time.perf_counter()
@@ -585,10 +557,8 @@ class AudiencePublisher:
                 vr_drop = self._video_q.qsize()
                 print(
                     f"{_ts()} | [MEDIA] fps={fps:.1f} ({pip_state}) vr_q={vr_drop}"
-                    + (f" skip={skip_count}" if skip_count else "")
                 )
                 fps_count = 0
-                skip_count = 0
                 fps_ts = now
 
             next_deadline += frame_interval

@@ -280,7 +280,7 @@ Keep **`LIVEAVATAR_API_KEY`** (and optionally **`LIVEAVATAR_AVATAR_ID`**, **`LIV
 
 These lines appear on **`python -m miis_broadcast`** stdout (not the browser). They are **separate** from session files under `logs/sessions/` and from server `[Server]` / `[Client]` telemetry in remote inference.
 
-**`[MEDIA]`** always means the **local audience** LiveKit path (composite video → `broadcast_video`, and session connect/disconnect). **`[AUDIO]`** means the **`narration`** track on that same local room **and** the TTS → publisher PCM pipeline stats — the prefixes did **not** change meaning; only the periodic `[MEDIA] fps=…` line may add optional `skip=` when the machine is behind and the publisher re-sends the last frame instead of recompositing.
+**`[MEDIA]`** always means the **local audience** LiveKit path (composite video → `broadcast_video`, and session connect/disconnect). **`[AUDIO]`** means the **`narration`** track on that same local room **and** the TTS → publisher PCM pipeline stats — the prefixes did **not** change meaning.
 
 ### `[AUDIENCE]` — HTTP token server
 
@@ -303,8 +303,8 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[MEDIA] local_room connected \| room=…` | LiveAvatar mode: local room connected. |
 | `[MEDIA] publish_start track=broadcast_video (vr mode)` | VR-only pixels on the shared video track name. |
 | `[MEDIA] publish_start track=broadcast_video (liveavatar mode)` | VR + PiP composite on the same track name. |
-| `[MEDIA] fps=29.0 drop=0 (vr)` | VR pump stats; `drop` = `_video_q` depth (not dropped frames). Optional `skip=` = frames that repeated the last buffer to catch up. |
-| `[MEDIA] fps=29.0 (pip) vr_q=…` | LiveAvatar mode; avatar PiP overlay active; `vr_q` = `_video_q` depth. Optional `skip=` as above. |
+| `[MEDIA] fps=29.0 drop=0 (vr)` | VR pump stats; `drop` = `_video_q` depth (not dropped frames). |
+| `[MEDIA] fps=29.0 (pip) vr_q=…` | LiveAvatar mode; PiP overlay active; `vr_q` = `_video_q` depth. |
 | `[MEDIA] fps=29.0 (vr-only) vr_q=…` | LiveAvatar mode; avatar cache empty (cloud not ready / stalled); VR published without PiP. |
 | `[MEDIA] disconnected from LiveKit` | Clean disconnect. |
 | `[MEDIA] publisher stopped` | Thread joined after `stop()`. |
