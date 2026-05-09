@@ -1973,7 +1973,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     or ""
                 ).strip(),
                 "quality":    la_raw.get("quality", "medium"),
-                "audio_delay_ms": int(la_raw.get("audio_delay_ms", 300)),
+                "audio_delay_ms": int(la_raw.get("audio_delay_ms", 450)),
                 "sandbox":    bool(la_raw.get("sandbox", False)),
             }
             print(

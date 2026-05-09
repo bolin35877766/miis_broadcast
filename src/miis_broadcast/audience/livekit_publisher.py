@@ -17,7 +17,8 @@ Two operating modes
        avatar_room  → LiveAvatar cloud LiveKit (video subscribe only)
    - TTS PCM is sent to LiveAvatar via **WebSocket** ``agent.speak`` (not a LiveKit mic track)
    - The same TTS PCM is also delayed and published as ``narration`` on the local room for lip-sync
-   - Local audio gets a ~300 ms delay buffer to align lip sync with cloud video round-trip
+   - Local audio gets a configurable delay (``audio_delay_ms``, default ~450 ms) so browser
+     narration matches lip motion in the PiP; tune per network / machine.
    - VR video is published at a fixed 30 fps **independently** of the avatar cloud stream.
      When an avatar frame is available it is composited as a bottom-right PiP tile.
      If the cloud stream stalls or has not yet delivered a frame, the VR-only output is
@@ -29,7 +30,7 @@ Thread / task model (LiveAvatar mode)
   Qt main thread → push_video_frame() / push_audio_chunk()   (non-blocking enqueue)
   asyncio thread  ← four fully independent concurrent tasks:
     _video_pump_vr_pip        – fixed 30 fps VR + optional avatar PiP (never waits for cloud)
-    _avatar_frame_reader_task – cloud frames → self._liveavatar_last_avatar_bgr cache only
+    _avatar_frame_reader_task – cloud frames → pre-scaled PiP tile cache (decodes off hot path)
     _audio_pump_liveavatar    – TTS PCM → WebSocket agent.speak + delay queue
     _audio_delay_relay        – delayed PCM → local narration AudioSource
 """
@@ -48,6 +49,19 @@ import numpy as np
 
 def _ts() -> str:
     return time.strftime("%H:%M:%S")
+
+
+async def _async_sleep_until_deadline(deadline: float) -> None:
+    """Block until time.perf_counter() >= deadline.
+
+    Loops asyncio.sleep(remaining) because a single sleep may wake early on Windows,
+    which previously pushed video pumps to ~60+ fps instead of the target rate.
+    """
+    while True:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(remaining)
 
 
 _PIP_MAX_FRAC = 0.30
@@ -96,10 +110,10 @@ class AudiencePublisher:
         self._liveavatar_cfg: Optional[dict] = liveavatar_cfg
 
         # Local audience audio delay in LiveAvatar mode (seconds); from configs/app.yml audio_delay_ms
-        self._local_audio_delay_s = 0.30
+        self._local_audio_delay_s = 0.45
         if liveavatar_cfg is not None:
             self._local_audio_delay_s = max(
-                0.0, float(liveavatar_cfg.get("audio_delay_ms", 300)) / 1000.0
+                0.0, float(liveavatar_cfg.get("audio_delay_ms", 450)) / 1000.0
             )
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -120,8 +134,10 @@ class AudiencePublisher:
         # Latest VR RGB frame cached for compositing (updated from _video_q)
         self._liveavatar_last_vr_rgb: Optional[np.ndarray] = None
 
-        # Latest decoded avatar BGR frame from cloud stream (updated by _avatar_frame_reader_task)
-        self._liveavatar_last_avatar_bgr: Optional[np.ndarray] = None
+        # Pre-scaled PiP tile (BGR) + rect from cloud avatar (updated by _avatar_frame_reader_task)
+        self._liveavatar_pip_tile: Optional[
+            tuple[np.ndarray, int, int, int, int]
+        ] = None
 
         self._connected = False
 
@@ -131,7 +147,7 @@ class AudiencePublisher:
         self._stop_event.clear()
         if self._liveavatar_cfg:
             self._liveavatar_last_vr_rgb = None
-            self._liveavatar_last_avatar_bgr = None
+            self._liveavatar_pip_tile = None
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="AudiencePublisher"
         )
@@ -295,7 +311,7 @@ class AudiencePublisher:
         _video_pump_vr_pip        VR at fixed 30 fps; overlays avatar PiP if cache is populated.
                                   Starts immediately – never blocked by cloud avatar availability.
         _avatar_frame_reader_task Subscribes to cloud avatar LiveKit room and continuously
-                                  updates self._liveavatar_last_avatar_bgr.  Failure or stall
+                                  updates self._liveavatar_pip_tile.  Failure or stall
                                   has zero impact on VR publishing.
         _audio_pump_liveavatar    Drains TTS PCM queue → WebSocket agent.speak + delay queue.
         _audio_delay_relay        Forwards delayed PCM to local narration AudioSource.
@@ -413,16 +429,19 @@ class AudiencePublisher:
         fps_count = 0
         fps_ts = time.perf_counter()
         last_frame_rgb: Optional[np.ndarray] = None
+        next_deadline = time.perf_counter()
 
         while not self._stop_event.is_set():
-            t0 = time.perf_counter()
-
             latest = self._drain_video_q_latest()
             if latest is not None:
                 last_frame_rgb = latest
 
             if last_frame_rgb is None:
-                await asyncio.sleep(frame_interval)
+                next_deadline += frame_interval
+                now = time.perf_counter()
+                if now > next_deadline:
+                    next_deadline = now + frame_interval
+                await _async_sleep_until_deadline(next_deadline)
                 continue
 
             frame_rgb = last_frame_rgb
@@ -448,16 +467,17 @@ class AudiencePublisher:
                 fps_count = 0
                 fps_ts = now
 
-            elapsed = time.perf_counter() - t0
-            sleep_t = frame_interval - elapsed
-            if sleep_t > 0:
-                await asyncio.sleep(sleep_t)
+            next_deadline += frame_interval
+            now = time.perf_counter()
+            if now > next_deadline:
+                next_deadline = now + frame_interval
+            await _async_sleep_until_deadline(next_deadline)
 
     async def _video_pump_vr_pip(self, local_video_source) -> None:
         """LiveAvatar mode: VR at fixed 30 fps with optional avatar PiP overlay.
 
         This task is completely independent of the avatar cloud stream.  It reads
-        self._liveavatar_last_avatar_bgr (updated by _avatar_frame_reader_task) and
+        self._liveavatar_pip_tile (updated by _avatar_frame_reader_task) and
         overlays it as a PiP if a frame is available.  If the cloud stream stalls or
         has not delivered a frame yet, plain VR is published without any interruption.
         """
@@ -468,34 +488,33 @@ class AudiencePublisher:
 
         fps_count = 0
         fps_ts = time.perf_counter()
+        next_deadline = time.perf_counter()
 
         while not self._stop_event.is_set():
-            t0 = time.perf_counter()
-
             latest_vr = self._drain_video_q_latest()
             if latest_vr is not None:
                 self._liveavatar_last_vr_rgb = latest_vr
 
             vr_rgb = self._liveavatar_last_vr_rgb
             if vr_rgb is None:
-                await asyncio.sleep(frame_interval)
+                next_deadline += frame_interval
+                now = time.perf_counter()
+                if now > next_deadline:
+                    next_deadline = now + frame_interval
+                await _async_sleep_until_deadline(next_deadline)
                 continue
 
-            avatar_bgr = self._liveavatar_last_avatar_bgr
-
-            if avatar_bgr is not None:
-                out_rgb = _composite_vr_avatar_pip(
-                    vr_rgb,
-                    avatar_bgr,
-                    self.VIDEO_W,
-                    self.VIDEO_H,
-                    max_frac=_PIP_MAX_FRAC,
-                    margin=_PIP_MARGIN_PX,
+            pip = self._liveavatar_pip_tile
+            if pip is not None:
+                pip_bgr, x0, y0, nw, nh = pip
+                out_rgb = _composite_vr_with_pip_tile(
+                    vr_rgb, pip_bgr, x0, y0, nw, nh, self.VIDEO_W, self.VIDEO_H
                 )
+                pip_state = "pip"
             else:
-                # Avatar not yet available – publish VR only.
                 bg = cv2.resize(vr_rgb, (self.VIDEO_W, self.VIDEO_H))
                 out_rgb = bg if bg.shape[2] == 3 else cv2.cvtColor(bg, cv2.COLOR_BGR2RGB)
+                pip_state = "vr-only"
 
             frame_rgba = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2RGBA)
             out_frame = rtc.VideoFrame(
@@ -510,7 +529,6 @@ class AudiencePublisher:
             now = time.perf_counter()
             if now - fps_ts >= self.STATS_INTERVAL_S:
                 fps = fps_count / (now - fps_ts)
-                pip_state = "pip" if avatar_bgr is not None else "vr-only"
                 vr_drop = self._video_q.qsize()
                 print(
                     f"{_ts()} | [MEDIA] fps={fps:.1f} ({pip_state}) vr_q={vr_drop}"
@@ -518,17 +536,18 @@ class AudiencePublisher:
                 fps_count = 0
                 fps_ts = now
 
-            elapsed = time.perf_counter() - t0
-            sleep_t = frame_interval - elapsed
-            if sleep_t > 0:
-                await asyncio.sleep(sleep_t)
+            next_deadline += frame_interval
+            now = time.perf_counter()
+            if now > next_deadline:
+                next_deadline = now + frame_interval
+            await _async_sleep_until_deadline(next_deadline)
 
     async def _avatar_frame_reader_task(self, avatar_room) -> None:
-        """Subscribe to cloud avatar LiveKit video and update self._liveavatar_last_avatar_bgr.
+        """Subscribe to cloud avatar LiveKit video and update self._liveavatar_pip_tile.
 
         This task runs independently of VR publishing.  If the cloud stream stalls,
         delivers corrupt frames, or disconnects, the exception is caught and logged;
-        the VR compositor continues to run using the last cached frame (or no PiP).
+        the VR compositor continues to run using the last cached tile (or no PiP).
         """
         from livekit import rtc
 
@@ -572,7 +591,14 @@ class AudiencePublisher:
                     if img_data.size != h * w * 3:
                         continue
                     img_rgb = img_data.reshape(h, w, 3)
-                    self._liveavatar_last_avatar_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                    avatar_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                    self._liveavatar_pip_tile = _make_pip_tile(
+                        avatar_bgr,
+                        self.VIDEO_W,
+                        self.VIDEO_H,
+                        max_frac=_PIP_MAX_FRAC,
+                        margin=_PIP_MARGIN_PX,
+                    )
                 except Exception as exc:
                     print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar frame decode: {exc}")
         except asyncio.CancelledError:
@@ -664,7 +690,8 @@ class AudiencePublisher:
 
         Each item is (deadline: float, pcm: np.ndarray).
         We sleep until deadline, then forward to the local audience AudioSource.
-        This creates the ~300 ms delay that aligns lips with the relayed avatar video.
+        This creates the configurable delay (``audio_delay_ms``) that aligns local narration
+        with lip motion in the PiP stream.
         """
         from livekit import rtc
 
@@ -674,9 +701,7 @@ class AudiencePublisher:
                 continue
 
             deadline, pcm = await self._local_audio_delay_q.get()
-            wait = deadline - time.perf_counter()
-            if wait > 0:
-                await asyncio.sleep(wait)
+            await _async_sleep_until_deadline(deadline)
 
             if self._stop_event.is_set():
                 break
@@ -697,19 +722,15 @@ class AudiencePublisher:
 # ── Module-level helpers ───────────────────────────────────────────────────────
 
 
-def _composite_vr_avatar_pip(
-    vr_rgb: np.ndarray,
+def _make_pip_tile(
     avatar_bgr: np.ndarray,
     out_w: int,
     out_h: int,
     *,
     max_frac: float,
     margin: int,
-) -> np.ndarray:
-    """Resize VR to out_w×out_h, place avatar in bottom-right (RGB uint8)."""
-    bg = cv2.resize(vr_rgb, (out_w, out_h))
-    canvas_bgr = cv2.cvtColor(bg, cv2.COLOR_RGB2BGR)
-
+) -> tuple[np.ndarray, int, int, int, int]:
+    """Scale avatar to PiP size; return (pip_bgr, x0, y0, new_w, new_h)."""
     ah, aw = avatar_bgr.shape[:2]
     max_pw = max(1, int(out_w * max_frac))
     max_ph = max(1, int(out_h * max_frac))
@@ -717,13 +738,25 @@ def _composite_vr_avatar_pip(
     new_w = max(1, int(aw * scale))
     new_h = max(1, int(ah * scale))
     pip = cv2.resize(avatar_bgr, (new_w, new_h))
+    x0 = max(0, out_w - new_w - margin)
+    y0 = max(0, out_h - new_h - margin)
+    return pip, x0, y0, new_w, new_h
 
-    x0 = out_w - new_w - margin
-    y0 = out_h - new_h - margin
-    x0 = max(0, x0)
-    y0 = max(0, y0)
 
-    canvas_bgr[y0 : y0 + new_h, x0 : x0 + new_w] = pip
+def _composite_vr_with_pip_tile(
+    vr_rgb: np.ndarray,
+    pip_bgr: np.ndarray,
+    x0: int,
+    y0: int,
+    new_w: int,
+    new_h: int,
+    out_w: int,
+    out_h: int,
+) -> np.ndarray:
+    """Full-frame VR with a pre-scaled PiP (RGB uint8)."""
+    bg = cv2.resize(vr_rgb, (out_w, out_h))
+    canvas_bgr = cv2.cvtColor(bg, cv2.COLOR_RGB2BGR)
+    canvas_bgr[y0 : y0 + new_h, x0 : x0 + new_w] = pip_bgr
     cv2.rectangle(
         canvas_bgr,
         (x0 - 1, y0 - 1),

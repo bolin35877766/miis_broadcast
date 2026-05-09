@@ -7,7 +7,7 @@ Two operating modes are supported (toggled by `configs/app.yml`):
 | Mode | Video source | Audio path |
 |------|-------------|------------|
 | **VR mode** (default, `liveavatar.enabled: false`) | VR camera frames from `FreeSwitchCameraThread` | TTS PCM → local room directly |
-| **LiveAvatar mode** (`liveavatar.enabled: true`) | VR full screen + LiveAvatar avatar as **picture-in-picture** (bottom-right, optional) | TTS PCM → LiveAvatar **WebSocket** (`agent.speak`) **and** local room (delayed ~300 ms for A/V sync) |
+| **LiveAvatar mode** (`liveavatar.enabled: true`) | VR full screen + LiveAvatar avatar as **picture-in-picture** (bottom-right, optional) | TTS PCM → LiveAvatar **WebSocket** (`agent.speak`) **and** local room (**delayed** by `audio_delay_ms`, default ~450 ms, for A/V sync) |
 
 Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_server`, `_start_audience_services`, `_deliver_audience_vr_frame`). For input workers and frame contracts, see [workers/README.md](../workers/README.md).
 
@@ -31,7 +31,7 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 |------|--------------------------------------|------------------------------------------|
 | **Prerequisite** | **Free Switch** must be on | Same |
 | **What viewers see** | Full-screen VR only | Full-screen VR + **bottom-right avatar (PiP)** |
-| **Narration audio** | Straight to **local** LiveKit | **WebSocket** to LiveAvatar (`agent.speak`); **~300 ms delayed** path to **local** LiveKit (A/V alignment) |
+| **Narration audio** | Straight to **local** LiveKit | **WebSocket** to LiveAvatar (`agent.speak`); **delayed** path (`audio_delay_ms`) to **local** LiveKit (A/V alignment) |
 | **How viewers join** | Same for both: `http://…:8080/audience` → JWT → WebRTC to **local** LiveKit | Same |
 
 The LiveAvatar diagram below splits **control-plane** (REST, once per run) from **media**: **WebSocket** carries narration PCM (`agent.speak`); **LiveAvatar LiveKit** carries the rendered avatar video back. Local Docker LiveKit is unchanged for the browser.
@@ -111,7 +111,7 @@ flowchart LR
   VR --> TVRPIP
   PCM --> TAPU
   CLK -->|"avatar frames"| TAVR
-  TAVR -.->|"cached BGR frame"| TVRPIP
+  TAVR -.->|"PiP tile cache"| TVRPIP
   TAPU -->|"agent.speak"| WS
   TVRPIP -->|"broadcast_video VR+PiP"| LK
   TREL -->|"narration (delayed)"| LK
@@ -124,7 +124,7 @@ flowchart LR
 | Task | Starts | Depends on cloud? | What it does |
 |--|--|--|--|
 | `_video_pump_vr_pip` | Immediately | **No** | VR at fixed 30 fps; overlays PiP from cache if available |
-| `_avatar_frame_reader_task` | Immediately | Yes (up to 30 s wait) | Reads cloud avatar frames, updates `_liveavatar_last_avatar_bgr` only |
+| `_avatar_frame_reader_task` | Immediately | Yes (up to 30 s wait) | Decodes cloud frames, pre-scales PiP tile into `_liveavatar_pip_tile` |
 | `_audio_pump_liveavatar` | Immediately | No | Drains TTS PCM → WebSocket `agent.speak` + delay queue |
 | `_audio_delay_relay` | Immediately | No | Forwards delayed PCM → local `narration` AudioSource |
 
@@ -160,7 +160,7 @@ sequenceDiagram
   end
 ```
 
-**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** (~300 ms) for lip sync.
+**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** by `liveavatar.audio_delay_ms` (default **450**) so it lines up with lip motion in the PiP. **Tune:** if the **mouth visibly lags** the sound you hear in the browser, **increase** `audio_delay_ms`; if sound is clearly **after** the mouth, **decrease** it (try steps of ~50 ms).
 
 ```mermaid
 sequenceDiagram
@@ -187,7 +187,7 @@ sequenceDiagram
 |------|------|
 | [token_server.py](token_server.py) | FastAPI + uvicorn on `0.0.0.0`; serves viewer HTML and short-lived subscribe-only JWTs. |
 | [static/index.html](static/index.html) | LiveKit JS viewer: subscribes to published video + audio tracks (`broadcast_video`, `narration`). |
-| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: VR mode or LiveAvatar dual-room + WebSocket PCM; audio delay relay. |
+| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: VR / LiveAvatar dual-room + WebSocket PCM; **deadline-based 30 fps** video pacing (mitigates Windows `asyncio.sleep` early wake); PiP tile pre-scaled in avatar reader. |
 | [liveavatar_session.py](liveavatar_session.py) | LiveAvatar LITE: token/start REST, WebSocket `agent.speak` / `agent.interrupt`, session stop. |
 | [gui.py](../gui.py) | Reads `liveavatar` config block, builds dict, passes `liveavatar_cfg` to `AudiencePublisher`. |
 | [openai_tts.py](../core/models/openai_tts.py) | `register_pcm_sink`, `clear_audio_queue` + optional `flush_callback` for LiveKit backlog. |
@@ -249,7 +249,7 @@ Keep **`LIVEAVATAR_API_KEY`** (and optionally **`LIVEAVATAR_AVATAR_ID`**, **`LIV
 | `liveavatar.avatar_id` | `""` | Avatar UUID from LiveAvatar, or **`LIVEAVATAR_AVATAR_ID`** in `.env`. |
 | `liveavatar.voice_id` | `""` | Optional; **`LIVEAVATAR_VOICE_ID`** in `.env` (reserved for future use; LITE uses avatar default voice). |
 | `liveavatar.quality` | `"medium"` | Video quality: `"low"` / `"medium"` / `"high"`. |
-| `liveavatar.audio_delay_ms` | `300` | Delay (ms) added to local-audience audio to align with cloud video latency. |
+| `liveavatar.audio_delay_ms` | `450` | Delay (ms) before local-audience **narration** track plays, so it matches lip timing in the PiP (network-dependent; tune ±50 ms). |
 | `liveavatar.sandbox` | `false` | When `true`, token requests use `is_sandbox` (see LiveAvatar docs). |
 
 > **Network requirements (LiveAvatar mode)**
@@ -332,7 +332,8 @@ Rust lines such as `failed to negotiate the publisher` may appear in **`docker c
 | `ERR_CONNECTION_REFUSED` on `:7880` | `docker compose up -d` and firewall. |
 | Phone cannot connect | Same Wi‑Fi, correct LAN IP in `livekit_url` + `--node-ip`, firewall script. |
 | Overlapping audio in browser | Ensure a single `narration` element (see `index.html` dedupe by track name); avoid duplicate tabs both unmuted in the same room. |
-| `[AUDIO] … drop=` always high | CPU/network; see queue sizing in `livekit_publisher.py`. |
+| `[MEDIA] fps=…` not ~30 in LiveAvatar/VR mode | If you still see ~60+ fps in logs, report it; current build uses sleep-until-deadline pacing. Stutter was often linked to **too-fast** frame submission to LiveKit. |
+| PiP lip sync off | Tune `liveavatar.audio_delay_ms` (mouth **lags** sound → **increase**; sound **lags** mouth → **decrease**). |
 
 ---
 

@@ -37,5 +37,5 @@ audience:
 liveavatar:
   enabled: true
   quality: "medium"
-  audio_delay_ms: 300
+  audio_delay_ms: 450  # tune lip sync vs browser narration (see audience/README.md)
   # sandbox: true   # uses token is_sandbox; see LiveAvatar docs
