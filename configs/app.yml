@@ -35,10 +35,7 @@ audience:
 #   - Docker host (192.168.50.150) must have outbound internet access (HTTPS 443 + UDP high ports)
 #   - Windows Firewall: run scripts/open-audience-firewall.ps1 as Administrator
 heygen:
-  enabled: false
-  api_key: ""
-  avatar_id: ""
-  voice_id: ""
+  enabled: true
   quality: "medium"
   audio_delay_ms: 300
 
