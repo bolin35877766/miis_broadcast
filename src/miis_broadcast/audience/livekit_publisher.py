@@ -6,19 +6,20 @@ Publishes audio/video to the local LiveKit room for audience viewing.
 
 Two operating modes
 -------------------
-1. **VR mode** (default, heygen_cfg=None):
+1. **VR mode** (default, liveavatar_cfg=None):
    - Video source: VR frames from FreeSwitchCameraThread.signal_vr_frame
    - Audio source: OpenAI TTS PCM sink (push_audio_chunk)
    - Track names: broadcast_video (video), narration (audio)
 
-2. **HeyGen avatar mode** (heygen_cfg provided):
+2. **LiveAvatar LITE mode** (when ``liveavatar_cfg`` is set):
    - Connects to TWO LiveKit rooms simultaneously:
-       local_room  → ws://192.168.50.150:7880  (audience-facing)
-       heygen_room → HeyGen cloud LiveKit URL
-   - TTS PCM is forwarded to BOTH rooms (drives avatar mouth + local audience hears speech)
+       local_room   → local audience SFU (from configs)
+       avatar_room  → LiveAvatar cloud LiveKit (video subscribe only)
+   - TTS PCM is sent to LiveAvatar via **WebSocket** ``agent.speak`` (not a LiveKit mic track)
+   - The same TTS PCM is also delayed and published as ``narration`` on the local room for lip-sync
    - Local audio gets a ~300 ms delay buffer to align lip sync with cloud video round-trip
    - Each outgoing video frame composites the **VR program** (full frame from ``_video_q``)
-     with the **HeyGen avatar** in a **bottom-right picture-in-picture** tile, then publishes
+     with the **LiveAvatar** feed in a **bottom-right picture-in-picture** tile, then publishes
      to local_room as ``broadcast_video``.
    - Track names: broadcast_video (video), narration (audio)
 
@@ -51,9 +52,9 @@ _PIP_MARGIN_PX = 10
 class AudiencePublisher:
     """Connects to a local LiveKit room and publishes broadcast_video + narration tracks.
 
-    When heygen_cfg is supplied the publisher also manages a HeyGen cloud session,
-    routing TTS audio to the cloud avatar and relaying the rendered avatar (picture-in-picture
-    on the VR frame) to the local room for the audience.
+    When liveavatar_cfg is supplied the publisher manages a **LiveAvatar LITE** session (REST +
+    WebSocket audio), subscribes to the cloud avatar video, and composites PiP onto the VR frame
+    for the local audience room.
     """
 
     VIDEO_W = 640
@@ -68,7 +69,7 @@ class AudiencePublisher:
         api_key: str,
         api_secret: str,
         room_name: str,
-        heygen_cfg: Optional[dict] = None,
+        liveavatar_cfg: Optional[dict] = None,
     ) -> None:
         """
         Args:
@@ -76,23 +77,24 @@ class AudiencePublisher:
             api_key: local LiveKit API key.
             api_secret: local LiveKit API secret.
             room_name: local LiveKit room name.
-            heygen_cfg: dict with keys:
-                api_key   (str)  – HeyGen API key
-                avatar_id (str)  – HeyGen avatar ID (empty = use default)
-                quality   (str)  – "medium" | "high"
+            liveavatar_cfg: dict with keys:
+                api_key   (str)  – LiveAvatar API key (app.liveavatar.com/developers)
+                avatar_id (str)  – LiveAvatar avatar UUID (required)
+                quality   (str)  – video quality hint ("low" | "medium" | "high")
+                sandbox   (bool) – optional; maps to token ``is_sandbox``
             Pass None to fall back to VR-frame video mode.
         """
         self._url = livekit_url
         self._api_key = api_key
         self._api_secret = api_secret
         self._room_name = room_name
-        self._heygen_cfg: Optional[dict] = heygen_cfg
+        self._liveavatar_cfg: Optional[dict] = liveavatar_cfg
 
-        # Local audience audio delay in HeyGen mode only (seconds); from configs/app.yml audio_delay_ms
+        # Local audience audio delay in LiveAvatar mode (seconds); from configs/app.yml audio_delay_ms
         self._local_audio_delay_s = 0.30
-        if heygen_cfg is not None:
+        if liveavatar_cfg is not None:
             self._local_audio_delay_s = max(
-                0.0, float(heygen_cfg.get("audio_delay_ms", 300)) / 1000.0
+                0.0, float(liveavatar_cfg.get("audio_delay_ms", 300)) / 1000.0
             )
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -102,18 +104,16 @@ class AudiencePublisher:
         # VR frame queue (only used in VR mode)
         self._video_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=3)
 
-        # TTS PCM queue – fed by push_audio_chunk(), forwarded to HeyGen + local rooms
+        # TTS PCM queue – LiveAvatar WebSocket + delayed local narration relay
         self._audio_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=48)
 
         # asyncio queue for the delayed local-audio relay (populated from _audio_pump)
         self._local_audio_delay_q: Optional[asyncio.Queue] = None
 
-        # Reference kept so flush_pending_audio() can also send silence to HeyGen
-        self._heygen_audio_source = None   # livekit.rtc.AudioSource | None
-        self._heygen_session = None        # HeyGenSession | None
+        self._liveavatar_session = None  # LiveAvatarSession | None
 
-        # Latest VR RGB frame for HeyGen PiP compositing (updated when _video_q is drained)
-        self._heygen_last_vr_rgb: Optional[np.ndarray] = None
+        # Latest VR RGB frame for avatar PiP compositing (updated when _video_q is drained)
+        self._liveavatar_last_vr_rgb: Optional[np.ndarray] = None
 
         self._connected = False
 
@@ -121,13 +121,13 @@ class AudiencePublisher:
 
     def start(self) -> None:
         self._stop_event.clear()
-        if self._heygen_cfg:
-            self._heygen_last_vr_rgb = None
+        if self._liveavatar_cfg:
+            self._liveavatar_last_vr_rgb = None
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="AudiencePublisher"
         )
         self._thread.start()
-        mode = "heygen" if self._heygen_cfg else "vr"
+        mode = "liveavatar" if self._liveavatar_cfg else "vr"
         print(
             f"{_ts()} | [MEDIA] publisher starting | "
             f"room={self._room_name} mode={mode}"
@@ -173,10 +173,10 @@ class AudiencePublisher:
     def flush_pending_audio(self) -> None:
         """Drop buffered PCM not yet sent to LiveKit (call when TTS is interrupted/preempted).
 
-        In HeyGen mode this also:
+        In LiveAvatar mode this also:
         - clears the local-audio delay buffer
-        - sends a silence frame to HeyGen so the avatar's mouth closes immediately
-        - fires the HeyGen interrupt API (best-effort)
+        - sends a short silence chunk over the events WebSocket (optional mouth settle)
+        - sends `agent.interrupt` on that WebSocket (best-effort)
         """
         # Clear the main TTS queue
         _drain_queue(self._audio_q)
@@ -185,10 +185,10 @@ class AudiencePublisher:
         if self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._flush_delay_queue_sync)
 
-        # Send silence + API interrupt to HeyGen (schedule on the asyncio thread)
-        if self._heygen_cfg and self._loop and not self._loop.is_closed():
+        # Send silence + interrupt on LiveAvatar WebSocket (asyncio thread)
+        if self._liveavatar_cfg and self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(
-                lambda: asyncio.ensure_future(self._heygen_interrupt_async())
+                lambda: asyncio.ensure_future(self._liveavatar_interrupt_async())
             )
 
     # ── Internal ──────────────────────────────────────────────────────────
@@ -204,17 +204,16 @@ class AudiencePublisher:
             except asyncio.QueueEmpty:
                 break
 
-    async def _heygen_interrupt_async(self) -> None:
-        """Send silence to HeyGen audio source + fire interrupt API."""
-        src = self._heygen_audio_source
-        session = self._heygen_session
-        if session is not None and src is not None:
-            try:
-                await session.send_silence(src)
-            except Exception as exc:
-                print(f"{_ts()} | [WARN] [HEYGEN] silence flush: {exc}")
-        if session is not None:
-            await session.interrupt()
+    async def _liveavatar_interrupt_async(self) -> None:
+        """Send a short silence chunk + `agent.interrupt` on LiveAvatar WebSocket."""
+        session = self._liveavatar_session
+        if session is None:
+            return
+        try:
+            await session.send_silence()
+        except Exception as exc:
+            print(f"{_ts()} | [WARN] [LIVEAVATAR] silence flush: {exc}")
+        await session.interrupt()
 
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -227,8 +226,8 @@ class AudiencePublisher:
             self._loop.close()
 
     async def _async_main(self) -> None:
-        if self._heygen_cfg:
-            await self._async_main_heygen()
+        if self._liveavatar_cfg:
+            await self._async_main_liveavatar()
         else:
             await self._async_main_vr()
 
@@ -280,39 +279,40 @@ class AudiencePublisher:
             self._connected = False
             await _safe_disconnect(room)
 
-    # ── HeyGen mode ───────────────────────────────────────────────────────
+    # ── LiveAvatar LITE mode ───────────────────────────────────────────────
 
-    async def _async_main_heygen(self) -> None:
-        """HeyGen avatar mode: dual room + audio delay relay + avatar video relay."""
+    async def _async_main_liveavatar(self) -> None:
+        """LiveAvatar LITE: WebSocket PCM + cloud LiveKit video subscribe + local PiP."""
         from livekit import rtc
-        from .heygen_session import HeyGenSession
+        from .liveavatar_session import LiveAvatarSession
 
-        cfg = self._heygen_cfg or {}
-        session = HeyGenSession(
+        cfg = self._liveavatar_cfg or {}
+        session = LiveAvatarSession(
             api_key=cfg.get("api_key", ""),
             avatar_id=cfg.get("avatar_id", ""),
             voice_id=cfg.get("voice_id", ""),
             quality=cfg.get("quality", "medium"),
+            sandbox=bool(cfg.get("sandbox", False)),
         )
-        self._heygen_session = session
+        self._liveavatar_session = session
 
-        # 1. Create HeyGen session to obtain cloud LiveKit URL + token
+        # 1. LiveAvatar token + start (opens events WebSocket)
         try:
-            session_info = await session.create()
+            await session.create()
             await session.start()
         except Exception as exc:
-            print(f"{_ts()} | [ERR] [HEYGEN] failed to start session: {exc}")
+            print(f"{_ts()} | [ERR] [LIVEAVATAR] failed to start session: {exc}")
             return
 
-        heygen_room_url   = session.room_url
-        heygen_room_token = session.access_token
+        avatar_room_url = session.room_url
+        avatar_room_token = session.access_token
 
         # 2. Connect local room
         local_token = _make_publisher_token(
             self._api_key, self._api_secret, self._room_name
         )
         local_room = rtc.Room()
-        heygen_room = rtc.Room()
+        avatar_room = rtc.Room()
 
         # asyncio queue for the delayed local audio relay
         self._local_audio_delay_q = asyncio.Queue()
@@ -330,7 +330,7 @@ class AudiencePublisher:
                 local_video_track,
                 rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA),
             )
-            print(f"{_ts()} | [MEDIA] publish_start track=broadcast_video (heygen mode)")
+            print(f"{_ts()} | [MEDIA] publish_start track=broadcast_video (liveavatar mode)")
 
             local_audio_source = rtc.AudioSource(
                 self.AUDIO_SAMPLE_RATE, self.AUDIO_CHANNELS
@@ -342,47 +342,29 @@ class AudiencePublisher:
                 local_audio_track,
                 rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE),
             )
-            print(f"{_ts()} | [AUDIO] publish_start track=narration (heygen mode)")
+            print(f"{_ts()} | [AUDIO] publish_start track=narration (liveavatar mode)")
 
-            # 4. Connect to HeyGen room (subscribe only; we publish audio there)
-            await heygen_room.connect(heygen_room_url, heygen_room_token)
-            print(f"{_ts()} | [HEYGEN] heygen_room connected | url={heygen_room_url}")
+            # 4. Cloud room: subscribe to avatar video only (PCM goes via WebSocket)
+            await avatar_room.connect(avatar_room_url, avatar_room_token)
+            print(f"{_ts()} | [LIVEAVATAR] avatar_room connected | url={avatar_room_url}")
 
-            # Publish audio track to HeyGen room (drives avatar mouth)
-            heygen_audio_source = rtc.AudioSource(
-                self.AUDIO_SAMPLE_RATE, self.AUDIO_CHANNELS
-            )
-            heygen_audio_track = rtc.LocalAudioTrack.create_audio_track(
-                "tts_audio", heygen_audio_source
-            )
-            await heygen_room.local_participant.publish_track(
-                heygen_audio_track,
-                rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE),
-            )
-            self._heygen_audio_source = heygen_audio_source
             self._connected = True
-
-            print(f"{_ts()} | [HEYGEN] audio track published to heygen_room")
 
             # 5. Run all concurrent tasks
             await asyncio.gather(
-                # Forward TTS PCM → HeyGen room (immediate) + local delay queue
-                self._audio_pump_heygen(heygen_audio_source),
-                # Drain delay queue → local room after delay
+                self._audio_pump_liveavatar(session),
                 self._audio_delay_relay(local_audio_source),
-                # Subscribe HeyGen avatar video → republish to local room
-                self._video_pump_heygen(heygen_room, local_video_source),
+                self._video_pump_liveavatar(avatar_room, local_video_source),
             )
 
         except Exception as exc:
-            print(f"{_ts()} | [ERR] publisher session (heygen): {exc}")
+            print(f"{_ts()} | [ERR] publisher session (liveavatar): {exc}")
         finally:
             self._connected = False
-            self._heygen_audio_source = None
             await _safe_disconnect(local_room)
-            await _safe_disconnect(heygen_room)
+            await _safe_disconnect(avatar_room)
             await session.stop()
-            self._heygen_session = None
+            self._liveavatar_session = None
 
     # ── Pump coroutines ───────────────────────────────────────────────────
 
@@ -422,10 +404,10 @@ class AudiencePublisher:
                 fps_count = 0
                 fps_ts = now
 
-    async def _video_pump_heygen(
-        self, heygen_room, local_video_source
+    async def _video_pump_liveavatar(
+        self, avatar_room, local_video_source
     ) -> None:
-        """HeyGen mode: avatar from cloud + VR from _video_q → composite (PiP) → local room."""
+        """LiveAvatar: cloud avatar video + VR from _video_q → composite (PiP) → local room."""
         from livekit import rtc
 
         fps_count = 0
@@ -437,22 +419,22 @@ class AudiencePublisher:
             nonlocal video_stream
             if track.kind == rtc.TrackKind.KIND_VIDEO and video_stream is None:
                 print(
-                    f"{_ts()} | [HEYGEN] avatar video track subscribed | "
+                    f"{_ts()} | [LIVEAVATAR] avatar video track subscribed | "
                     f"participant={participant.identity}"
                 )
                 video_stream = rtc.VideoStream(track)
                 track_found.set()
 
-        heygen_room.on(rtc.RoomEvent.TrackSubscribed, _on_track_subscribed)
+        avatar_room.on(rtc.RoomEvent.TrackSubscribed, _on_track_subscribed)
 
-        # Wait for HeyGen to start sending video (up to 30s)
+        # Wait for cloud avatar video (up to 30s)
         try:
             await asyncio.wait_for(track_found.wait(), timeout=30)
         except asyncio.TimeoutError:
-            print(f"{_ts()} | [WARN] [HEYGEN] avatar video track not received in 30s")
+            print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar video track not received in 30s")
             return
 
-        print(f"{_ts()} | [HEYGEN] starting avatar video relay → local_room (VR + PiP)")
+        print(f"{_ts()} | [LIVEAVATAR] starting avatar video relay → local_room (VR + PiP)")
 
         async for frame_event in video_stream:
             if self._stop_event.is_set():
@@ -478,8 +460,8 @@ class AudiencePublisher:
 
                 latest_vr = self._drain_video_q_latest()
                 if latest_vr is not None:
-                    self._heygen_last_vr_rgb = latest_vr
-                vr_rgb = self._heygen_last_vr_rgb
+                    self._liveavatar_last_vr_rgb = latest_vr
+                vr_rgb = self._liveavatar_last_vr_rgb
                 if vr_rgb is None:
                     vr_rgb = np.zeros(
                         (self.VIDEO_H, self.VIDEO_W, 3), dtype=np.uint8
@@ -503,7 +485,7 @@ class AudiencePublisher:
                 local_video_source.capture_frame(out_frame)
 
             except Exception as exc:
-                print(f"{_ts()} | [WARN] [HEYGEN] video frame conversion: {exc}")
+                print(f"{_ts()} | [WARN] [LIVEAVATAR] video frame conversion: {exc}")
                 continue
 
             fps_count += 1
@@ -512,7 +494,7 @@ class AudiencePublisher:
                 fps = fps_count / (now - fps_ts)
                 vr_drop = self._video_q.qsize()
                 print(
-                    f"{_ts()} | [MEDIA] fps={fps:.1f} (heygen+vr pip) vr_q={vr_drop}"
+                    f"{_ts()} | [MEDIA] fps={fps:.1f} (liveavatar+vr pip) vr_q={vr_drop}"
                 )
                 fps_count = 0
                 fps_ts = now
@@ -556,14 +538,8 @@ class AudiencePublisher:
                 samples_out = 0
                 stats_ts = now
 
-    async def _audio_pump_heygen(self, heygen_audio_source) -> None:
-        """HeyGen mode: TTS PCM → HeyGen AudioSource (immediate) + _local_audio_delay_q.
-
-        The delay queue is consumed by _audio_delay_relay after self._local_audio_delay_s seconds,
-        keeping local audience audio in sync with the cloud avatar video.
-        """
-        from livekit import rtc
-
+    async def _audio_pump_liveavatar(self, avatar_session) -> None:
+        """LiveAvatar mode: TTS PCM → WebSocket `agent.speak` + _local_audio_delay_q."""
         chunk_count = 0
         samples_out = 0
         stats_ts = time.perf_counter()
@@ -575,30 +551,20 @@ class AudiencePublisher:
                 await asyncio.sleep(0.005)
                 continue
 
-            samples = len(pcm)
-            lk_frame = rtc.AudioFrame(
-                data=bytearray(pcm.tobytes()),
-                sample_rate=self.AUDIO_SAMPLE_RATE,
-                num_channels=self.AUDIO_CHANNELS,
-                samples_per_channel=samples,
-            )
-
-            # Send to HeyGen immediately to drive avatar lip sync
             try:
-                await heygen_audio_source.capture_frame(lk_frame)
+                await avatar_session.send_pcm_chunk(pcm)
             except Exception as exc:
-                print(f"{_ts()} | [WARN] [HEYGEN] audio send: {exc}")
+                print(f"{_ts()} | [WARN] [LIVEAVATAR] audio send: {exc}")
 
-            # Enqueue for delayed local relay (with wall-clock timestamp)
             deadline = time.perf_counter() + self._local_audio_delay_s
             if self._local_audio_delay_q is not None:
                 try:
                     self._local_audio_delay_q.put_nowait((deadline, pcm))
                 except asyncio.QueueFull:
-                    pass  # drop if overflow (shouldn't happen with unlimited queue)
+                    pass
 
             chunk_count += 1
-            samples_out += samples
+            samples_out += len(pcm)
             now = time.perf_counter()
             if now - stats_ts >= self.STATS_INTERVAL_S:
                 chps = chunk_count / (now - stats_ts)
@@ -606,7 +572,7 @@ class AudiencePublisher:
                 drop = self._audio_q.qsize()
                 print(
                     f"{_ts()} | [AUDIO] chunks/s={chps:.1f} "
-                    f"sample_rate≈{rate:.0f} drop={drop} (heygen)"
+                    f"sample_rate≈{rate:.0f} drop={drop} (liveavatar)"
                 )
                 chunk_count = 0
                 samples_out = 0

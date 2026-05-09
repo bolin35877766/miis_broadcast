@@ -1955,38 +1955,39 @@ class MainWindow(QtWidgets.QMainWindow):
         api_secret = audience_cfg.get("api_secret", "devsecret")
         room_name = audience_cfg.get("room", "broadcast-room")
 
-        # Build HeyGen config if enabled; passing None falls back to VR-frame mode.
-        # Prefer HEYGEN_* from .env so secrets stay out of app.yml (optional: still allow app.yml).
-        heygen_raw = self.configs.get("heygen", {})
-        heygen_cfg = None
-        raw_key = (os.environ.get("HEYGEN_API_KEY") or heygen_raw.get("api_key") or "").strip()
-        if heygen_raw.get("enabled", False) and raw_key:
-            heygen_cfg = {
+        # Build LiveAvatar config if enabled (`liveavatar` block in app.yml + LIVEAVATAR_* in .env).
+        la_raw = self.configs.get("liveavatar", {})
+        liveavatar_cfg = None
+        raw_key = (os.environ.get("LIVEAVATAR_API_KEY") or la_raw.get("api_key") or "").strip()
+        if la_raw.get("enabled", False) and raw_key:
+            liveavatar_cfg = {
                 "api_key":    raw_key,
                 "avatar_id":  (
-                    os.environ.get("HEYGEN_AVATAR_ID")
-                    or heygen_raw.get("avatar_id")
+                    os.environ.get("LIVEAVATAR_AVATAR_ID")
+                    or la_raw.get("avatar_id")
                     or ""
                 ).strip(),
                 "voice_id":   (
-                    os.environ.get("HEYGEN_VOICE_ID")
-                    or heygen_raw.get("voice_id")
+                    os.environ.get("LIVEAVATAR_VOICE_ID")
+                    or la_raw.get("voice_id")
                     or ""
                 ).strip(),
-                "quality":    heygen_raw.get("quality", "medium"),
-                "audio_delay_ms": int(heygen_raw.get("audio_delay_ms", 300)),
+                "quality":    la_raw.get("quality", "medium"),
+                "audio_delay_ms": int(la_raw.get("audio_delay_ms", 300)),
+                "sandbox":    bool(la_raw.get("sandbox", False)),
             }
             print(
-                f"[HEYGEN] mode enabled | avatar={heygen_cfg['avatar_id'] or 'default'} "
-                f"quality={heygen_cfg['quality']} delay={heygen_cfg['audio_delay_ms']}ms"
+                f"[LIVEAVATAR] mode enabled | avatar={liveavatar_cfg['avatar_id'] or '(required UUID)'} "
+                f"quality={liveavatar_cfg['quality']} delay={liveavatar_cfg['audio_delay_ms']}ms "
+                f"sandbox={liveavatar_cfg['sandbox']}"
             )
         else:
-            print("[MEDIA] HeyGen mode disabled — using VR frame video source")
+            print("[MEDIA] LiveAvatar mode disabled — using VR frame video source")
 
         from .core.models import openai_tts as _tts_mod
 
         self._audience_publisher = AudiencePublisher(
-            lk_url, api_key, api_secret, room_name, heygen_cfg=heygen_cfg
+            lk_url, api_key, api_secret, room_name, liveavatar_cfg=liveavatar_cfg
         )
         self._audience_publisher.start()
 

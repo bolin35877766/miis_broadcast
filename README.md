@@ -14,7 +14,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
   - **Free Switch** — both Webcam and OBS Virtual Camera are opened at startup; only the **active** source (Webcam, VR, or stitched dual) is emitted to the video panel and forwarded to LiveCC (local/remote). Switching is a **software selector** only — **no camera reconnection**, sub-frame latency typical.
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Audience second screen (optional)**: In **Free Switch** mode, a browser viewer can subscribe via **LiveKit** to **`broadcast_video`** (full-screen VR, or VR + HeyGen PiP) plus **`narration`** (TTS) while the operator’s GUI continues to preview the active source. Setup, flow diagrams, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log reference: [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md).
+- **Audience second screen (optional)**: In **Free Switch** mode, a browser viewer can subscribe via **LiveKit** to **`broadcast_video`** (full-screen VR, or VR + LiveAvatar PiP) plus **`narration`** (TTS) while the operator’s GUI continues to preview the active source. Setup, flow diagrams, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log reference: [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md).
 - **Thin-client telemetry**: During **any** remote inference, the **inference server** stdout shows **`[Client]`** and **`[Server]`** lines: host **RAM** (RSS, system %) plus **CUDA VRAM** on **device 0** where available (global used/total, `torch_alloc` for this process). Lines are on a shared ~2 s cadence via `CLIENT_DIAG` and decode-thread sampling. The GUI does **not** print duplicate `[Client]` lines to its own console; optional **session log** may still record the same payload under `[Memory]`.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
@@ -204,13 +204,13 @@ Create a `.env` file at the project root:
 ```env
 OPENAI_API_KEY=sk-...
 
-# Optional audience / HeyGen (when heygen.enabled: true in configs/app.yml)
-HEYGEN_API_KEY=
-HEYGEN_AVATAR_ID=
-# HEYGEN_VOICE_ID=
+# Optional audience / LiveAvatar PiP (when liveavatar.enabled: true in configs/app.yml)
+LIVEAVATAR_API_KEY=
+LIVEAVATAR_AVATAR_ID=
+# LIVEAVATAR_VOICE_ID=
 ```
 
-This is required for the OpenAI Realtime TTS backend. HeyGen API keys are read from the same `.env` (preferred over putting secrets in `app.yml`).
+This is required for the OpenAI Realtime TTS backend. LiveAvatar keys use the same `.env` (preferred over putting secrets in `app.yml`).
 
 ### App config ([configs/app.yml](configs/app.yml))
 
@@ -233,7 +233,7 @@ audience:
   port: 8080
 ```
 
-**HeyGen API key:** set `HEYGEN_API_KEY` (and optionally `HEYGEN_AVATAR_ID`) in **`.env`** (gitignored) with `heygen.enabled: true` in `app.yml` — see [Environment variables](#environment-variables).
+**LiveAvatar:** set `LIVEAVATAR_API_KEY` (and optionally `LIVEAVATAR_AVATAR_ID`) in **`.env`** (gitignored) with `liveavatar.enabled: true` in `app.yml` — see [Environment variables](#environment-variables).
 
 ### Commentary styles ([configs/livecc_prompts.yml](configs/livecc_prompts.yml))
 

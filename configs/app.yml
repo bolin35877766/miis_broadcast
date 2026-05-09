@@ -27,15 +27,15 @@ audience:
   room: "broadcast-room"
   port: 8080       # audience token server / viewer page port
 
-# HeyGen Streaming Avatar — put HEYGEN_API_KEY (and optional HEYGEN_AVATAR_ID, HEYGEN_VOICE_ID)
-# in project-root .env (gitignored). You may leave api_key empty here and use env only.
+# LiveAvatar LITE (avatar PiP) — set LIVEAVATAR_API_KEY in project-root .env (gitignored).
+# You may leave api_key empty here and use env only.
 #
 # Requirements:
-#   - pip install httpx
+#   - pip install httpx websockets
 #   - Docker host (192.168.50.150) must have outbound internet access (HTTPS 443 + UDP high ports)
 #   - Windows Firewall: run scripts/open-audience-firewall.ps1 as Administrator
-heygen:
+liveavatar:
   enabled: true
   quality: "medium"
   audio_delay_ms: 300
-
+  # sandbox: true   # uses token is_sandbox; see LiveAvatar docs
