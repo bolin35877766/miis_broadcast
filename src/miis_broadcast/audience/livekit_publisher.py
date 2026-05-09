@@ -602,6 +602,8 @@ class AudiencePublisher:
         )
 
         loop = asyncio.get_running_loop()
+        tile_count = 0
+        stats_ts = time.perf_counter()
         try:
             async for frame_event in video_stream:
                 if self._stop_event.is_set():
@@ -624,8 +626,19 @@ class AudiencePublisher:
                     )
                     if tile is not None:
                         self._liveavatar_pip_tile = tile
+                        tile_count += 1
                 except Exception as exc:
                     print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar frame decode: {exc}")
+
+                now = time.perf_counter()
+                if now - stats_ts >= self.STATS_INTERVAL_S:
+                    tps = tile_count / (now - stats_ts)
+                    print(
+                        f"{_ts()} | [LIVEAVATAR] tile/s={tps:.1f} "
+                        "(cloud PiP refresh rate)"
+                    )
+                    tile_count = 0
+                    stats_ts = now
         except asyncio.CancelledError:
             pass
         except Exception as exc:

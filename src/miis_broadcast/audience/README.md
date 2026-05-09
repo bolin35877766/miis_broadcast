@@ -322,6 +322,7 @@ Routine **success** paths are kept short; **warnings/errors** still print in ful
 | `[LIVEAVATAR] session ready \| id=…` | POST `/v1/sessions/start` + events WebSocket connected. |
 | `[LIVEAVATAR] cloud room OK` | Subscribed to LiveAvatar **cloud** LiveKit (for avatar video). |
 | `[LIVEAVATAR] PiP video \| participant=…` | Avatar video track received; PiP decode loop running. |
+| `[LIVEAVATAR] tile/s=12.0 (cloud PiP refresh rate)` | About every **2 s**: how many times the PiP tile cache was updated from cloud video (healthy stream often **~10–30**/s depending on LiveAvatar encode). |
 | `[LIVEAVATAR] stopped \| id=…` | POST `/v1/sessions/stop` succeeded on shutdown. |
 | `[WARN] [LIVEAVATAR] avatar video track not received in 30s; PiP disabled` | No cloud video track within 30 s; VR continues without PiP. |
 | `[WARN] …` / `[ERR] …` | e.g. WebSocket send failure, REST errors, decode issues (see message). |
@@ -334,7 +335,7 @@ Routine **success** paths are kept short; **warnings/errors** still print in ful
 | Example | Meaning |
 |---------|---------|
 | `[AUDIO] publish_start track=narration` | LiveKit audio track published. |
-| `[AUDIO] chunks/s=4.0 sample_rate≈24000 aq=8` | Periodic audio pump stats; `aq` = `_audio_q` depth (chunks waiting to send); rate should stay near **24000** samples/s when speech is active. |
+| `[AUDIO] chunks/s=4.0 sample_rate≈24000 aq=8` | Periodic audio pump stats; **`aq`** = `_audio_q` depth (chunks waiting to send); not called `drop`. Rate should stay near **24000** samples/s when speech is active. |
 | `[AUDIO] PCM sink registered \| mute_local=True` | From [openai_tts.py](../core/models/openai_tts.py) when Free Switch registers the audience sink. |
 | `[AUDIO] PCM sink cleared \| mute_local=False` | Publisher stopped / sink removed. |
 
