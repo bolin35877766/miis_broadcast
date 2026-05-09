@@ -369,19 +369,34 @@ class AudiencePublisher:
     # ── Pump coroutines ───────────────────────────────────────────────────
 
     async def _video_pump_vr(self, source) -> None:
-        """VR mode: drain _video_q → local VideoSource."""
+        """VR mode: drain _video_q → local VideoSource at a fixed 30 fps.
+
+        Repeats the last received frame when the queue is momentarily empty so
+        the output stream stays smooth even if the VR thread stalls briefly.
+        """
         from livekit import rtc
+
+        TARGET_FPS = 30
+        frame_interval = 1.0 / TARGET_FPS
 
         fps_count = 0
         fps_ts = time.perf_counter()
+        last_frame_rgb: Optional[np.ndarray] = None
 
         while not self._stop_event.is_set():
-            try:
-                frame_rgb = self._video_q.get_nowait()
-            except queue.Empty:
-                await asyncio.sleep(0.01)
+            t0 = time.perf_counter()
+
+            # Drain queue and keep only the latest frame (drop stale ones).
+            latest = self._drain_video_q_latest()
+            if latest is not None:
+                last_frame_rgb = latest
+
+            if last_frame_rgb is None:
+                # No frame yet – just wait one frame interval and try again.
+                await asyncio.sleep(frame_interval)
                 continue
 
+            frame_rgb = last_frame_rgb
             h, w = frame_rgb.shape[:2]
             if h != self.VIDEO_H or w != self.VIDEO_W:
                 frame_rgb = cv2.resize(frame_rgb, (self.VIDEO_W, self.VIDEO_H))
@@ -404,16 +419,43 @@ class AudiencePublisher:
                 fps_count = 0
                 fps_ts = now
 
+            elapsed = time.perf_counter() - t0
+            sleep_t = frame_interval - elapsed
+            if sleep_t > 0:
+                await asyncio.sleep(sleep_t)
+
     async def _video_pump_liveavatar(
         self, avatar_room, local_video_source
     ) -> None:
-        """LiveAvatar: cloud avatar video + VR from _video_q → composite (PiP) → local room."""
+        """LiveAvatar: cloud avatar video + VR from _video_q → composite (PiP) → local room.
+
+        Architecture
+        ------------
+        Two concurrent sub-tasks share a ``latest_avatar_bgr`` cell:
+
+        * ``_avatar_frame_reader`` – continuously reads frames from the cloud
+          LiveKit VideoStream and caches the latest decoded BGR image.  It never
+          blocks the compositor; a slow or jittery cloud stream only affects the
+          freshness of the avatar PiP, not the output frame rate.
+
+        * ``_compositor_loop`` – runs at a fixed 30 fps, composites the latest
+          VR background with the latest avatar PiP (or VR-only if no avatar frame
+          has arrived yet), and pushes the result to the local_room VideoSource.
+          This guarantees smooth output even when the cloud avatar stream has
+          network hiccups.
+        """
         from livekit import rtc
+
+        TARGET_FPS = 30
+        frame_interval = 1.0 / TARGET_FPS
 
         fps_count = 0
         fps_ts = time.perf_counter()
         video_stream = None
         track_found = asyncio.Event()
+
+        # Shared mutable cell: latest decoded avatar BGR frame (or None).
+        latest_avatar_bgr: list = [None]
 
         def _on_track_subscribed(track, pub, participant):
             nonlocal video_stream
@@ -439,29 +481,34 @@ class AudiencePublisher:
 
         print(f"{_ts()} | [LIVEAVATAR] starting avatar video relay → local_room (VR + PiP)")
 
-        async for frame_event in video_stream:
-            if self._stop_event.is_set():
-                break
+        async def _avatar_frame_reader() -> None:
+            """Decode incoming cloud frames and update latest_avatar_bgr cache."""
+            async for frame_event in video_stream:
+                if self._stop_event.is_set():
+                    break
+                raw_frame = frame_event.frame
+                try:
+                    if raw_frame.type == rtc.VideoBufferType.RGB24:
+                        frame_src = raw_frame
+                    else:
+                        frame_src = raw_frame.convert(rtc.VideoBufferType.RGB24)
+                    img_data = np.frombuffer(frame_src.data, dtype=np.uint8)
+                    h, w = frame_src.height, frame_src.width
+                    if img_data.size != h * w * 3:
+                        continue
+                    img_rgb = img_data.reshape(h, w, 3)
+                    latest_avatar_bgr[0] = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                except Exception as exc:
+                    print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar frame decode: {exc}")
 
-            raw_frame = frame_event.frame
+        async def _compositor_loop() -> None:
+            """Fixed-rate compositor: composite VR + avatar PiP and publish."""
+            nonlocal fps_count, fps_ts
 
-            try:
-                # VideoStream is created with format=RGB24 so frames arrive as RGB24.
-                # If the frame is already RGB24 (same-format convert not supported),
-                # read directly; otherwise fall back to SDK convert.
-                if raw_frame.type == rtc.VideoBufferType.RGB24:
-                    frame_src = raw_frame
-                else:
-                    frame_src = raw_frame.convert(rtc.VideoBufferType.RGB24)
-                img_data = np.frombuffer(frame_src.data, dtype=np.uint8)
-                h, w = frame_src.height, frame_src.width
-                need = h * w * 3
-                if img_data.size != need:
-                    raise ValueError(
-                        f"RGB24 size mismatch: got {img_data.size} need {need} ({w}x{h})"
-                    )
-                img_rgb = img_data.reshape(h, w, 3)
-                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+            while not self._stop_event.is_set():
+                t0 = time.perf_counter()
+
+                avatar_bgr = latest_avatar_bgr[0]
 
                 latest_vr = self._drain_video_q_latest()
                 if latest_vr is not None:
@@ -472,14 +519,22 @@ class AudiencePublisher:
                         (self.VIDEO_H, self.VIDEO_W, 3), dtype=np.uint8
                     )
 
-                out_rgb = _composite_vr_avatar_pip(
-                    vr_rgb,
-                    img_bgr,
-                    self.VIDEO_W,
-                    self.VIDEO_H,
-                    max_frac=_PIP_MAX_FRAC,
-                    margin=_PIP_MARGIN_PX,
-                )
+                if avatar_bgr is not None:
+                    out_rgb = _composite_vr_avatar_pip(
+                        vr_rgb,
+                        avatar_bgr,
+                        self.VIDEO_W,
+                        self.VIDEO_H,
+                        max_frac=_PIP_MAX_FRAC,
+                        margin=_PIP_MARGIN_PX,
+                    )
+                else:
+                    # Avatar stream not yet available – publish VR only.
+                    bg = cv2.resize(vr_rgb, (self.VIDEO_W, self.VIDEO_H))
+                    out_rgb = cv2.cvtColor(
+                        cv2.cvtColor(bg, cv2.COLOR_RGB2BGR), cv2.COLOR_BGR2RGB
+                    )
+
                 frame_rgba = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2RGBA)
                 out_frame = rtc.VideoFrame(
                     width=self.VIDEO_W,
@@ -489,20 +544,23 @@ class AudiencePublisher:
                 )
                 local_video_source.capture_frame(out_frame)
 
-            except Exception as exc:
-                print(f"{_ts()} | [WARN] [LIVEAVATAR] video frame conversion: {exc}")
-                continue
+                fps_count += 1
+                now = time.perf_counter()
+                if now - fps_ts >= self.STATS_INTERVAL_S:
+                    fps = fps_count / (now - fps_ts)
+                    vr_drop = self._video_q.qsize()
+                    print(
+                        f"{_ts()} | [MEDIA] fps={fps:.1f} (liveavatar+vr pip) vr_q={vr_drop}"
+                    )
+                    fps_count = 0
+                    fps_ts = now
 
-            fps_count += 1
-            now = time.perf_counter()
-            if now - fps_ts >= self.STATS_INTERVAL_S:
-                fps = fps_count / (now - fps_ts)
-                vr_drop = self._video_q.qsize()
-                print(
-                    f"{_ts()} | [MEDIA] fps={fps:.1f} (liveavatar+vr pip) vr_q={vr_drop}"
-                )
-                fps_count = 0
-                fps_ts = now
+                elapsed = time.perf_counter() - t0
+                sleep_t = frame_interval - elapsed
+                if sleep_t > 0:
+                    await asyncio.sleep(sleep_t)
+
+        await asyncio.gather(_avatar_frame_reader(), _compositor_loop())
 
     async def _audio_pump_direct(self, source) -> None:
         """VR mode: drain _audio_q → local AudioSource (no delay)."""
