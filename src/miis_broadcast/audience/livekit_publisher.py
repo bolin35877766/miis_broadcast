@@ -134,6 +134,8 @@ class AudiencePublisher:
 
         # asyncio queue for the delayed local-audio relay (populated from _audio_pump)
         self._local_audio_delay_q: Optional[asyncio.Queue] = None
+        # Next perf_counter() when the relay may start the following PCM chunk (end of prior).
+        self._audio_relay_next_play: Optional[float] = None
 
         self._liveavatar_session = None  # LiveAvatarSession | None
 
@@ -172,9 +174,14 @@ class AudiencePublisher:
         )
         self._thread.start()
         mode = "liveavatar" if self._liveavatar_cfg else "vr"
+        extra = ""
+        if self._liveavatar_cfg:
+            extra = (
+                f" | narr_delay_ms={int(round(self._local_audio_delay_s * 1000))}"
+            )
         print(
             f"{_ts()} | [MEDIA] publisher starting | "
-            f"room={self._room_name} mode={mode}"
+            f"room={self._room_name} mode={mode}{extra}"
         )
 
     def stop(self) -> None:
@@ -249,6 +256,7 @@ class AudiencePublisher:
                 q.get_nowait()
             except asyncio.QueueEmpty:
                 break
+        self._audio_relay_next_play = None
 
     async def _liveavatar_interrupt_async(self) -> None:
         """Send a short silence chunk + `agent.interrupt` on LiveAvatar WebSocket."""
@@ -376,6 +384,7 @@ class AudiencePublisher:
         avatar_room = rtc.Room()
 
         self._local_audio_delay_q = asyncio.Queue()
+        self._audio_relay_next_play = None
 
         tasks: list[asyncio.Task] = []
         try:
@@ -728,27 +737,43 @@ class AudiencePublisher:
                 stats_ts = now
 
     async def _audio_delay_relay(self, local_audio_source) -> None:
-        """Drain _local_audio_delay_q respecting the per-frame deadline timestamp.
+        """Drain _local_audio_delay_q with gapless timeline + fixed lip-sync offset.
 
-        Each item is (deadline: float, pcm: np.ndarray).
-        We sleep until deadline, then forward to the local audience AudioSource.
-        This creates the configurable delay (``audio_delay_ms``) that aligns local narration
-        with lip motion in the PiP stream.
+        Each item is (earliest_play: float, pcm: np.ndarray) where earliest_play is set
+        in the pump as (chunk dequeue time + ``audio_delay_ms``). Chunks must not overlap
+        in wall time: we take max(previous_chunk_end, earliest_play, now) so the narration
+        track preserves PCM duration (fixes bursty scheduling when deadlines were per-chunk).
         """
         from livekit import rtc
+
+        sr = float(self.AUDIO_SAMPLE_RATE)
 
         while not self._stop_event.is_set():
             if self._local_audio_delay_q is None or self._local_audio_delay_q.empty():
                 await asyncio.sleep(0.005)
                 continue
 
-            deadline, pcm = await self._local_audio_delay_q.get()
-            await _async_sleep_until_deadline(deadline)
-
+            earliest, pcm = await self._local_audio_delay_q.get()
             if self._stop_event.is_set():
                 break
 
             samples = len(pcm)
+            if samples <= 0:
+                continue
+
+            chunk_dur = samples / sr
+            now = time.perf_counter()
+            prev_end = self._audio_relay_next_play
+            if prev_end is None:
+                t_play = max(now, earliest)
+            else:
+                t_play = max(prev_end, earliest, now)
+
+            await _async_sleep_until_deadline(t_play)
+
+            if self._stop_event.is_set():
+                break
+
             lk_frame = rtc.AudioFrame(
                 data=bytearray(pcm.tobytes()),
                 sample_rate=self.AUDIO_SAMPLE_RATE,
@@ -759,6 +784,8 @@ class AudiencePublisher:
                 await local_audio_source.capture_frame(lk_frame)
             except Exception as exc:
                 print(f"{_ts()} | [WARN] [MEDIA] local audio relay: {exc}")
+            else:
+                self._audio_relay_next_play = t_play + chunk_dur
 
 
 # ── Module-level helpers ───────────────────────────────────────────────────────
