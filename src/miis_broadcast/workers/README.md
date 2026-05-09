@@ -45,7 +45,7 @@ Each source thread emits one or two frame signals that `MainWindow` connects to:
 | `CameraByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
 | `DualSourceCameraThread` | `signal_frame` | `combined_rgb: np.ndarray` | `on_camera_frame()` |
 | `FreeSwitchCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` (`640×480` **or** stitched `1280×480`) | `on_camera_frame()` |
-| `FreeSwitchCameraThread` | `signal_vr_frame` | `frame_rgb: np.ndarray` — **always OBS/VR**, 640×480 RGB, for audience LiveKit `vr_program` | `MainWindow._deliver_audience_vr_frame()` → `AudiencePublisher.push_video_frame()` |
+| `FreeSwitchCameraThread` | `signal_vr_frame` | `frame_rgb: np.ndarray` — **always OBS/VR**, 640×480 RGB, for audience LiveKit `broadcast_video` | `MainWindow._deliver_audience_vr_frame()` → `AudiencePublisher.push_video_frame()` |
 | `FreeSwitchCameraThread` | `signal_source_changed` | `str` (`webcam` / `vr` / `dual`) | `_on_free_switch_source_changed()`, also updates switch-bar highlight |
 
 ## Inference Backend: Local vs Remote

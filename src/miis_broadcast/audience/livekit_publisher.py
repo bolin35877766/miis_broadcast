@@ -9,7 +9,7 @@ Two operating modes
 1. **VR mode** (default, heygen_cfg=None):
    - Video source: VR frames from FreeSwitchCameraThread.signal_vr_frame
    - Audio source: OpenAI TTS PCM sink (push_audio_chunk)
-   - Track names: avatar_video (video), narration (audio)
+   - Track names: broadcast_video (video), narration (audio)
 
 2. **HeyGen avatar mode** (heygen_cfg provided):
    - Connects to TWO LiveKit rooms simultaneously:
@@ -19,8 +19,8 @@ Two operating modes
    - Local audio gets a ~300 ms delay buffer to align lip sync with cloud video round-trip
    - Each outgoing video frame composites the **VR program** (full frame from ``_video_q``)
      with the **HeyGen avatar** in a **bottom-right picture-in-picture** tile, then publishes
-     to local_room as ``avatar_video``.
-   - Track names: avatar_video (video), narration (audio)
+     to local_room as ``broadcast_video``.
+   - Track names: broadcast_video (video), narration (audio)
 
 Thread model
 ------------
@@ -49,7 +49,7 @@ _PIP_MARGIN_PX = 10
 
 
 class AudiencePublisher:
-    """Connects to a local LiveKit room and publishes avatar_video + narration tracks.
+    """Connects to a local LiveKit room and publishes broadcast_video + narration tracks.
 
     When heygen_cfg is supplied the publisher also manages a HeyGen cloud session,
     routing TTS audio to the cloud avatar and relaying the rendered avatar (picture-in-picture
@@ -251,13 +251,13 @@ class AudiencePublisher:
 
             video_source = rtc.VideoSource(self.VIDEO_W, self.VIDEO_H)
             video_track = rtc.LocalVideoTrack.create_video_track(
-                "avatar_video", video_source
+                "broadcast_video", video_source
             )
             await room.local_participant.publish_track(
                 video_track,
                 rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA),
             )
-            print(f"{_ts()} | [MEDIA] publish_start track=avatar_video (vr mode)")
+            print(f"{_ts()} | [MEDIA] publish_start track=broadcast_video (vr mode)")
 
             audio_source = rtc.AudioSource(self.AUDIO_SAMPLE_RATE, self.AUDIO_CHANNELS)
             audio_track = rtc.LocalAudioTrack.create_audio_track(
@@ -321,16 +321,16 @@ class AudiencePublisher:
             await local_room.connect(self._url, local_token)
             print(f"{_ts()} | [MEDIA] local_room connected | room={self._room_name}")
 
-            # 3. Publish avatar_video + narration tracks to local room
+            # 3. Publish broadcast_video + narration tracks to local room
             local_video_source = rtc.VideoSource(self.VIDEO_W, self.VIDEO_H)
             local_video_track = rtc.LocalVideoTrack.create_video_track(
-                "avatar_video", local_video_source
+                "broadcast_video", local_video_source
             )
             await local_room.local_participant.publish_track(
                 local_video_track,
                 rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA),
             )
-            print(f"{_ts()} | [MEDIA] publish_start track=avatar_video (heygen mode)")
+            print(f"{_ts()} | [MEDIA] publish_start track=broadcast_video (heygen mode)")
 
             local_audio_source = rtc.AudioSource(
                 self.AUDIO_SAMPLE_RATE, self.AUDIO_CHANNELS

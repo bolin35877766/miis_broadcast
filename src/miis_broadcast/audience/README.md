@@ -1,6 +1,6 @@
 # Audience second screen (LiveKit)
 
-This package implements a **second display** for viewers: they open a browser page and receive **avatar video** plus **TTS narration** over WebRTC (LiveKit). The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
+This package implements a **second display** for viewers: they open a browser page and receive **video** (one LiveKit track: `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC (LiveKit). **Same track name in both modes; only the pixel content changes** (full-screen VR vs VR + HeyGen PiP). The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
 
 Two operating modes are supported (toggled by `configs/app.yml`):
 
@@ -18,7 +18,7 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 | Condition | Behavior |
 |-----------|----------|
 | `audience.enabled: true` in [configs/app.yml](../../../configs/app.yml) | HTTP token server may start with the GUI (`GET /audience`, `POST /api/audience/join`). |
-| Operator chooses **Online ▾ → Free Switch** | **LiveKit publisher** starts: publishes `avatar_video` + `narration` (VR-only or VR+HeyGen PiP per `heygen.enabled`). |
+| Operator chooses **Online ▾ → Free Switch** | **LiveKit publisher** starts: publishes `broadcast_video` + `narration` (pixels: VR-only vs VR+HeyGen PiP per `heygen.enabled`). |
 | Operator leaves Free Switch / switches mode | Publisher stops; HTTP server keeps running until the app exits (if enabled). |
 
 ---
@@ -62,7 +62,7 @@ flowchart LR
 
   VR --> PUB
   PCM --> PUB
-  PUB -->|"publish avatar_video + narration"| LK
+  PUB -->|"publish broadcast_video (full-screen VR) + narration"| LK
   HTTP -->|"HTML + JWT"| BR
   BR <-->|"subscribe"| LK
 ```
@@ -98,7 +98,7 @@ flowchart LR
   VR --> PUB
   PCM --> PUB
   PUB <-->|"PCM up · avatar video down"| HG
-  PUB -->|"publish composited avatar_video + delayed narration"| LK
+  PUB -->|"publish broadcast_video (VR + avatar PiP) + delayed narration"| LK
   HTTP -->|"HTML + JWT"| BR
   BR <-->|"subscribe"| LK
 ```
@@ -110,7 +110,7 @@ flowchart LR
 | ① | GUI + TTS | Free Switch feeds VR; TTS feeds PCM into `AudiencePublisher` |
 | ② | `AudiencePublisher` | Sends PCM to cloud; receives avatar stream; **composites PiP** with VR; sends **delayed** narration to local |
 | ③ | HeyGen | Cloud renders avatar; **HeyGen** LiveKit carries PCM + returned video |
-| ④ | Local LiveKit | Receives **composited** `avatar_video` + `narration` only |
+| ④ | Local LiveKit | Receives **composited** `broadcast_video` + `narration` only |
 | ⑤ | Audience | Same as VR mode: open :8080 → JWT → subscribe **local** room |
 ### TTS path (why it matches first-screen timing)
 
@@ -141,7 +141,7 @@ sequenceDiagram
 | Path | Role |
 |------|------|
 | [token_server.py](token_server.py) | FastAPI + uvicorn on `0.0.0.0`; serves viewer HTML and short-lived subscribe-only JWTs. |
-| [static/index.html](static/index.html) | LiveKit JS viewer: subscribe to `avatar_video` + `narration` (works for both modes). |
+| [static/index.html](static/index.html) | LiveKit JS viewer: subscribes to published video + audio tracks (`broadcast_video`, `narration`). |
 | [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: VR mode or HeyGen dual-room mode; audio delay relay. |
 | [heygen_session.py](heygen_session.py) | HeyGen REST API: create/start/stop session, `interrupt()`, `send_silence()`. |
 | [gui.py](../gui.py) | Reads `heygen` config block, builds `heygen_cfg` dict, passes to `AudiencePublisher`. |
@@ -232,10 +232,10 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[MEDIA] publisher starting \| room=… mode=heygen` | `AudiencePublisher.start()` in HeyGen mode. |
 | `[MEDIA] connected \| room=…` | Local room connected. |
 | `[MEDIA] local_room connected \| room=…` | HeyGen mode: local room connected. |
-| `[MEDIA] publish_start track=avatar_video (vr mode)` | VR video track live. |
-| `[MEDIA] publish_start track=avatar_video (heygen mode)` | HeyGen relay video track live. |
+| `[MEDIA] publish_start track=broadcast_video (vr mode)` | VR-only pixels on the shared video track name. |
+| `[MEDIA] publish_start track=broadcast_video (heygen mode)` | VR + PiP composite on the same track name. |
 | `[MEDIA] fps=29.0 drop=0 (vr)` | VR pump stats; `drop` = backpressure. |
-| `[MEDIA] fps=29.0 (heygen relay)` | HeyGen relay pump stats. |
+| `[MEDIA] fps=29.0 (heygen+vr pip) vr_q=…` | HeyGen PiP composite pump stats; `vr_q` = pending VR queue depth. |
 | `[MEDIA] disconnected from LiveKit` | Clean disconnect. |
 | `[MEDIA] publisher stopped` | Thread joined after `stop()`. |
 | `[WARN] [MEDIA] publisher thread hung; forcing event loop stop` | Graceful shutdown timed out. |
@@ -251,7 +251,7 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[HEYGEN] heygen_room connected \| url=…` | Python connected to HeyGen cloud LiveKit room. |
 | `[HEYGEN] audio track published to heygen_room` | TTS audio track live on HeyGen side. |
 | `[HEYGEN] avatar video track subscribed \| participant=…` | HeyGen started sending avatar video. |
-| `[HEYGEN] starting avatar video relay → local_room` | Video relay loop begins. |
+| `[HEYGEN] starting avatar video relay → local_room (VR + PiP)` | PiP composite loop started (local `broadcast_video`). |
 | `[HEYGEN] interrupt sent` | `/v1/streaming.interrupt` sent (TTS preempted). |
 | `[HEYGEN] silence frame sent (100 ms)` | Silence pushed to close avatar mouth on interrupt. |
 | `[HEYGEN] session stopped \| session_id=…` | `/v1/streaming.stop` sent on clean shutdown. |
