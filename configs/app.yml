@@ -37,5 +37,5 @@ audience:
 liveavatar:
   enabled: true
   quality: "low"
-  audio_delay_ms: 520  # narration → local LiveKit; PiP lip sync (tune ±50 ms or LIVEAVATAR_AUDIO_DELAY_MS in .env)
+  audio_delay_ms: 600  # narration → local LiveKit; PiP lip sync (tune ±50 ms or LIVEAVATAR_AUDIO_DELAY_MS in .env)
   # sandbox: true   # uses token is_sandbox; see LiveAvatar docs
