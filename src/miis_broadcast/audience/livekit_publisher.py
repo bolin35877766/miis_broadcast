@@ -418,13 +418,14 @@ class AudiencePublisher:
     async def _video_pump_vr(self, source) -> None:
         """VR mode: drain _video_q → local VideoSource at a fixed 30 fps.
 
-        Holds the last received frame when the queue is momentarily empty so
-        the output stream stays smooth even if the VR thread stalls briefly.
+        cv2 resize + RGBA convert run in a thread-pool executor so the asyncio
+        event loop is never blocked by CPU-bound image operations.
         """
         from livekit import rtc
 
         TARGET_FPS = 30
         frame_interval = 1.0 / TARGET_FPS
+        loop = asyncio.get_running_loop()
 
         fps_count = 0
         fps_ts = time.perf_counter()
@@ -444,17 +445,16 @@ class AudiencePublisher:
                 await _async_sleep_until_deadline(next_deadline)
                 continue
 
-            frame_rgb = last_frame_rgb
-            h, w = frame_rgb.shape[:2]
-            if h != self.VIDEO_H or w != self.VIDEO_W:
-                frame_rgb = cv2.resize(frame_rgb, (self.VIDEO_W, self.VIDEO_H))
-
-            frame_rgba = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2RGBA)
+            # Offload CPU work to thread pool; event loop stays free.
+            buf = await loop.run_in_executor(
+                None, _build_vr_only_frame_sync,
+                last_frame_rgb, self.VIDEO_W, self.VIDEO_H,
+            )
             lk_frame = rtc.VideoFrame(
                 width=self.VIDEO_W,
                 height=self.VIDEO_H,
                 type=rtc.VideoBufferType.RGBA,
-                data=bytearray(frame_rgba.tobytes()),
+                data=buf,
             )
             source.capture_frame(lk_frame)
 
@@ -476,15 +476,15 @@ class AudiencePublisher:
     async def _video_pump_vr_pip(self, local_video_source) -> None:
         """LiveAvatar mode: VR at fixed 30 fps with optional avatar PiP overlay.
 
-        This task is completely independent of the avatar cloud stream.  It reads
-        self._liveavatar_pip_tile (updated by _avatar_frame_reader_task) and
-        overlays it as a PiP if a frame is available.  If the cloud stream stalls or
-        has not delivered a frame yet, plain VR is published without any interruption.
+        cv2 composite + RGBA convert run in a thread-pool executor so the asyncio
+        event loop is never stalled by CPU-bound image operations.  VR is published
+        regardless of avatar cloud stream availability.
         """
         from livekit import rtc
 
         TARGET_FPS = 30
         frame_interval = 1.0 / TARGET_FPS
+        loop = asyncio.get_running_loop()
 
         fps_count = 0
         fps_ts = time.perf_counter()
@@ -504,24 +504,20 @@ class AudiencePublisher:
                 await _async_sleep_until_deadline(next_deadline)
                 continue
 
-            pip = self._liveavatar_pip_tile
-            if pip is not None:
-                pip_bgr, x0, y0, nw, nh = pip
-                out_rgb = _composite_vr_with_pip_tile(
-                    vr_rgb, pip_bgr, x0, y0, nw, nh, self.VIDEO_W, self.VIDEO_H
-                )
-                pip_state = "pip"
-            else:
-                bg = cv2.resize(vr_rgb, (self.VIDEO_W, self.VIDEO_H))
-                out_rgb = bg if bg.shape[2] == 3 else cv2.cvtColor(bg, cv2.COLOR_BGR2RGB)
-                pip_state = "vr-only"
+            # Snapshot pip tile before await (another task may update it during await).
+            pip_snapshot = self._liveavatar_pip_tile
+            pip_state = "pip" if pip_snapshot is not None else "vr-only"
 
-            frame_rgba = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2RGBA)
+            # Offload all cv2 work to thread pool; event loop stays responsive.
+            buf = await loop.run_in_executor(
+                None, _build_vr_pip_frame_sync,
+                vr_rgb, pip_snapshot, self.VIDEO_W, self.VIDEO_H,
+            )
             out_frame = rtc.VideoFrame(
                 width=self.VIDEO_W,
                 height=self.VIDEO_H,
                 type=rtc.VideoBufferType.RGBA,
-                data=bytearray(frame_rgba.tobytes()),
+                data=buf,
             )
             local_video_source.capture_frame(out_frame)
 
@@ -576,6 +572,7 @@ class AudiencePublisher:
 
         print(f"{_ts()} | [LIVEAVATAR] avatar frame reader started")
 
+        loop = asyncio.get_running_loop()
         try:
             async for frame_event in video_stream:
                 if self._stop_event.is_set():
@@ -586,19 +583,17 @@ class AudiencePublisher:
                         frame_src = raw_frame
                     else:
                         frame_src = raw_frame.convert(rtc.VideoBufferType.RGB24)
-                    img_data = np.frombuffer(frame_src.data, dtype=np.uint8)
                     h, w = frame_src.height, frame_src.width
-                    if img_data.size != h * w * 3:
-                        continue
-                    img_rgb = img_data.reshape(h, w, 3)
-                    avatar_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-                    self._liveavatar_pip_tile = _make_pip_tile(
-                        avatar_bgr,
-                        self.VIDEO_W,
-                        self.VIDEO_H,
-                        max_frac=_PIP_MAX_FRAC,
-                        margin=_PIP_MARGIN_PX,
+                    # Copy data to bytes BEFORE awaiting so the livekit frame
+                    # object can be released safely during the executor call.
+                    raw_bytes = bytes(frame_src.data)
+                    tile = await loop.run_in_executor(
+                        None, _decode_avatar_frame_sync,
+                        raw_bytes, h, w,
+                        self.VIDEO_W, self.VIDEO_H, _PIP_MAX_FRAC, _PIP_MARGIN_PX,
                     )
+                    if tile is not None:
+                        self._liveavatar_pip_tile = tile
                 except Exception as exc:
                     print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar frame decode: {exc}")
         except asyncio.CancelledError:
@@ -720,6 +715,50 @@ class AudiencePublisher:
 
 
 # ── Module-level helpers ───────────────────────────────────────────────────────
+
+
+def _decode_avatar_frame_sync(
+    raw_bytes: bytes,
+    h: int,
+    w: int,
+    out_w: int,
+    out_h: int,
+    max_frac: float,
+    margin: int,
+):
+    """Decode raw RGB24 bytes and pre-scale to PiP tile.  Runs in thread pool."""
+    img_data = np.frombuffer(raw_bytes, dtype=np.uint8)
+    if img_data.size != h * w * 3:
+        return None
+    img_rgb = img_data.reshape(h, w, 3)
+    avatar_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    return _make_pip_tile(avatar_bgr, out_w, out_h, max_frac=max_frac, margin=margin)
+
+
+def _build_vr_pip_frame_sync(
+    vr_rgb: np.ndarray,
+    pip,
+    out_w: int,
+    out_h: int,
+) -> bytearray:
+    """Composite VR + optional pre-scaled PiP → RGBA bytearray.  Runs in thread pool."""
+    if pip is not None:
+        pip_bgr, x0, y0, nw, nh = pip
+        out_rgb = _composite_vr_with_pip_tile(
+            vr_rgb, pip_bgr, x0, y0, nw, nh, out_w, out_h
+        )
+    else:
+        out_rgb = cv2.resize(vr_rgb, (out_w, out_h))
+    frame_rgba = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2RGBA)
+    return bytearray(frame_rgba.tobytes())
+
+
+def _build_vr_only_frame_sync(vr_rgb: np.ndarray, out_w: int, out_h: int) -> bytearray:
+    """Resize + RGB→RGBA convert for VR-only mode.  Runs in thread pool."""
+    h, w = vr_rgb.shape[:2]
+    frame_rgb = cv2.resize(vr_rgb, (out_w, out_h)) if (w != out_w or h != out_h) else vr_rgb
+    frame_rgba = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2RGBA)
+    return bytearray(frame_rgba.tobytes())
 
 
 def _make_pip_tile(
