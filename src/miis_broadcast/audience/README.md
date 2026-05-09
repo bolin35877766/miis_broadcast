@@ -237,7 +237,7 @@ sequenceDiagram
    python -m miis_broadcast
    ```
 
-5. **Operator**: **Free Switch** → wait for `[MEDIA] connected` in the terminal → viewers open `http://<PC_LAN_IP>:8080/audience` (or `localhost` on the same machine).
+5. **Operator**: **Free Switch** → wait for **`[MEDIA] connected`** (VR-only mode) **or** **`[MEDIA] local_room connected`** (LiveAvatar mode) in the terminal → viewers open `http://<PC_LAN_IP>:8080/audience` (or `localhost` on the same machine).
 
 ---
 
@@ -354,6 +354,7 @@ Rust lines such as `failed to negotiate the publisher` may appear in **`docker c
 | Overlapping audio in browser | Ensure a single `narration` element (see `index.html` dedupe by track name); avoid duplicate tabs both unmuted in the same room. |
 | `[MEDIA] fps=…` not ~30 in LiveAvatar/VR mode | Current build uses **deadline-based** pacing; sustained **~60+** may indicate an old build or clock skew. |
 | Playback stutters when TTS / LiveAvatar is active | **Same asyncio loop** runs VR pacing and WebSocket audio. Heavy **Base64 / `json.dumps`** for `agent.speak` used to block that loop (`liveavatar_session.py` now uses **`asyncio.to_thread`**). Also check client **`JPEG send_queue` full** or **high RAM** (whole GUI starves). VR/avatar **cv2** uses `_vr_executor` / `_avatar_executor`. |
+| Stutter with remote inference; server stdout shows `JPEG send_queue=30/30` | TCP/client cannot drain frames as fast as produced; often **high client RAM** or network. Root README → *Client send rate* / `_FRAME_QUEUE_MAX`. |
 | PiP lip sync off | Tune `liveavatar.audio_delay_ms` or **`LIVEAVATAR_AUDIO_DELAY_MS`** (mouth **lags** sound → **increase**; sound **lags** mouth → **decrease**). Delay is anchored at TTS chunk dequeue so WebSocket timing does not smear rhythm. |
 | `QThread: Destroyed while thread '' is still running` on exit | A background thread (e.g. publisher) may still be stopping; ensure Free Switch / audience teardown completes before closing the app window, or wait for `[MEDIA] publisher stopped`. |
 
