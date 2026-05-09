@@ -181,15 +181,9 @@ sequenceDiagram
 
 ## Configuration reference ([configs/app.yml](../../../configs/app.yml))
 
-### Local secrets (`configs/app.local.yml`)
+### HeyGen secrets (`.env`)
 
-Do **not** commit HeyGen API keys (or other production secrets) in `app.yml` if the repo is shared or public. Use a **gitignored** file:
-
-1. Copy [`app.local.example.yml`](../../../configs/app.local.example.yml) → `configs/app.local.yml`
-2. Set `heygen.api_key`, `heygen.avatar_id`, etc. there
-3. At startup, `app.yml` is loaded and then **merged** with `app.local.yml` (local wins)
-
-If credentials were pushed to GitHub: **rotate them** in the HeyGen dashboard; consider [removing secrets from git history](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository) for a public repo.
+Keep **`HEYGEN_API_KEY`** (and optionally **`HEYGEN_AVATAR_ID`**, **`HEYGEN_VOICE_ID`**) in the project root **`.env`** (gitignored). With `heygen.enabled: true` in `app.yml`, the GUI reads the key from the environment first, then falls back to `heygen.api_key` in YAML if set.
 
 ### `audience` section
 
@@ -206,9 +200,9 @@ If credentials were pushed to GitHub: **rotate them** in the HeyGen dashboard; c
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `heygen.enabled` | `false` | Set `true` to activate HeyGen avatar mode. |
-| `heygen.api_key` | `""` | HeyGen API key from [app.heygen.com/settings/api](https://app.heygen.com/settings/api). |
-| `heygen.avatar_id` | `""` | HeyGen avatar ID; leave blank for the default interactive avatar. |
-| `heygen.voice_id` | `""` | **Often required** for `streaming.new` on your plan; get a voice UUID from HeyGen (dashboard or List Voices API). If session create returns 400, set this. |
+| `heygen.api_key` | `""` | Optional if **`HEYGEN_API_KEY`** is set in `.env`. Otherwise HeyGen API key from [app.heygen.com/settings/api](https://app.heygen.com/settings/api). |
+| `heygen.avatar_id` | `""` | HeyGen avatar ID, or set **`HEYGEN_AVATAR_ID`** in `.env`. |
+| `heygen.voice_id` | `""` | Often required for some plans; or **`HEYGEN_VOICE_ID`** in `.env`. Get a voice UUID from HeyGen. |
 | `heygen.quality` | `"medium"` | Avatar render quality: `"low"` / `"medium"` / `"high"`. |
 | `heygen.audio_delay_ms` | `300` | Delay (ms) added to local-audience audio to align with cloud video latency. |
 

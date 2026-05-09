@@ -203,9 +203,14 @@ Create a `.env` file at the project root:
 
 ```env
 OPENAI_API_KEY=sk-...
+
+# Optional audience / HeyGen (when heygen.enabled: true in configs/app.yml)
+HEYGEN_API_KEY=
+HEYGEN_AVATAR_ID=
+# HEYGEN_VOICE_ID=
 ```
 
-This is required for the OpenAI Realtime TTS backend.
+This is required for the OpenAI Realtime TTS backend. HeyGen API keys are read from the same `.env` (preferred over putting secrets in `app.yml`).
 
 ### App config ([configs/app.yml](configs/app.yml))
 
@@ -228,7 +233,7 @@ audience:
   port: 8080
 ```
 
-**HeyGen / other secrets:** keep production keys out of git. Copy [`configs/app.local.example.yml`](configs/app.local.example.yml) to **`configs/app.local.yml`** (ignored by git). The app loads `app.yml` first, then merges `app.local.yml` on top. **If a key was ever pushed to GitHub, revoke it in the vendor dashboard and create a new key** — rewriting git history does not undo a leaked credential.
+**HeyGen API key:** set `HEYGEN_API_KEY` (and optionally `HEYGEN_AVATAR_ID`) in **`.env`** (gitignored) with `heygen.enabled: true` in `app.yml` — see [Environment variables](#environment-variables).
 
 ### Commentary styles ([configs/livecc_prompts.yml](configs/livecc_prompts.yml))
 

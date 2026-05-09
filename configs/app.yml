@@ -27,8 +27,8 @@ audience:
   room: "broadcast-room"
   port: 8080       # audience token server / viewer page port
 
-# HeyGen Streaming Avatar — do NOT put production api_key in this file if the repo is public.
-# Copy configs/app.local.example.yml → configs/app.local.yml and set secrets there (gitignored).
+# HeyGen Streaming Avatar — put HEYGEN_API_KEY (and optional HEYGEN_AVATAR_ID, HEYGEN_VOICE_ID)
+# in project-root .env (gitignored). You may leave api_key empty here and use env only.
 #
 # Requirements:
 #   - pip install httpx

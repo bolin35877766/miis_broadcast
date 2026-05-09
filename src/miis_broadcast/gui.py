@@ -1955,15 +1955,24 @@ class MainWindow(QtWidgets.QMainWindow):
         api_secret = audience_cfg.get("api_secret", "devsecret")
         room_name = audience_cfg.get("room", "broadcast-room")
 
-        # Build HeyGen config if enabled; passing None falls back to VR-frame mode
+        # Build HeyGen config if enabled; passing None falls back to VR-frame mode.
+        # Prefer HEYGEN_* from .env so secrets stay out of app.yml (optional: still allow app.yml).
         heygen_raw = self.configs.get("heygen", {})
         heygen_cfg = None
-        raw_key = (heygen_raw.get("api_key") or "").strip()
+        raw_key = (os.environ.get("HEYGEN_API_KEY") or heygen_raw.get("api_key") or "").strip()
         if heygen_raw.get("enabled", False) and raw_key:
             heygen_cfg = {
                 "api_key":    raw_key,
-                "avatar_id":  (heygen_raw.get("avatar_id") or "").strip(),
-                "voice_id":   (heygen_raw.get("voice_id") or "").strip(),
+                "avatar_id":  (
+                    os.environ.get("HEYGEN_AVATAR_ID")
+                    or heygen_raw.get("avatar_id")
+                    or ""
+                ).strip(),
+                "voice_id":   (
+                    os.environ.get("HEYGEN_VOICE_ID")
+                    or heygen_raw.get("voice_id")
+                    or ""
+                ).strip(),
                 "quality":    heygen_raw.get("quality", "medium"),
                 "audio_delay_ms": int(heygen_raw.get("audio_delay_ms", 300)),
             }
