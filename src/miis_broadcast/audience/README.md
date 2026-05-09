@@ -7,7 +7,7 @@ Two operating modes are supported (toggled by `configs/app.yml`):
 | Mode | Video source | Audio path |
 |------|-------------|------------|
 | **VR mode** (default, `liveavatar.enabled: false`) | VR camera frames from `FreeSwitchCameraThread` | TTS PCM → local room directly |
-| **LiveAvatar mode** (`liveavatar.enabled: true`) | VR full screen + LiveAvatar avatar as **picture-in-picture** (bottom-right, optional) | TTS PCM → LiveAvatar **WebSocket** (`agent.speak`) **and** local room (**delayed** by `audio_delay_ms`, default ~450 ms, for A/V sync) |
+| **LiveAvatar mode** (`liveavatar.enabled: true`) | VR full screen + LiveAvatar avatar as **picture-in-picture** (bottom-right, optional) | TTS PCM → LiveAvatar **WebSocket** (`agent.speak`) **and** local room (**delayed** by `audio_delay_ms`, default ~520 ms, for A/V sync) |
 
 Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_server`, `_start_audience_services`, `_deliver_audience_vr_frame`). For input workers and frame contracts, see [workers/README.md](../workers/README.md).
 
@@ -171,7 +171,7 @@ sequenceDiagram
   end
 ```
 
-**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** by `liveavatar.audio_delay_ms` (default **450**) so it lines up with lip motion in the PiP. **Tune:** if the **mouth visibly lags** the sound you hear in the browser, **increase** `audio_delay_ms`; if sound is clearly **after** the mouth, **decrease** it (try steps of ~50 ms).
+**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** by `liveavatar.audio_delay_ms` (default **520**) so it lines up with lip motion in the PiP. The delay **deadline is set when each PCM chunk is dequeued** from the TTS path (not after WebSocket `send_pcm_chunk` returns), so variable encode/network time does not jitter playout timing. **Override** without editing YAML: set **`LIVEAVATAR_AUDIO_DELAY_MS`** in project-root `.env`. **Tune:** if the **mouth visibly lags** the sound you hear in the browser, **increase** the delay; if sound is clearly **after** the mouth, **decrease** it (try steps of ~50 ms).
 
 ```mermaid
 sequenceDiagram
@@ -266,7 +266,7 @@ Keep **`LIVEAVATAR_API_KEY`** (and optionally **`LIVEAVATAR_AVATAR_ID`**, **`LIV
 | `liveavatar.avatar_id` | `""` | Avatar UUID from LiveAvatar, or **`LIVEAVATAR_AVATAR_ID`** in `.env`. |
 | `liveavatar.voice_id` | `""` | Optional; **`LIVEAVATAR_VOICE_ID`** in `.env` (reserved for future use; LITE uses avatar default voice). |
 | `liveavatar.quality` | `"low"` (see `app.yml`) | Video quality: `"low"` / `"medium"` / `"high"`. |
-| `liveavatar.audio_delay_ms` | `450` | Delay (ms) before local-audience **narration** track plays, so it matches lip timing in the PiP (network-dependent; tune ±50 ms). |
+| `liveavatar.audio_delay_ms` | `520` | Delay (ms) before local-audience **narration** track plays, so it matches lip timing in the PiP (network-dependent; tune ±50 ms or set **`LIVEAVATAR_AUDIO_DELAY_MS`** in `.env`). |
 | `liveavatar.sandbox` | `false` | When `true`, token requests use `is_sandbox` (see LiveAvatar docs). |
 
 > **Network requirements (LiveAvatar mode)**
@@ -354,7 +354,7 @@ Rust lines such as `failed to negotiate the publisher` may appear in **`docker c
 | Overlapping audio in browser | Ensure a single `narration` element (see `index.html` dedupe by track name); avoid duplicate tabs both unmuted in the same room. |
 | `[MEDIA] fps=…` not ~30 in LiveAvatar/VR mode | Current build uses **deadline-based** pacing; sustained **~60+** may indicate an old build or clock skew. |
 | Playback stutters when TTS / LiveAvatar is active | **Same asyncio loop** runs VR pacing and WebSocket audio. Heavy **Base64 / `json.dumps`** for `agent.speak` used to block that loop (`liveavatar_session.py` now uses **`asyncio.to_thread`**). Also check client **`JPEG send_queue` full** or **high RAM** (whole GUI starves). VR/avatar **cv2** uses `_vr_executor` / `_avatar_executor`. |
-| PiP lip sync off | Tune `liveavatar.audio_delay_ms` (mouth **lags** sound → **increase**; sound **lags** mouth → **decrease**). |
+| PiP lip sync off | Tune `liveavatar.audio_delay_ms` or **`LIVEAVATAR_AUDIO_DELAY_MS`** (mouth **lags** sound → **increase**; sound **lags** mouth → **decrease**). Delay is anchored at TTS chunk dequeue so WebSocket timing does not smear rhythm. |
 | `QThread: Destroyed while thread '' is still running` on exit | A background thread (e.g. publisher) may still be stopping; ensure Free Switch / audience teardown completes before closing the app window, or wait for `[MEDIA] publisher stopped`. |
 
 ---

@@ -17,7 +17,7 @@ Two operating modes
        avatar_room  → LiveAvatar cloud LiveKit (video subscribe only)
    - TTS PCM is sent to LiveAvatar via **WebSocket** ``agent.speak`` (not a LiveKit mic track)
    - The same TTS PCM is also delayed and published as ``narration`` on the local room for lip-sync
-   - Local audio gets a configurable delay (``audio_delay_ms``, default ~450 ms) so browser
+   - Local audio gets a configurable delay (``audio_delay_ms``, default ~520 ms) so browser
      narration matches lip motion in the PiP; tune per network / machine.
    - VR video is published at a fixed 30 fps **independently** of the avatar cloud stream.
      When an avatar frame is available it is composited as a bottom-right PiP tile.
@@ -116,10 +116,10 @@ class AudiencePublisher:
         self._liveavatar_cfg: Optional[dict] = liveavatar_cfg
 
         # Local audience audio delay in LiveAvatar mode (seconds); from configs/app.yml audio_delay_ms
-        self._local_audio_delay_s = 0.45
+        self._local_audio_delay_s = 0.52
         if liveavatar_cfg is not None:
             self._local_audio_delay_s = max(
-                0.0, float(liveavatar_cfg.get("audio_delay_ms", 450)) / 1000.0
+                0.0, float(liveavatar_cfg.get("audio_delay_ms", 520)) / 1000.0
             )
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -683,15 +683,19 @@ class AudiencePublisher:
                 await asyncio.sleep(0.005)
                 continue
 
+            # Anchor local playout to TTS chunk arrival time — not to WebSocket completion.
+            # `send_pcm_chunk` duration varies (Base64 + I/O); tying the delay to it used to
+            # jitter inter-chunk timing and desync mouth vs browser narration.
+            play_deadline = time.perf_counter() + self._local_audio_delay_s
+
             try:
                 await avatar_session.send_pcm_chunk(pcm)
             except Exception as exc:
                 print(f"{_ts()} | [WARN] [LIVEAVATAR] audio send: {exc}")
 
-            deadline = time.perf_counter() + self._local_audio_delay_s
             if self._local_audio_delay_q is not None:
                 try:
-                    self._local_audio_delay_q.put_nowait((deadline, pcm))
+                    self._local_audio_delay_q.put_nowait((play_deadline, pcm))
                 except asyncio.QueueFull:
                     pass
 

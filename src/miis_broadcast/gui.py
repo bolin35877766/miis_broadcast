@@ -63,6 +63,23 @@ def _find_project_root(start: Path) -> Path:
     return p.parent
 
 
+def _resolve_liveavatar_audio_delay_ms(la_raw: dict) -> int:
+    """Local LiveKit narration delay (ms) for PiP lip sync; env overrides YAML.
+
+    Set ``LIVEAVATAR_AUDIO_DELAY_MS`` in ``.env`` for quick tuning without editing ``app.yml``.
+    """
+    env = (os.environ.get("LIVEAVATAR_AUDIO_DELAY_MS") or "").strip()
+    if env:
+        try:
+            return max(0, int(env))
+        except ValueError:
+            pass
+    try:
+        return max(0, int(la_raw.get("audio_delay_ms", 520)))
+    except (TypeError, ValueError):
+        return 520
+
+
 _configure_qt_highdpi()
 
 
@@ -1973,7 +1990,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     or ""
                 ).strip(),
                 "quality":    la_raw.get("quality", "medium"),
-                "audio_delay_ms": int(la_raw.get("audio_delay_ms", 450)),
+                "audio_delay_ms": _resolve_liveavatar_audio_delay_ms(la_raw),
                 "sandbox":    bool(la_raw.get("sandbox", False)),
             }
             print(

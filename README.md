@@ -208,6 +208,8 @@ OPENAI_API_KEY=sk-...
 LIVEAVATAR_API_KEY=
 LIVEAVATAR_AVATAR_ID=
 # LIVEAVATAR_VOICE_ID=
+# Optional: override narration delay for lip sync vs PiP (milliseconds). If unset, use liveavatar.audio_delay_ms in app.yml.
+# LIVEAVATAR_AUDIO_DELAY_MS=570
 ```
 
 This is required for the OpenAI Realtime TTS backend. LiveAvatar keys use the same `.env` (preferred over putting secrets in `app.yml`).
