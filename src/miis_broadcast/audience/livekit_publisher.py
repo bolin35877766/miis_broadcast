@@ -446,10 +446,15 @@ class AudiencePublisher:
             raw_frame = frame_event.frame
 
             try:
-                # Remote tracks often use I420/NV12; buffer size != width*height*4. Use SDK convert.
-                conv = raw_frame.convert(rtc.VideoBufferType.RGB24)
-                img_data = np.frombuffer(conv.data, dtype=np.uint8)
-                h, w = conv.height, conv.width
+                # VideoStream is created with format=RGB24 so frames arrive as RGB24.
+                # If the frame is already RGB24 (same-format convert not supported),
+                # read directly; otherwise fall back to SDK convert.
+                if raw_frame.type == rtc.VideoBufferType.RGB24:
+                    frame_src = raw_frame
+                else:
+                    frame_src = raw_frame.convert(rtc.VideoBufferType.RGB24)
+                img_data = np.frombuffer(frame_src.data, dtype=np.uint8)
+                h, w = frame_src.height, frame_src.width
                 need = h * w * 3
                 if img_data.size != need:
                     raise ValueError(
