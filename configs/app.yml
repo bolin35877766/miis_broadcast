@@ -36,6 +36,6 @@ audience:
 #   - Windows Firewall: run scripts/open-audience-firewall.ps1 as Administrator
 liveavatar:
   enabled: true
-  quality: "medium"
+  quality: "low"
   audio_delay_ms: 450  # tune lip sync vs browser narration (see audience/README.md)
   # sandbox: true   # uses token is_sandbox; see LiveAvatar docs
