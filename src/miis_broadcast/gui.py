@@ -75,9 +75,9 @@ def _resolve_liveavatar_audio_delay_ms(la_raw: dict) -> int:
         except ValueError:
             pass
     try:
-        return max(0, int(la_raw.get("audio_delay_ms", 600)))
+        return max(0, int(la_raw.get("audio_delay_ms", 750)))
     except (TypeError, ValueError):
-        return 600
+        return 750
 
 
 _configure_qt_highdpi()

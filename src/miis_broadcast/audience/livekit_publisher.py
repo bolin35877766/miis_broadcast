@@ -17,7 +17,7 @@ Two operating modes
        avatar_room  → LiveAvatar cloud LiveKit (video subscribe only)
    - TTS PCM is sent to LiveAvatar via **WebSocket** ``agent.speak`` (not a LiveKit mic track)
    - The same TTS PCM is also delayed and published as ``narration`` on the local room for lip-sync
-   - Local audio gets a configurable delay (``audio_delay_ms``, default ~600 ms) so browser
+   - Local audio gets a configurable delay (``audio_delay_ms``, default ~750 ms) so browser
      narration matches lip motion in the PiP; tune per network / machine.
    - VR video is published at a fixed 30 fps **independently** of the avatar cloud stream.
      When an avatar frame is available it is composited as a bottom-right PiP tile.
@@ -116,10 +116,10 @@ class AudiencePublisher:
         self._liveavatar_cfg: Optional[dict] = liveavatar_cfg
 
         # Local audience audio delay in LiveAvatar mode (seconds); from configs/app.yml audio_delay_ms
-        self._local_audio_delay_s = 0.6
+        self._local_audio_delay_s = 0.75
         if liveavatar_cfg is not None:
             self._local_audio_delay_s = max(
-                0.0, float(liveavatar_cfg.get("audio_delay_ms", 600)) / 1000.0
+                0.0, float(liveavatar_cfg.get("audio_delay_ms", 750)) / 1000.0
             )
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None

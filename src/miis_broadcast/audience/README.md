@@ -7,7 +7,7 @@ Two operating modes are supported (toggled by `configs/app.yml`):
 | Mode | Video source | Audio path |
 |------|-------------|------------|
 | **VR mode** (default, `liveavatar.enabled: false`) | VR camera frames from `FreeSwitchCameraThread` | TTS PCM → local room directly |
-| **LiveAvatar mode** (`liveavatar.enabled: true`) | VR full screen + LiveAvatar avatar as **picture-in-picture** (bottom-right, optional) | TTS PCM → LiveAvatar **WebSocket** (`agent.speak`) **and** local room (**delayed** by `audio_delay_ms`, default ~600 ms, for A/V sync) |
+| **LiveAvatar mode** (`liveavatar.enabled: true`) | VR full screen + LiveAvatar avatar as **picture-in-picture** (bottom-right, optional) | TTS PCM → LiveAvatar **WebSocket** (`agent.speak`) **and** local room (**delayed** by `audio_delay_ms`, default ~750 ms, for A/V sync) |
 
 Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_server`, `_start_audience_services`, `_deliver_audience_vr_frame`). For input workers and frame contracts, see [workers/README.md](../workers/README.md).
 
@@ -171,7 +171,7 @@ sequenceDiagram
   end
 ```
 
-**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** by `liveavatar.audio_delay_ms` (default **600**) so it lines up with lip motion in the PiP. The delay **deadline is set when each PCM chunk is dequeued** from the TTS path (not after WebSocket `send_pcm_chunk` returns), so variable encode/network time does not jitter playout timing. **Override** without editing YAML: set **`LIVEAVATAR_AUDIO_DELAY_MS`** in project-root `.env`. **Tune:** if the **mouth visibly lags** the sound you hear in the browser, **increase** the delay; if sound is clearly **after** the mouth, **decrease** it (try steps of ~50 ms).
+**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** by `liveavatar.audio_delay_ms` (default **750**) so it lines up with lip motion in the PiP. The delay **deadline is set when each PCM chunk is dequeued** from the TTS path (not after WebSocket `send_pcm_chunk` returns), so variable encode/network time does not jitter playout timing. **Override** without editing YAML: set **`LIVEAVATAR_AUDIO_DELAY_MS`** in project-root `.env`. **Tune:** if the **mouth visibly lags** the sound you hear in the browser, **increase** the delay; if sound is clearly **after** the mouth, **decrease** it (try steps of ~50 ms).
 
 ```mermaid
 sequenceDiagram
@@ -266,7 +266,7 @@ Keep **`LIVEAVATAR_API_KEY`** (and optionally **`LIVEAVATAR_AVATAR_ID`**, **`LIV
 | `liveavatar.avatar_id` | `""` | Avatar UUID from LiveAvatar, or **`LIVEAVATAR_AVATAR_ID`** in `.env`. |
 | `liveavatar.voice_id` | `""` | Optional; **`LIVEAVATAR_VOICE_ID`** in `.env` (reserved for future use; LITE uses avatar default voice). |
 | `liveavatar.quality` | `"low"` (see `app.yml`) | Video quality: `"low"` / `"medium"` / `"high"`. |
-| `liveavatar.audio_delay_ms` | `600` | Delay (ms) before local-audience **narration** track plays, so it matches lip timing in the PiP (network-dependent; tune ±50 ms or set **`LIVEAVATAR_AUDIO_DELAY_MS`** in `.env`). |
+| `liveavatar.audio_delay_ms` | `750` | Delay (ms) before local-audience **narration** track plays, so it matches lip timing in the PiP (network-dependent; typical **700–900** when cloud+Wi‑Fi; tune ±50 ms or **`LIVEAVATAR_AUDIO_DELAY_MS`** in `.env`). |
 | `liveavatar.sandbox` | `false` | When `true`, token requests use `is_sandbox` (see LiveAvatar docs). |
 
 > **Network requirements (LiveAvatar mode)**
