@@ -405,7 +405,7 @@ class AudiencePublisher:
             print(f"{_ts()} | [AUDIO] publish_start track=narration (liveavatar mode)")
 
             await avatar_room.connect(avatar_room_url, avatar_room_token)
-            print(f"{_ts()} | [LIVEAVATAR] avatar_room connected | url={avatar_room_url}")
+            print(f"{_ts()} | [LIVEAVATAR] cloud room OK")
 
             self._connected = True
 
@@ -608,14 +608,12 @@ class AudiencePublisher:
 
         video_stream = None
         track_found = asyncio.Event()
+        subscribed_identity = ""
 
         def _on_track_subscribed(track, pub, participant):
-            nonlocal video_stream
+            nonlocal video_stream, subscribed_identity
             if track.kind == rtc.TrackKind.KIND_VIDEO and video_stream is None:
-                print(
-                    f"{_ts()} | [LIVEAVATAR] avatar video track subscribed | "
-                    f"participant={participant.identity}"
-                )
+                subscribed_identity = str(participant.identity)
                 video_stream = rtc.VideoStream(
                     track, format=rtc.VideoBufferType.RGB24
                 )
@@ -629,7 +627,9 @@ class AudiencePublisher:
             print(f"{_ts()} | [WARN] [LIVEAVATAR] avatar video track not received in 30s; PiP disabled")
             return
 
-        print(f"{_ts()} | [LIVEAVATAR] avatar frame reader started")
+        print(
+            f"{_ts()} | [LIVEAVATAR] PiP video | participant={subscribed_identity}"
+        )
 
         loop = asyncio.get_running_loop()
         try:

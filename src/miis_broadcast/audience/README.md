@@ -265,7 +265,7 @@ Keep **`LIVEAVATAR_API_KEY`** (and optionally **`LIVEAVATAR_AVATAR_ID`**, **`LIV
 | `liveavatar.api_key` | `""` | Optional if **`LIVEAVATAR_API_KEY`** is set in `.env`. Otherwise use API key from [app.liveavatar.com/developers](https://app.liveavatar.com/developers). |
 | `liveavatar.avatar_id` | `""` | Avatar UUID from LiveAvatar, or **`LIVEAVATAR_AVATAR_ID`** in `.env`. |
 | `liveavatar.voice_id` | `""` | Optional; **`LIVEAVATAR_VOICE_ID`** in `.env` (reserved for future use; LITE uses avatar default voice). |
-| `liveavatar.quality` | `"medium"` | Video quality: `"low"` / `"medium"` / `"high"`. |
+| `liveavatar.quality` | `"low"` (see `app.yml`) | Video quality: `"low"` / `"medium"` / `"high"`. |
 | `liveavatar.audio_delay_ms` | `450` | Delay (ms) before local-audience **narration** track plays, so it matches lip timing in the PiP (network-dependent; tune ±50 ms). |
 | `liveavatar.sandbox` | `false` | When `true`, token requests use `is_sandbox` (see LiveAvatar docs). |
 
@@ -279,6 +279,8 @@ Keep **`LIVEAVATAR_API_KEY`** (and optionally **`LIVEAVATAR_AVATAR_ID`**, **`LIV
 ## Client terminal log reference (prefixes)
 
 These lines appear on **`python -m miis_broadcast`** stdout (not the browser). They are **separate** from session files under `logs/sessions/` and from server `[Server]` / `[Client]` telemetry in remote inference.
+
+**`[MEDIA]`** always means the **local audience** LiveKit path (composite video → `broadcast_video`, and session connect/disconnect). **`[AUDIO]`** means the **`narration`** track on that same local room **and** the TTS → publisher PCM pipeline stats — the prefixes did **not** change meaning; only the periodic `[MEDIA] fps=…` line may add optional `skip=` when the machine is behind and the publisher re-sends the last frame instead of recompositing.
 
 ### `[AUDIENCE]` — HTTP token server
 
@@ -301,29 +303,31 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[MEDIA] local_room connected \| room=…` | LiveAvatar mode: local room connected. |
 | `[MEDIA] publish_start track=broadcast_video (vr mode)` | VR-only pixels on the shared video track name. |
 | `[MEDIA] publish_start track=broadcast_video (liveavatar mode)` | VR + PiP composite on the same track name. |
-| `[MEDIA] fps=29.0 drop=0 (vr)` | VR pump stats; `drop` = backpressure. |
-| `[MEDIA] fps=29.0 (pip) vr_q=…` | LiveAvatar mode; avatar PiP overlay active; `vr_q` = pending VR queue depth. |
+| `[MEDIA] fps=29.0 drop=0 (vr)` | VR pump stats; `drop` = `_video_q` depth (not dropped frames). Optional `skip=` = frames that repeated the last buffer to catch up. |
+| `[MEDIA] fps=29.0 (pip) vr_q=…` | LiveAvatar mode; avatar PiP overlay active; `vr_q` = `_video_q` depth. Optional `skip=` as above. |
 | `[MEDIA] fps=29.0 (vr-only) vr_q=…` | LiveAvatar mode; avatar cache empty (cloud not ready / stalled); VR published without PiP. |
 | `[MEDIA] disconnected from LiveKit` | Clean disconnect. |
 | `[MEDIA] publisher stopped` | Thread joined after `stop()`. |
 | `[WARN] [MEDIA] publisher thread hung; forcing event loop stop` | Graceful shutdown timed out. |
 | `[ERR] publisher session (vr/liveavatar): …` | Python-side failure. |
 
-### `[LIVEAVATAR]` — LiveAvatar session lifecycle
+### `[LIVEAVATAR]` — LiveAvatar (cloud REST + WebSocket + cloud LiveKit subscribe)
+
+Routine **success** paths are kept short; **warnings/errors** still print in full.
 
 | Example | Meaning |
 |---------|---------|
-| `[LIVEAVATAR] creating token \| avatar=…` | POST `/v1/sessions/token` in progress. |
-| `[LIVEAVATAR] session token created` | Token OK; about to start session. |
-| `[LIVEAVATAR] session started \| session_id=… livekit=…` | POST `/v1/sessions/start` + WebSocket ready. |
-| `[LIVEAVATAR] avatar_room connected \| url=…` | Connected to cloud LiveKit (video subscribe). |
-| `[LIVEAVATAR] avatar video track subscribed \| participant=…` | Cloud avatar video track received; frame reader starts decoding. |
-| `[LIVEAVATAR] avatar frame reader started` | Frame decode loop active; PiP tile updates on next successful decode. |
-| `[WARN] [LIVEAVATAR] avatar video track not received in 30s; PiP disabled` | No cloud video track within 30 s; VR continues without PiP; check API key / network / outbound UDP. |
-| `[LIVEAVATAR] interrupt sent` | WebSocket `agent.interrupt` (TTS preempted). |
-| `[LIVEAVATAR] silence chunk sent (100 ms)` | Short silence after interrupt / flush. |
-| `[LIVEAVATAR] session stopped \| session_id=…` | POST `/v1/sessions/stop` on clean shutdown. |
-| `[ERR] [LIVEAVATAR] failed to start session: …` | REST or WebSocket error; check `LIVEAVATAR_API_KEY` / `avatar_id`. |
+| `[LIVEAVATAR] on \| avatar=… q=… delay=…ms` | From `gui.py` when audience starts with LiveAvatar config (not every API step). |
+| `[LIVEAVATAR] token OK \| avatar=…` | POST `/v1/sessions/token` succeeded. |
+| `[LIVEAVATAR] session ready \| id=…` | POST `/v1/sessions/start` + events WebSocket connected. |
+| `[LIVEAVATAR] cloud room OK` | Subscribed to LiveAvatar **cloud** LiveKit (for avatar video). |
+| `[LIVEAVATAR] PiP video \| participant=…` | Avatar video track received; PiP decode loop running. |
+| `[LIVEAVATAR] stopped \| id=…` | POST `/v1/sessions/stop` succeeded on shutdown. |
+| `[WARN] [LIVEAVATAR] avatar video track not received in 30s; PiP disabled` | No cloud video track within 30 s; VR continues without PiP. |
+| `[WARN] …` / `[ERR] …` | e.g. WebSocket send failure, REST errors, decode issues (see message). |
+| `[ERR] [LIVEAVATAR] failed to start session: …` | Bootstrap failed; check `LIVEAVATAR_API_KEY` / `avatar_id`. |
+
+*(TTS flush sends `agent.interrupt` + short silence over the WebSocket but does **not** spam the console on success.)*
 
 ### `[AUDIO]` — publisher narration track + PCM hook
 

@@ -113,7 +113,6 @@ class LiveAvatarSession:
         if self._sandbox:
             payload["is_sandbox"] = True
 
-        print(f"{_ts()} | [LIVEAVATAR] creating token | avatar={aid} sandbox={self._sandbox}")
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{_LIVEAVATAR_BASE}/v1/sessions/token",
@@ -142,7 +141,8 @@ class LiveAvatarSession:
         if not self._session_token:
             raise RuntimeError(f"[LIVEAVATAR] token: missing session_token: {body}")
 
-        print(f"{_ts()} | [LIVEAVATAR] session token created")
+        sb = " sandbox" if self._sandbox else ""
+        print(f"{_ts()} | [LIVEAVATAR] token OK | avatar={aid}{sb}")
         return inner
 
     async def start(self) -> None:
@@ -192,10 +192,7 @@ class LiveAvatarSession:
             )
 
         await self._connect_events_ws()
-        print(
-            f"{_ts()} | [LIVEAVATAR] session started | session_id={self._session_id} "
-            f"livekit={self._room_url}"
-        )
+        print(f"{_ts()} | [LIVEAVATAR] session ready | id={self._session_id}")
 
     async def stop(self) -> None:
         """Close WebSocket and POST /v1/sessions/stop."""
@@ -223,7 +220,7 @@ class LiveAvatarSession:
                     json={"session_id": sid, "reason": "USER_CLOSED"},
                 )
                 if resp.is_success:
-                    print(f"{_ts()} | [LIVEAVATAR] session stopped | session_id={sid}")
+                    print(f"{_ts()} | [LIVEAVATAR] stopped | id={sid}")
                 else:
                     print(
                         f"{_ts()} | [WARN] [LIVEAVATAR] stop HTTP {resp.status_code}: "
@@ -237,7 +234,6 @@ class LiveAvatarSession:
         if self._ws is None or not self._ws_connected.is_set():
             return
         await self._ws_send_json({"type": "agent.interrupt"})
-        print(f"{_ts()} | [LIVEAVATAR] interrupt sent")
 
     async def send_pcm_chunk(self, pcm_int16: np.ndarray) -> None:
         """Stream one TTS chunk as `agent.speak` (PCM 16-bit LE mono 24 kHz, Base64)."""
@@ -252,7 +248,6 @@ class LiveAvatarSession:
         silence = np.zeros(n_samples, dtype=np.int16)
         try:
             await self.send_pcm_chunk(silence)
-            print(f"{_ts()} | [LIVEAVATAR] silence chunk sent ({_SILENCE_DURATION_S*1000:.0f} ms)")
         except Exception as exc:
             print(f"{_ts()} | [WARN] [LIVEAVATAR] silence send: {exc}")
 

@@ -1977,9 +1977,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 "sandbox":    bool(la_raw.get("sandbox", False)),
             }
             print(
-                f"[LIVEAVATAR] mode enabled | avatar={liveavatar_cfg['avatar_id'] or '(required UUID)'} "
-                f"quality={liveavatar_cfg['quality']} delay={liveavatar_cfg['audio_delay_ms']}ms "
-                f"sandbox={liveavatar_cfg['sandbox']}"
+                f"[LIVEAVATAR] on | avatar={liveavatar_cfg['avatar_id'] or '?'} "
+                f"q={liveavatar_cfg['quality']} delay={liveavatar_cfg['audio_delay_ms']}ms"
             )
         else:
             print("[MEDIA] LiveAvatar mode disabled — using VR frame video source")
