@@ -27,3 +27,20 @@ audience:
   room: "broadcast-room"
   port: 8080       # audience token server / viewer page port
 
+# HeyGen Streaming Avatar integration
+# AudiencePublisher opens a second LiveKit room to the HeyGen cloud,
+# routes TTS audio there, and relays the rendered avatar video back to local room.
+#
+# Requirements:
+#   - pip install httpx
+#   - Docker host (192.168.50.150) must have outbound internet access (HTTPS 443 + UDP high ports)
+#   - Windows Firewall: run scripts/open-audience-firewall.ps1 as Administrator
+heygen:
+  enabled: true
+  api_key: "38f42391-47a6-11f1-8d28-066a7fa2e369"           # HeyGen API key  (get from https://app.heygen.com/settings/api)
+  avatar_id: "26393b8e-e944-4367-98ef-e2bc75c4b792"         # HeyGen avatar ID (leave blank for default interactive avatar)
+  # Many tenants require voice_id for streaming.new (list voices in HeyGen dashboard / API). Required for session create if API returns 400.
+  voice_id: ""
+  quality: "medium"     # "low" | "medium" | "high"
+  audio_delay_ms: 300   # delay applied to local audience audio to align with avatar video
+

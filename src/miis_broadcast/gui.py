@@ -1955,9 +1955,29 @@ class MainWindow(QtWidgets.QMainWindow):
         api_secret = audience_cfg.get("api_secret", "devsecret")
         room_name = audience_cfg.get("room", "broadcast-room")
 
+        # Build HeyGen config if enabled; passing None falls back to VR-frame mode
+        heygen_raw = self.configs.get("heygen", {})
+        heygen_cfg = None
+        if heygen_raw.get("enabled", False) and heygen_raw.get("api_key", ""):
+            heygen_cfg = {
+                "api_key":    heygen_raw.get("api_key", ""),
+                "avatar_id":  heygen_raw.get("avatar_id", ""),
+                "voice_id":   heygen_raw.get("voice_id", ""),
+                "quality":    heygen_raw.get("quality", "medium"),
+                "audio_delay_ms": int(heygen_raw.get("audio_delay_ms", 300)),
+            }
+            print(
+                f"[HEYGEN] mode enabled | avatar={heygen_cfg['avatar_id'] or 'default'} "
+                f"quality={heygen_cfg['quality']} delay={heygen_cfg['audio_delay_ms']}ms"
+            )
+        else:
+            print("[MEDIA] HeyGen mode disabled — using VR frame video source")
+
         from .core.models import openai_tts as _tts_mod
 
-        self._audience_publisher = AudiencePublisher(lk_url, api_key, api_secret, room_name)
+        self._audience_publisher = AudiencePublisher(
+            lk_url, api_key, api_secret, room_name, heygen_cfg=heygen_cfg
+        )
         self._audience_publisher.start()
 
         if self.free_switch_thread is not None:
