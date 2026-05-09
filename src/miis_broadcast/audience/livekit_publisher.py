@@ -27,17 +27,23 @@ Two operating modes
 
 Thread / task model (LiveAvatar mode)
 --------------------------------------
-  Qt main thread → push_video_frame() / push_audio_chunk()   (non-blocking enqueue)
+  Qt main thread  → push_video_frame() / push_audio_chunk()   (non-blocking enqueue)
   asyncio thread  ← four fully independent concurrent tasks:
     _video_pump_vr_pip        – fixed 30 fps VR + optional avatar PiP (never waits for cloud)
     _avatar_frame_reader_task – cloud frames → pre-scaled PiP tile cache (decodes off hot path)
     _audio_pump_liveavatar    – TTS PCM → WebSocket agent.speak + delay queue
     _audio_delay_relay        – delayed PCM → local narration AudioSource
+
+  Thread executors (two DEDICATED single-worker pools, never share threads):
+    _vr_executor     – used exclusively by _video_pump_vr / _video_pump_vr_pip for composite
+    _avatar_executor – used exclusively by _avatar_frame_reader_task for decode + prescale
+    Isolation guarantee: active TTS (avatar rendering at full fps) never delays VR compositing.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import queue
 import threading
 import time
@@ -141,6 +147,14 @@ class AudiencePublisher:
 
         self._connected = False
 
+        # Dedicated single-worker thread executors (see module docstring).
+        self._vr_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="audience-vr"
+        )
+        self._avatar_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="audience-avatar"
+        )
+
     # ── Public API (Qt-thread safe) ───────────────────────────────────────
 
     def start(self) -> None:
@@ -171,6 +185,8 @@ class AudiencePublisher:
                     pass
             self._thread.join(timeout=5)
         self._connected = False
+        self._vr_executor.shutdown(wait=False, cancel_futures=True)
+        self._avatar_executor.shutdown(wait=False, cancel_futures=True)
         print(f"{_ts()} | [MEDIA] publisher stopped")
 
     @property
@@ -445,9 +461,9 @@ class AudiencePublisher:
                 await _async_sleep_until_deadline(next_deadline)
                 continue
 
-            # Offload CPU work to thread pool; event loop stays free.
+            # Dedicated VR executor – never shares threads with avatar decode.
             buf = await loop.run_in_executor(
-                None, _build_vr_only_frame_sync,
+                self._vr_executor, _build_vr_only_frame_sync,
                 last_frame_rgb, self.VIDEO_W, self.VIDEO_H,
             )
             lk_frame = rtc.VideoFrame(
@@ -508,9 +524,9 @@ class AudiencePublisher:
             pip_snapshot = self._liveavatar_pip_tile
             pip_state = "pip" if pip_snapshot is not None else "vr-only"
 
-            # Offload all cv2 work to thread pool; event loop stays responsive.
+            # Dedicated VR executor – never shares threads with avatar decode.
             buf = await loop.run_in_executor(
-                None, _build_vr_pip_frame_sync,
+                self._vr_executor, _build_vr_pip_frame_sync,
                 vr_rgb, pip_snapshot, self.VIDEO_W, self.VIDEO_H,
             )
             out_frame = rtc.VideoFrame(
@@ -587,8 +603,9 @@ class AudiencePublisher:
                     # Copy data to bytes BEFORE awaiting so the livekit frame
                     # object can be released safely during the executor call.
                     raw_bytes = bytes(frame_src.data)
+                    # Dedicated avatar executor – never shares threads with VR composite.
                     tile = await loop.run_in_executor(
-                        None, _decode_avatar_frame_sync,
+                        self._avatar_executor, _decode_avatar_frame_sync,
                         raw_bytes, h, w,
                         self.VIDEO_W, self.VIDEO_H, _PIP_MAX_FRAC, _PIP_MARGIN_PX,
                     )
