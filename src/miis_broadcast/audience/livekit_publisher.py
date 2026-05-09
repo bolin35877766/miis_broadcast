@@ -425,7 +425,8 @@ class AudiencePublisher:
                 video_stream = rtc.VideoStream(track)
                 track_found.set()
 
-        avatar_room.on(rtc.RoomEvent.TrackSubscribed, _on_track_subscribed)
+        # Python livekit.rtc uses string event names (unlike JS SDK's RoomEvent enum).
+        avatar_room.on("track_subscribed", _on_track_subscribed)
 
         # Wait for cloud avatar video (up to 30s)
         try:
