@@ -330,7 +330,7 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | Example | Meaning |
 |---------|---------|
 | `[AUDIO] publish_start track=narration` | LiveKit audio track published. |
-| `[AUDIO] chunks/s=4.0 sample_rate≈24000 drop=8` | Periodic audio pump stats; `drop` = `_audio_q` depth / drops; rate should stay near **24000** samples/s when speech is active. |
+| `[AUDIO] chunks/s=4.0 sample_rate≈24000 aq=8` | Periodic audio pump stats; `aq` = `_audio_q` depth (chunks waiting to send); rate should stay near **24000** samples/s when speech is active. |
 | `[AUDIO] PCM sink registered \| mute_local=True` | From [openai_tts.py](../core/models/openai_tts.py) when Free Switch registers the audience sink. |
 | `[AUDIO] PCM sink cleared \| mute_local=False` | Publisher stopped / sink removed. |
 
@@ -349,7 +349,7 @@ Rust lines such as `failed to negotiate the publisher` may appear in **`docker c
 | Phone cannot connect | Same Wi‑Fi, correct LAN IP in `livekit_url` + `--node-ip`, firewall script. |
 | Overlapping audio in browser | Ensure a single `narration` element (see `index.html` dedupe by track name); avoid duplicate tabs both unmuted in the same room. |
 | `[MEDIA] fps=…` not ~30 in LiveAvatar/VR mode | Current build uses **deadline-based** pacing; sustained **~60+** may indicate an old build or clock skew. |
-| Playback stutters when TTS / LiveAvatar is active | Client logs such as **`JPEG send_queue` full** or **high system RAM** starve the whole process (GUI + publisher share the machine). Close other apps, lower remote JPEG load, or run audience publisher on a less loaded host if possible. VR/avatar **cv2** paths use isolated executors (`_vr_executor` / `_avatar_executor`) so decode should not block compositor pacing on a healthy CPU. |
+| Playback stutters when TTS / LiveAvatar is active | **Same asyncio loop** runs VR pacing and WebSocket audio. Heavy **Base64 / `json.dumps`** for `agent.speak` used to block that loop (`liveavatar_session.py` now uses **`asyncio.to_thread`**). Also check client **`JPEG send_queue` full** or **high RAM** (whole GUI starves). VR/avatar **cv2** uses `_vr_executor` / `_avatar_executor`. |
 | PiP lip sync off | Tune `liveavatar.audio_delay_ms` (mouth **lags** sound → **increase**; sound **lags** mouth → **decrease**). |
 | `QThread: Destroyed while thread '' is still running` on exit | A background thread (e.g. publisher) may still be stopping; ensure Free Switch / audience teardown completes before closing the app window, or wait for `[MEDIA] publisher stopped`. |
 

@@ -12,6 +12,9 @@ API key: https://app.liveavatar.com/developers
 
 Docs: https://docs.liveavatar.com/docs/lite-mode/lifecycle.md
 Events: https://docs.liveavatar.com/docs/lite-mode/events.md
+
+Heavy **Base64** encoding and **JSON serialization** for outbound `agent.speak` run via
+``asyncio.to_thread`` so they do not block the GUI's shared asyncio event loop (video pacing).
 """
 
 from __future__ import annotations
@@ -29,6 +32,14 @@ _LIVEAVATAR_BASE = "https://api.liveavatar.com"
 _SILENCE_DURATION_S = 0.1
 _SILENCE_SAMPLE_RATE = 24_000
 _SILENCE_CHANNELS = 1
+
+
+def _build_agent_speak_payload(pcm_int16: np.ndarray) -> dict:
+    """Build agent.speak JSON-serializable payload. CPU-heavy; run via asyncio.to_thread."""
+    if pcm_int16.dtype != np.int16:
+        pcm_int16 = pcm_int16.astype(np.int16, copy=False)
+    b64 = base64.b64encode(pcm_int16.tobytes()).decode("ascii")
+    return {"type": "agent.speak", "audio": b64}
 
 
 def _ts() -> str:
@@ -230,10 +241,10 @@ class LiveAvatarSession:
 
     async def send_pcm_chunk(self, pcm_int16: np.ndarray) -> None:
         """Stream one TTS chunk as `agent.speak` (PCM 16-bit LE mono 24 kHz, Base64)."""
-        if pcm_int16.dtype != np.int16:
-            pcm_int16 = pcm_int16.astype(np.int16, copy=False)
-        b64 = base64.b64encode(pcm_int16.tobytes()).decode("ascii")
-        await self._ws_send_json({"type": "agent.speak", "audio": b64})
+        # Base64 + large JSON building must not run on the asyncio loop: the GUI publisher
+        # shares the same loop with VR compositing; blocking here causes visible video stutter.
+        payload = await asyncio.to_thread(_build_agent_speak_payload, pcm_int16)
+        await self._ws_send_json(payload)
 
     async def send_silence(self) -> None:
         """Short silence via WebSocket after a hard stop (optional mouth settle)."""
@@ -313,8 +324,10 @@ class LiveAvatarSession:
             except asyncio.TimeoutError:
                 print(f"{_ts()} | [WARN] [LIVEAVATAR] ws not connected; drop send")
                 return
+        # json.dumps on large agent.speak strings blocks the event loop; offload to thread.
+        text = await asyncio.to_thread(json.dumps, payload)
         async with self._ws_send_lock:
-            await self._ws.send(json.dumps(payload))
+            await self._ws.send(text)
 
     async def _disconnect_ws(self) -> None:
         self._closed = True

@@ -651,7 +651,7 @@ class AudiencePublisher:
                 drop = self._audio_q.qsize()
                 print(
                     f"{_ts()} | [AUDIO] chunks/s={chps:.1f} "
-                    f"sample_rate≈{rate:.0f} drop={drop}"
+                    f"sample_rate≈{rate:.0f} aq={drop}"
                 )
                 chunk_count = 0
                 samples_out = 0
@@ -691,7 +691,7 @@ class AudiencePublisher:
                 drop = self._audio_q.qsize()
                 print(
                     f"{_ts()} | [AUDIO] chunks/s={chps:.1f} "
-                    f"sample_rate≈{rate:.0f} drop={drop} (liveavatar)"
+                    f"sample_rate≈{rate:.0f} aq={drop} (liveavatar)"
                 )
                 chunk_count = 0
                 samples_out = 0
