@@ -37,7 +37,11 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 The LiveAvatar diagram below splits **control-plane** (REST, once per run) from **media**: **WebSocket** carries narration PCM (`agent.speak`); **LiveAvatar LiveKit** carries the rendered avatar video back. Local Docker LiveKit is unchanged for the browser.
 
 > **VR is fully independent of the avatar cloud stream.**
-> `_video_pump_vr_pip` runs at a fixed **30 fps** from the moment Free Switch starts, regardless of whether the avatar track has arrived.  The avatar PiP is overlaid only when a cached frame is available; if the cloud stalls the VR output continues uninterrupted.  The four tasks below run in parallel with no shared blocking dependency.
+> `_video_pump_vr_pip` runs at a fixed **30 fps** from the moment Free Switch starts, regardless of whether the avatar track has arrived. The avatar PiP is overlaid only when a cached PiP tile is available (`_liveavatar_pip_tile`); if the cloud stalls the VR output continues uninterrupted.
+
+> **CPU / threading (matches `livekit_publisher.py`):**
+> - **OpenCV (`cv2`)** work never runs on the asyncio event loop: it is submitted via `loop.run_in_executor(...)`.
+> - Two **dedicated** `ThreadPoolExecutor`s, each **`max_workers=1`**: **`_vr_executor`** (resize / composite / RGBA for `_video_pump_vr` and `_video_pump_vr_pip` only) and **`_avatar_executor`** (RGB decode + PiP prescale for `_avatar_frame_reader_task` only). This avoids TTS-heavy avatar decode starving VR compositing when both contend for the default shared pool.
 
 ---
 
@@ -70,7 +74,7 @@ flowchart LR
   BR <-->|"subscribe"| LK
 ```
 
----
+In **VR-only** mode, `_video_pump_vr` uses the same **`_vr_executor`** (single worker) for `cv2` resize + RGBA before `capture_frame`.
 
 ### LiveAvatar mode (VR background + avatar PiP + narration)
 
@@ -84,12 +88,19 @@ flowchart LR
     PCM["Narration PCM<br/>OpenAI TTS → push_audio_chunk"]
   end
 
-  subgraph PUB["② AudiencePublisher — 4 independent asyncio tasks"]
+  subgraph PUB["② AudiencePublisher — asyncio + dedicated cv2 threads"]
     direction TB
-    TVRPIP["_video_pump_vr_pip<br/>VR 30 fps (always on)<br/>+ avatar PiP when cached"]
-    TAVR["_avatar_frame_reader_task<br/>cloud frames → cache<br/>(does NOT block VR)"]
-    TAPU["_audio_pump_liveavatar<br/>PCM → WebSocket + delay queue"]
-    TREL["_audio_delay_relay<br/>delayed PCM → local narration"]
+    TVRPIP["_video_pump_vr_pip<br/>async: pacing + capture_frame"]
+    TAVR["_avatar_frame_reader_task<br/>async: VideoStream loop"]
+    TAPU["_audio_pump_liveavatar"]
+    TREL["_audio_delay_relay"]
+    subgraph EXEC["cv2 via run_in_executor (isolated)"]
+      direction LR
+      VRX["_vr_executor<br/>1 worker · composite"]
+      AVX["_avatar_executor<br/>1 worker · decode+prescale"]
+    end
+    TVRPIP -.->|offload| VRX
+    TAVR -.->|offload| AVX
   end
 
   subgraph CLD["③ LiveAvatar LITE cloud"]
@@ -123,8 +134,8 @@ flowchart LR
 
 | Task | Starts | Depends on cloud? | What it does |
 |--|--|--|--|
-| `_video_pump_vr_pip` | Immediately | **No** | VR at fixed 30 fps; overlays PiP from cache if available |
-| `_avatar_frame_reader_task` | Immediately | Yes (up to 30 s wait) | Decodes cloud frames, pre-scales PiP tile into `_liveavatar_pip_tile` |
+| `_video_pump_vr_pip` | Immediately | **No** | Async pacing at 30 fps; **cv2** composite on **`_vr_executor`** only |
+| `_avatar_frame_reader_task` | Immediately | Yes (up to 30 s wait) | Async `VideoStream`; **cv2** decode + PiP tile on **`_avatar_executor`** → `_liveavatar_pip_tile` |
 | `_audio_pump_liveavatar` | Immediately | No | Drains TTS PCM → WebSocket `agent.speak` + delay queue |
 | `_audio_delay_relay` | Immediately | No | Forwards delayed PCM → local `narration` AudioSource |
 
@@ -166,7 +177,9 @@ sequenceDiagram
 sequenceDiagram
   participant TTS as OpenAI TTS / player
   participant Q as AudiencePublisher _audio_q
-  participant PUB as AudiencePublisher asyncio
+  participant PUB as asyncio loop tasks
+  participant VRX as _vr_executor
+  participant AVX as _avatar_executor
   participant WS as LiveAvatar WebSocket
   participant CLK as LiveAvatar LiveKit
   participant LKloc as Local LiveKit
@@ -174,9 +187,13 @@ sequenceDiagram
   TTS->>Q: push_audio_chunk (PCM int16 24kHz)
   Q->>PUB: drain chunk
   PUB->>WS: agent.speak (Base64 PCM)
-  CLK-->>PUB: VideoStream avatar frames
-  PUB->>LKloc: publish broadcast_video (VR+PiP)
-  Note over PUB,LKloc: narration track after audio_delay_ms
+  CLK-->>PUB: VideoStream frames
+  PUB->>AVX: decode + PiP prescale (cv2)
+  AVX-->>PUB: updates _liveavatar_pip_tile
+  PUB->>VRX: composite VR + tile to RGBA (cv2)
+  VRX-->>PUB: buffer
+  PUB->>LKloc: capture_frame broadcast_video
+  Note over PUB,LKloc: narration after audio_delay_ms via _audio_delay_relay
 ```
 
 ---
@@ -187,7 +204,7 @@ sequenceDiagram
 |------|------|
 | [token_server.py](token_server.py) | FastAPI + uvicorn on `0.0.0.0`; serves viewer HTML and short-lived subscribe-only JWTs. |
 | [static/index.html](static/index.html) | LiveKit JS viewer: subscribes to published video + audio tracks (`broadcast_video`, `narration`). |
-| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: VR / LiveAvatar dual-room + WebSocket PCM; **deadline-based 30 fps** video pacing (mitigates Windows `asyncio.sleep` early wake); PiP tile pre-scaled in avatar reader. |
+| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: VR or LiveAvatar dual-room + WebSocket PCM; **sleep-until-deadline** 30 fps pacing; **cv2** on **`_vr_executor`** / **`_avatar_executor`** (single worker each); PiP tile built in avatar reader, composited on VR path. |
 | [liveavatar_session.py](liveavatar_session.py) | LiveAvatar LITE: token/start REST, WebSocket `agent.speak` / `agent.interrupt`, session stop. |
 | [gui.py](../gui.py) | Reads `liveavatar` config block, builds dict, passes `liveavatar_cfg` to `AudiencePublisher`. |
 | [openai_tts.py](../core/models/openai_tts.py) | `register_pcm_sink`, `clear_audio_queue` + optional `flush_callback` for LiveKit backlog. |
@@ -301,12 +318,11 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[LIVEAVATAR] session started \| session_id=… livekit=…` | POST `/v1/sessions/start` + WebSocket ready. |
 | `[LIVEAVATAR] avatar_room connected \| url=…` | Connected to cloud LiveKit (video subscribe). |
 | `[LIVEAVATAR] avatar video track subscribed \| participant=…` | Cloud avatar video track received; frame reader starts decoding. |
-| `[LIVEAVATAR] avatar frame reader started` | Frame decode loop active; PiP will appear on next compositor tick. |
-| `[WARN] [LIVEAVATAR] avatar frame not received in 30s; PiP disabled` | Cloud track never arrived; VR continues without PiP. |
+| `[LIVEAVATAR] avatar frame reader started` | Frame decode loop active; PiP tile updates on next successful decode. |
+| `[WARN] [LIVEAVATAR] avatar video track not received in 30s; PiP disabled` | No cloud video track within 30 s; VR continues without PiP; check API key / network / outbound UDP. |
 | `[LIVEAVATAR] interrupt sent` | WebSocket `agent.interrupt` (TTS preempted). |
 | `[LIVEAVATAR] silence chunk sent (100 ms)` | Short silence after interrupt / flush. |
 | `[LIVEAVATAR] session stopped \| session_id=…` | POST `/v1/sessions/stop` on clean shutdown. |
-| `[WARN] [LIVEAVATAR] avatar video track not received in 30s; PiP disabled` | No video from cloud; VR continues; check API key / network. |
 | `[ERR] [LIVEAVATAR] failed to start session: …` | REST or WebSocket error; check `LIVEAVATAR_API_KEY` / `avatar_id`. |
 
 ### `[AUDIO]` — publisher narration track + PCM hook
@@ -332,8 +348,10 @@ Rust lines such as `failed to negotiate the publisher` may appear in **`docker c
 | `ERR_CONNECTION_REFUSED` on `:7880` | `docker compose up -d` and firewall. |
 | Phone cannot connect | Same Wi‑Fi, correct LAN IP in `livekit_url` + `--node-ip`, firewall script. |
 | Overlapping audio in browser | Ensure a single `narration` element (see `index.html` dedupe by track name); avoid duplicate tabs both unmuted in the same room. |
-| `[MEDIA] fps=…` not ~30 in LiveAvatar/VR mode | If you still see ~60+ fps in logs, report it; current build uses sleep-until-deadline pacing. Stutter was often linked to **too-fast** frame submission to LiveKit. |
+| `[MEDIA] fps=…` not ~30 in LiveAvatar/VR mode | Current build uses **deadline-based** pacing; sustained **~60+** may indicate an old build or clock skew. |
+| Playback stutters when TTS / LiveAvatar is active | Client logs such as **`JPEG send_queue` full** or **high system RAM** starve the whole process (GUI + publisher share the machine). Close other apps, lower remote JPEG load, or run audience publisher on a less loaded host if possible. VR/avatar **cv2** paths use isolated executors (`_vr_executor` / `_avatar_executor`) so decode should not block compositor pacing on a healthy CPU. |
 | PiP lip sync off | Tune `liveavatar.audio_delay_ms` (mouth **lags** sound → **increase**; sound **lags** mouth → **decrease**). |
+| `QThread: Destroyed while thread '' is still running` on exit | A background thread (e.g. publisher) may still be stopping; ensure Free Switch / audience teardown completes before closing the app window, or wait for `[MEDIA] publisher stopped`. |
 
 ---
 

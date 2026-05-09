@@ -178,9 +178,7 @@ Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_sw
 
 ### Audience second screen (LiveKit)
 
-When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** always carries the **VR** line for the browser viewer, while **`signal_frame`** remains the operator’s **active** source for the GUI and LiveCC. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code).
-
-👉 Full setup, flowcharts, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
+When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** always carries the **VR** line for the browser viewer, while **`signal_frame`** remains the operator’s **active** source for the GUI and LiveCC. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code). With **`liveavatar.enabled: true`**, the publisher also joins LiveAvatar cloud LiveKit (PiP) and sends narration PCM over the LiveAvatar events WebSocket. 👉 Full setup, **flowcharts**, executors/threading notes, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
 
 ---
 
