@@ -34,7 +34,7 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 | **Narration audio** | Straight to **local** LiveKit | **WebSocket** to LiveAvatar (`agent.speak`); **~300 ms delayed** path to **local** LiveKit (A/V alignment) |
 | **How viewers join** | Same for both: `http://…:8080/audience` → JWT → WebRTC to **local** LiveKit | Same |
 
-The two diagrams below use the **same node IDs** (`VR`, `PCM`, `PUB`, `LK`, `HTTP`, `BR`). LiveAvatar mode adds only the **cloud** block in the middle.
+The LiveAvatar diagram below splits **control-plane** (REST, once per run) from **media**: **WebSocket** carries narration PCM (`agent.speak`); **LiveAvatar LiveKit** carries the rendered avatar video back. Local Docker LiveKit is unchanged for the browser.
 
 ---
 
@@ -71,6 +71,8 @@ flowchart LR
 
 ### LiveAvatar mode (VR background + avatar PiP + narration)
 
+**Bootstrap (once when publisher starts):** `POST https://api.liveavatar.com/v1/sessions/token` → `POST …/v1/sessions/start` (Bearer) → receive `livekit_url`, `livekit_client_token`, `ws_url`; connect WebSocket and wait `session.state_updated: connected`.
+
 ```mermaid
 flowchart LR
   subgraph SRC["① Sources (Free Switch on)"]
@@ -79,26 +81,29 @@ flowchart LR
     PCM["Narration PCM<br/>OpenAI TTS → push_audio_chunk"]
   end
 
-  PUB["② AudiencePublisher<br/>(PiP composite · delayed narration)"]
+  PUB["② AudiencePublisher<br/>PiP composite · delayed local narration"]
 
-  subgraph CLD["③ LiveAvatar cloud (only in this mode)"]
-    LA["LITE: WebSocket PCM + cloud LiveKit avatar video"]
+  subgraph CLD["③ LiveAvatar LITE cloud"]
+    direction TB
+    WS["Events WebSocket<br/>api route via ws_url<br/>↑ agent.speak PCM Base64"]
+    CLK["LiveAvatar LiveKit<br/>subscribe only · avatar video → publisher"]
   end
 
-  subgraph LOC["④ Local SFU (viewers connect here only)"]
-    LK["LiveKit (Docker)<br/>room · signaling :7880"]
+  subgraph LOC["④ Local SFU (browsers here)"]
+    LK["LiveKit Docker<br/>room · :7880"]
   end
 
   subgraph AUD["⑤ Audience"]
     direction TB
-    HTTP["FastAPI :8080<br/>/audience · /api/audience/join"]
-    BR["Browser<br/>livekit-client"]
+    HTTP["FastAPI :8080<br/>/audience · join"]
+    BR["Browser livekit-client"]
   end
 
   VR --> PUB
   PCM --> PUB
-  PUB <-->|"WS + cloud LK"| LA
-  PUB -->|"publish broadcast_video (VR + avatar PiP) + delayed narration"| LK
+  PUB -->|"agent.speak"| WS
+  PUB <-->|"WebRTC client"| CLK
+  PUB -->|"broadcast_video VR+PiP + narration"| LK
   HTTP -->|"HTML + JWT"| BR
   BR <-->|"subscribe"| LK
 ```
@@ -108,10 +113,11 @@ flowchart LR
 | Step | Who | What happens |
 |:--:|--|--|
 | ① | GUI + TTS | Free Switch feeds VR; TTS feeds PCM into `AudiencePublisher` |
-| ② | `AudiencePublisher` | Sends PCM via **`agent.speak`**; subscribes to cloud avatar video; **composites PiP** with VR; sends **delayed** narration to local |
-| ③ | LiveAvatar | Cloud renders avatar; **REST + WebSocket** session; video on LiveAvatar LiveKit |
+| ② | `AudiencePublisher` | After REST bootstrap: holds **WebSocket** + **cloud LiveKit** client; sends PCM with **`agent.speak`**; reads avatar **video** from cloud LiveKit; **composites PiP**; publishes **delayed** `narration` locally |
+| ③ | LiveAvatar | **WebSocket** ingests PCM for lip sync; **cloud LiveKit** delivers avatar video to the publisher |
 | ④ | Local LiveKit | Receives **composited** `broadcast_video` + `narration` only |
-| ⑤ | Audience | Same as VR mode: open :8080 → JWT → subscribe **local** room |
+| ⑤ | Audience | Same as VR: :8080 → JWT → subscribe **local** room |
+
 ### TTS path (why it matches first-screen timing)
 
 PCM still flows through a **single** `_audio_output_queue`. The player thread forwards each chunk to `push_audio_chunk` **and**, when `mute_local=True`, feeds **silence** to the local audio device so **hardware playback timing** stays aligned with unmuted mode. That keeps the LiveKit audio stream paced like normal local playback (see [openai_tts.py](../core/models/openai_tts.py)).
@@ -132,6 +138,25 @@ sequenceDiagram
   else not muted
     P->>SD: write real PCM
   end
+```
+
+**LiveAvatar mode:** the same `push_audio_chunk` traffic is also consumed inside `AudiencePublisher` → WebSocket `agent.speak` (see flowchart above). Local `narration` is intentionally **delayed** (~300 ms) for lip sync.
+
+```mermaid
+sequenceDiagram
+  participant TTS as OpenAI TTS / player
+  participant Q as AudiencePublisher _audio_q
+  participant PUB as AudiencePublisher asyncio
+  participant WS as LiveAvatar WebSocket
+  participant CLK as LiveAvatar LiveKit
+  participant LKloc as Local LiveKit
+
+  TTS->>Q: push_audio_chunk (PCM int16 24kHz)
+  Q->>PUB: drain chunk
+  PUB->>WS: agent.speak (Base64 PCM)
+  CLK-->>PUB: VideoStream avatar frames
+  PUB->>LKloc: publish broadcast_video (VR+PiP)
+  Note over PUB,LKloc: narration track after audio_delay_ms
 ```
 
 ---
