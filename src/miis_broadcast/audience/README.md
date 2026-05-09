@@ -18,7 +18,7 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 | Condition | Behavior |
 |-----------|----------|
 | `audience.enabled: true` in [configs/app.yml](../../../configs/app.yml) | HTTP token server may start with the GUI (`GET /audience`, `POST /api/audience/join`). |
-| Operator chooses **Online ▾ → Free Switch** | **LiveKit publisher** starts: publishes `vr_program` (video) + `narration` (audio). |
+| Operator chooses **Online ▾ → Free Switch** | **LiveKit publisher** starts: publishes `avatar_video` + `narration` (VR-only or VR+HeyGen PiP per `heygen.enabled`). |
 | Operator leaves Free Switch / switches mode | Publisher stops; HTTP server keeps running until the app exits (if enabled). |
 
 ---
@@ -57,9 +57,13 @@ flowchart LR
 
 ### HeyGen avatar mode
 
+Same **entry condition** as VR mode: the operator must be in **Free Switch** so `signal_vr_frame` feeds `_video_q` (VR full-frame background for PiP). The diagram shows VR path + cloud avatar path.
+
 ```mermaid
 flowchart LR
-  subgraph Control["First screen (GUI)"]
+  subgraph Control["First screen (GUI) — Free Switch"]
+    FS[FreeSwitchCameraThread]
+    GUI[MainWindow]
     TTS[OpenAI TTS player thread]
     PUB[AudiencePublisher]
   end
@@ -79,13 +83,15 @@ flowchart LR
     LKJS[livekit-client]
   end
 
+  FS -->|signal_vr_frame| GUI
+  GUI -->|_deliver_audience_vr_frame → _video_q| PUB
   TTS -->|PCM push_audio_chunk| PUB
   PUB -->|"audio (immediate)"| HYLK
   HYLK --> HYAvatar
   HYAvatar -->|avatar video| HYLK
-  HYLK -->|TrackSubscribed video| PUB
-  PUB -->|"audio (delayed ~300ms)"| LK
-  PUB -->|avatar_video relay| LK
+  HYLK -->|VideoStream frames| PUB
+  PUB -->|compose VR + PiP avatar → avatar_video| LK
+  PUB -->|"narration audio (delayed ~300ms)"| LK
   HTTP -->|HTML + JWT| PG
   PG -->|wss + token| LKJS
   LKJS -->|subscribe| LK
@@ -95,11 +101,12 @@ flowchart LR
 
 | Step | Component | Action |
 |------|-----------|--------|
+| 0 | Operator / GUI | **Free Switch** on: `signal_vr_frame` → VR frames enqueued for PiP background |
 | 1 | Python backend | Calls OpenAI TTS API → PCM chunks |
 | 2 | Python backend | Sends PCM to `heygen_room` (drives avatar mouth) |
 | 3 | Python backend | Sends PCM to `local_room` with ~300 ms delay (audience hears speech after video arrives) |
 | 4 | HeyGen cloud | Renders avatar video and streams back via `heygen_room` |
-| 5 | Python backend | Subscribes to HeyGen video; composites **VR (full frame) + avatar (bottom-right PiP)**; publishes to local room |
+| 5 | Python backend | Subscribes to HeyGen video; composites **VR from `_video_q` (full frame) + avatar (bottom-right PiP)**; publishes to local room |
 | 6 | HTML frontend | Subscribes `avatar_video` + `narration` from `local_room` — video is the composited VR + avatar PiP |
 
 ### TTS path (why it matches first-screen timing)
