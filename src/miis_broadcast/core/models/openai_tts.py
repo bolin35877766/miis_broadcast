@@ -19,7 +19,7 @@ import websockets
 from dotenv import load_dotenv, find_dotenv
 
 # ==========================================
-# 🔐 讀取 API Key
+# API key (from .env)
 # ==========================================
 # find_dotenv() searches upward from this file's location,
 # so .env is always found regardless of the working directory.
@@ -100,56 +100,33 @@ Your Output: "Player one shoots!" (Do NOT say "Okay, Player one shoots!")
 
 """
 
-# 畫面來源說明（重要）：
-# - 你收到的畫面是「VR 遊戲直播」的雙畫面（左右分割）。
-# - **左邊**：真人玩家在現實環境中的遊玩畫面（戴 VR 頭盔、拿控制器等）。
-# - **右邊**：VR 遊戲內的第一人稱/比賽畫面（球場、籃框、球等）。
-# - 請你在理解畫面時，清楚區分左/右畫面代表的意義，避免把兩邊資訊混在一起。
-
-
-# SYSTEM_INSTRUCTIONS = """
-# 你是一個專業的「翻譯」模型。當你收到輸入 (可能是英文，也可能是其他語言) 時，請你：
-
-# 1. **先把輸入翻譯成通順的繁體中文**；
-# 2. **拒絕翻譯腔 (No Translation-ese)**：不要逐字翻譯英文文法。請用台灣人直播、看比賽時習慣的口語。
-# 3. **不要** 插入、補充、改寫、刪減任何內容 — 唸出的內容必須 **完全對應**翻譯後的文字。
-# 4. **直接輸出，禁止廢話**：絕對禁止說「好的」、「我來翻譯」等，收到文字直接唸出播報內容。
-
-
-# 語音風格指令 (instructions)：
-# - 口音：自然「台灣國語／台灣腔」，語調普通、不刻意外國腔；
-# - 語速：偏快、有節奏，但保持清楚可懂；
-# - 情緒／語氣：根據內容語意，呈現 **強烈、高起伏、帶張力／激昂** 的播報感 — 若原文有驚嘆、強烈語氣，請加強語調與情緒；若敘述／轉折，語調可稍微穩，但保留「主播感」；
-# - 音調／語氣：自然、不做作、不像讀稿；給人感覺像現場播報或報導。
-# """
 
 # ==========================================
-# 📊 TTS 效能統計
+# TTS latency stats
 # ==========================================
 _perf_stats = {
     "tts_latencies": [],
-    "e2e_latencies": [],       # [新增] 存放 End-to-End 延遲
+    "e2e_latencies": [],    # Vision-to-audio end-to-end samples
     "last_text_sent_ts": 0.0,
-    "current_ref_ts": 0.0,     # [新增] 暫存當前句子的視覺產生時間
+    "current_ref_ts": 0.0,  # Reference timestamp for current utterance (vision side)
 }
+
 
 def _log_tts_latency(value: float) -> None:
     _perf_stats["tts_latencies"].append(value)
 
 def print_tts_stats() -> None:
-    """在系統收尾時印出 TTS 與 E2E 延遲統計"""
+    """Print TTS and vision-to-audio latency summary when shutting down TTS."""
     print("\n" + "=" * 40)
     print("Latency Performance Report")
     print("=" * 40)
 
-    # 1. 純 TTS 延遲 (API 反應速度)
     if _perf_stats["tts_latencies"]:
         avg_tts = sum(_perf_stats["tts_latencies"]) / len(_perf_stats["tts_latencies"])
         print(f"Average TTS Latency (Text->Audio):    {avg_tts:.3f} s")
     else:
         print("Average TTS Latency:                   N/A")
 
-    # 2. End-to-End 延遲 (視覺生成開始 -> 聽到聲音)
     if _perf_stats["e2e_latencies"]:
         avg_e2e = sum(_perf_stats["e2e_latencies"]) / len(_perf_stats["e2e_latencies"])
         print(f"Average E2E Latency (Vision->Audio):   {avg_e2e:.3f} s")
@@ -157,8 +134,7 @@ def print_tts_stats() -> None:
         print("Average E2E Latency:                   N/A")
 
     print("=" * 40 + "\n")
-    
-    # 清空數據
+
     _perf_stats["tts_latencies"].clear()
     _perf_stats["e2e_latencies"].clear()
     _perf_stats["last_text_sent_ts"] = 0.0
@@ -166,16 +142,16 @@ def print_tts_stats() -> None:
 
 
 # ==========================================
-# 🔁 Queue / Thread 控制
+# Queues and thread coordination
 # ==========================================
-_text_queue: "queue.Queue[tuple[str, float]]" = queue.Queue() 
+_text_queue: "queue.Queue[tuple[str, float]]" = queue.Queue()
 _audio_output_queue: "queue.Queue[np.ndarray]" = queue.Queue()
 _stop_event = threading.Event()
 _tts_threads_started = False
 _interrupt_event = threading.Event()
 
 # ==========================================
-# 🎙️ PCM Sink (audience second screen)
+# PCM sink (audience second screen)
 # ==========================================
 # When registered, each PCM chunk is forwarded to the sink callback
 # (e.g. AudiencePublisher.push_audio_chunk) in addition to or instead of
@@ -205,7 +181,7 @@ def register_pcm_sink(
     print(f"{time.strftime('%H:%M:%S')} | {tag} | mute_local={_pcm_sink_mute_local}")
 
 # ==========================================
-# 🎛️ Runtime TTS Settings
+# Runtime TTS settings (voice / speed)
 # ==========================================
 _TTS_VOICES = {"alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"}
 _tts_cfg_lock = threading.Lock()
@@ -225,7 +201,8 @@ def set_tts_voice(voice: str) -> None:
         if _tts_cfg["voice"] != voice:
             _tts_cfg["voice"] = voice
             _voice_update_event.set()
-            _interrupt_event.set() # 換聲音時還是要中斷目前說話
+            # Voice change must interrupt the current utterance
+            _interrupt_event.set()
             print(f"🎚️ [TTS] voice set -> {voice}")
 
 def set_tts_speed(speed: float) -> None:
@@ -265,20 +242,8 @@ def clear_audio_queue() -> None:
             pass
 
 
-def _flush_audience_pcm_buffer_only() -> None:
-    """Flush publisher-side PCM waiting for LiveKit (not _audio_output_queue).
-
-    Used when preempting with response.cancel so remote tail is trimmed without
-    clearing local playback queue (matches original smooth local behavior).
-    """
-    if _pcm_sink_flush is not None:
-        try:
-            _pcm_sink_flush()
-        except Exception:
-            pass
-
 def interrupt_tts(clear_text: bool = True) -> None:
-    """手動強制中斷 (例如按了 Stop 按鈕)"""
+    """Hard interrupt: e.g. Stop inference or explicit user cancel."""
     if clear_text:
         clear_text_queue()
     clear_audio_queue()
@@ -287,10 +252,10 @@ def interrupt_tts(clear_text: bool = True) -> None:
 
 
 # ==========================================
-# 🧠 OpenAI Realtime 主 Worker
+# OpenAI Realtime WebSocket worker
 # ==========================================
 async def _openai_realtime_worker():
-    print("🎙️ [TTS Worker] 啟動連線...")
+    print("🎙️ [TTS Worker] connecting...")
 
     # Stop reconnecting once we know the API key is wrong
     while not _stop_event.is_set() and not _tts_invalid_api_key_logged:
@@ -303,7 +268,7 @@ async def _openai_realtime_worker():
             async with websockets.connect(TTS_MODEL_URL, additional_headers=TTS_HEADERS) as websocket:
                 # Don't print repeated "connected" messages after a known key rejection
                 if not _tts_invalid_api_key_logged:
-                    print("✅ [TTS Worker] 連線成功！")
+                    print("✅ [TTS Worker] connected")
                 cfg = _get_tts_cfg_snapshot()
 
                 # 1. Session Update
@@ -322,10 +287,10 @@ async def _openai_realtime_worker():
                     },
                 }))
 
-                # 2. 主循環
+                # Main loop: send config / text, recv deltas and lifecycle events
                 while not _stop_event.is_set():
-                    
-                    # (A) 檢查設定更新
+
+                    # (A) Voice change requests a websocket reconnect
                     if _voice_update_event.is_set():
                         _voice_update_event.clear()
                         await websocket.close()
@@ -339,7 +304,7 @@ async def _openai_realtime_worker():
                         }))
                         _cfg_update_event.clear()
 
-                    # (B) 處理強制中斷
+                    # (B) Hard interrupt: cancel active response, clear audio + audience flush
                     if _interrupt_event.is_set():
                         if is_response_active:
                             await websocket.send(json.dumps({"type": "response.cancel"}))
@@ -348,35 +313,26 @@ async def _openai_realtime_worker():
                         is_response_active = False
                         _interrupt_event.clear()
 
-                    # (C) 送出新文字邏輯 (加入對 active 狀態的嚴格檢查)
-                    if warmed_up and not awaiting_cancel_ack:
+                    # (C) Send next text — only when no response is currently in progress.
+                    # We never cancel a running response here; the (B) path above handles
+                    # explicit interrupts (Stop button / voice change).  New segments that
+                    # arrive while TTS is speaking are held in _text_queue (drop_outdated keeps
+                    # only the latest), then picked up automatically once response.done fires.
+                    if warmed_up and not awaiting_cancel_ack and not is_response_active:
                         if not _text_queue.empty():
                             target_text = None
                             ref_ts = 0.0
-                            
-                            # [修改] 從 Queue 取出 (text, ts)
+
                             while not _text_queue.empty():
                                 item = _text_queue.get_nowait()
                                 if isinstance(item, tuple):
                                     target_text, ref_ts = item
                                 else:
-                                    target_text, ref_ts = item, 0.0 # 相容舊格式防呆
-                            
+                                    target_text, ref_ts = item, 0.0
+
                             if target_text and contains_meaningful_text(target_text):
-                                # 如果目前有在說話，先發送取消並等待確認
-                                if is_response_active:
-                                    await websocket.send(json.dumps({"type": "response.cancel"}))
-                                    awaiting_cancel_ack = True
-                                    # Trim only LiveKit backlog; do not clear _audio_output_queue —
-                                    # clearing that caused constant cut-offs (unlike original behavior).
-                                    _flush_audience_pcm_buffer_only()
-                                    # [修改] 把這句 (text, ts) 塞回去 Queue 的最前面
-                                    _text_queue.put((target_text, ref_ts)) 
-                                    continue # 跳出本次循環，去聽事件 (D)
-                                
-                                # 確定沒有 active response，才發送
                                 _perf_stats["last_text_sent_ts"] = time.time()
-                                _perf_stats["current_ref_ts"] = ref_ts # [新增] 記錄視覺產生的時間
+                                _perf_stats["current_ref_ts"] = ref_ts
 
                                 await websocket.send(json.dumps({
                                     "type": "conversation.item.create",
@@ -385,7 +341,7 @@ async def _openai_realtime_worker():
                                 await websocket.send(json.dumps({"type": "response.create"}))
                                 is_response_active = True
 
-                    # (D) 接收 WebSocket 事件
+                    # (D) WebSocket recv
                     try:
                         message = await asyncio.wait_for(websocket.recv(), timeout=0.01)
                         event = json.loads(message)
@@ -394,7 +350,7 @@ async def _openai_realtime_worker():
                         if etype == "session.updated":
                             if not warmed_up:
                                 warmed_up = True
-                                print("✅ [TTS Worker] session.updated — 準備就緒，可接受文字。")
+                                print("✅ [TTS Worker] session.updated — ready for text")
 
                         elif etype == "response.audio.delta":
                             if warmed_up:
@@ -402,14 +358,14 @@ async def _openai_realtime_worker():
                                 _audio_output_queue.put(np.frombuffer(audio_bytes, dtype=np.int16))
 
                         elif etype in ["response.done", "response.cancelled"]:
-                            # 伺服器端已經清空狀態，現在可以接收新 response 了
+                            # Server finished or cancelled the response; may start the next utterance
                             is_response_active = False
                             awaiting_cancel_ack = False
 
                         elif etype == "error":
                             err = event.get("error", {})
                             msg = err.get("message", "")
-                            # 如果錯誤是因為 active response，同步一下狀態
+                            # "active response" hints: align local flag with server state
                             if "active response" in msg:
                                 is_response_active = True
                             if err.get("code") == "response_cancel_not_active":
@@ -440,7 +396,7 @@ async def _openai_realtime_worker():
             await asyncio.sleep(2)
 
 # ==========================================
-# 🔊 播放 Worker
+# Playback worker (local device + PCM sink)
 # ==========================================
 def _apply_audio_chunk_latency_stats() -> None:
     """First audio chunk per utterance: record TTS and E2E latency stats."""
@@ -465,7 +421,7 @@ def _audio_player_worker_sounddevice() -> None:
         latency="low",
     )
     stream.start()
-    print("🔊 [TTS] 使用 sounddevice 播放（預設音訊輸出裝置）")
+    print("🔊 [TTS] playing via sounddevice (default output device)")
 
     while not _stop_event.is_set():
         try:
@@ -562,10 +518,10 @@ def _audio_player_worker() -> None:
         return
     except Exception as e:
         _log.warning("sounddevice playback path failed: %s", e, exc_info=True)
-        print(f"⚠️ [TTS] sounddevice 無法使用（{e!s}），改試 ffplay…")
+        print(f"⚠️ [TTS] sounddevice unavailable ({e!s}), trying ffplay…")
 
     if shutil.which("ffplay"):
-        print("🔊 [TTS] 使用 ffplay 播放")
+        print("🔊 [TTS] using ffplay for playback")
         _audio_player_worker_ffplay()
         return
 
@@ -573,13 +529,12 @@ def _audio_player_worker() -> None:
         "No audio backend: install sounddevice (pip) or add ffplay (FFmpeg) to PATH"
     )
     print(
-        "❌ [TTS] 無法播放聲音：sounddevice 與 ffplay 皆不可用。\n"
-        "   請: pip install sounddevice  或  安裝 FFmpeg 並將 ffplay 加入 PATH"
+        "❌ [TTS] no audio backend: install sounddevice (pip) or add ffplay (FFmpeg) to PATH"
     )
 
 
 # ==========================================
-# 🔧 對外 API
+# Public API
 # ==========================================
 def start_tts_system() -> None:
     global _tts_threads_started
@@ -587,7 +542,7 @@ def start_tts_system() -> None:
     # Audio: prefer sounddevice; ffplay is optional fallback (see _audio_player_worker).
     if not shutil.which("ffplay"):
         print(
-            "ℹ️ [TTS] 未偵測到 ffplay；將優先使用 sounddevice 播放（無須安裝 FFmpeg）。"
+            "ℹ️ [TTS] ffplay not found; using sounddevice (no FFmpeg required)."
         )
     _stop_event.clear()
     t1 = threading.Thread(target=lambda: asyncio.run(_openai_realtime_worker()), daemon=True)
@@ -595,7 +550,7 @@ def start_tts_system() -> None:
     t2 = threading.Thread(target=_audio_player_worker, daemon=True)
     t2.start()
     _tts_threads_started = True
-    print("🚀 [TTS] OpenAI TTS 背景服務已啟動")
+    print("🚀 [TTS] OpenAI TTS background service started")
 
 def stop_tts_system() -> None:
     global _tts_threads_started
@@ -605,11 +560,8 @@ def stop_tts_system() -> None:
 def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True) -> None:
     if contains_meaningful_text(text):
         if drop_outdated:
-            # 1. 清空文字隊列
             clear_text_queue()
-        
-        # 如果沒傳時間 (ref_ts=0)，就用當下時間當作 fallback
+
+        # ref_ts=0 means caller did not attach a vision timestamp; use wall clock
         ts = ref_ts if ref_ts > 0 else time.time()
-        
-        # [修改] 放入 tuple (text, timestamp)
         _text_queue.put((text, ts))

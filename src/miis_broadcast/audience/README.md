@@ -153,6 +153,8 @@ flowchart LR
 
 PCM still flows through a **single** `_audio_output_queue`. The player thread forwards each chunk to `push_audio_chunk` **and**, when `mute_local=True`, feeds **silence** to the local audio device so **hardware playback timing** stays aligned with unmuted mode. That keeps the LiveKit audio stream paced like normal local playback (see [openai_tts.py](../core/models/openai_tts.py)).
 
+**Utterance queueing:** the Realtime worker does **not** send `response.cancel` when a new segment arrives while audio is still playing. The next line waits until `response.done` / `response.cancelled`, so one sentence finishes before the next starts. New text still replaces any **pending** lines not yet sent to the API (`enqueue_tts_text(..., drop_outdated=True)` clears the text queue). Hard **Stop** / `interrupt_tts` still cancels and flushes.
+
 ```mermaid
 sequenceDiagram
   participant API as OpenAI Realtime
