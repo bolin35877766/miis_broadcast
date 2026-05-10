@@ -30,7 +30,7 @@ This directory contains all `QThread` worker classes responsible for ingesting v
 | `requestOpenDualSync` | `on_open_dual_sync_clicked()` | `DualSourceCameraThread` | `"dual_sync"` |
 | `requestOpenFreeSwitch` | `on_open_free_switch_clicked()` | `FreeSwitchCameraThread` | `"free_switch"` |
 
-**Free Switch extras:** `ControlPanel.requestSwitchSource(str)` is connected to `MainWindow.on_switch_source()` and forwarded to `FreeSwitchCameraThread.set_active_source()` (`"webcam"` \| `"vr"` \| `"dual"`).
+**Free Switch extras:** `ControlPanel.requestSwitchSource(str)` is connected to `MainWindow.on_switch_source()` and forwarded to `FreeSwitchCameraThread.set_active_source()` (`"webcam"` \| `"vr"` \| `"dual"`). Optional **10s auto-rotate:** `ControlPanel.freeSwitchAutoCycleToggled(bool)` starts/stops a `QTimer` (10 s) on `MainWindow` that cycles sources in that order; disabling Free Switch calls `_stop_free_switch_auto_cycle()`.
 
 ## Frame Emission Signals
 
@@ -170,7 +170,8 @@ No `VideoCapture` reopen; switching is a Python variable flip + next-frame retri
 ### GUI wiring
 
 - **Online ▾ → Free Switch** → modal dialog chooses **initial** source.
-- **`free_switch_bar`** (Webcam / VR / W+VR) stays visible while `mode == "free_switch"`; buttons stay enabled **during broadcasting** so the operator can swap sources mid-session.
+- **`free_switch_bar`** (鏡頭 / VR / 拼接) stays visible while `mode == "free_switch"`; buttons stay enabled **during broadcasting** so the operator can swap sources mid-session.
+- **10s輪播** — checkable button on the same bar; every **10 seconds** the GUI advances **webcam → vr → dual** and calls `set_active_source`. Uncheck to stop; teardown of Free Switch stops the timer.
 
 ### Inference
 

@@ -294,6 +294,7 @@ class ControlPanel(QtWidgets.QWidget):
     requestOpenDualSync    = QtCore.Signal()   # Webcam + VR side-by-side
     requestOpenFreeSwitch  = QtCore.Signal()   # Free Switch (both cams always running)
     requestSwitchSource    = QtCore.Signal(str)  # "webcam" | "vr" | "dual"
+    freeSwitchAutoCycleToggled = QtCore.Signal(bool)  # True = start 10s rotation among webcam/vr/dual
     requestStart           = QtCore.Signal()
     requestFontScale       = QtCore.Signal(int)
     requestRemoteConnect   = QtCore.Signal(str, int)  # host, port
@@ -363,7 +364,7 @@ class ControlPanel(QtWidgets.QWidget):
         for btn in (self.btn_offline, self.btn_online, self.btn_open_remote):
             btn.setMinimumHeight(main_h)
             btn.setMaximumHeight(main_h)
-        for btn in (self.btn_sw_webcam, self.btn_sw_vr, self.btn_sw_dual):
+        for btn in (self.btn_sw_webcam, self.btn_sw_vr, self.btn_sw_dual, self.btn_fs_auto_cycle):
             btn.setMinimumHeight(switch_h)
             btn.setMaximumHeight(switch_h)
 
@@ -541,9 +542,20 @@ class ControlPanel(QtWidgets.QWidget):
         self.btn_sw_vr.clicked.connect(    lambda: self.requestSwitchSource.emit("vr"))
         self.btn_sw_dual.clicked.connect(  lambda: self.requestSwitchSource.emit("dual"))
 
+        self.btn_fs_auto_cycle = QtWidgets.QPushButton("10s輪播")
+        self.btn_fs_auto_cycle.setCheckable(True)
+        self.btn_fs_auto_cycle.setToolTip(
+            "每 10 秒自動依序切換：鏡頭 → VR → 拼接（再回鏡頭）。再按一次可關閉。"
+        )
+        self.btn_fs_auto_cycle.setStyleSheet(_sw_style)
+        self.btn_fs_auto_cycle.setSizePolicy(_exp)
+        self.btn_fs_auto_cycle.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.btn_fs_auto_cycle.toggled.connect(self.freeSwitchAutoCycleToggled)
+
         _bar_row.addWidget(self.btn_sw_webcam, 1)
         _bar_row.addWidget(self.btn_sw_vr, 1)
         _bar_row.addWidget(self.btn_sw_dual, 1)
+        _bar_row.addWidget(self.btn_fs_auto_cycle, 1)
 
         self.free_switch_bar.setVisible(False)
         v_src.addWidget(self.free_switch_bar)
@@ -1097,6 +1109,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._subtitle_timer.timeout.connect(self._tick_subtitle_scheduler)
         self._subtitle_timer.start()
 
+        # Free Switch: cycle webcam → VR → dual on a fixed interval (UI toggle)
+        self._fs_auto_cycle_interval_ms = 10_000
+        self._fs_auto_cycle_timer = QtCore.QTimer(self)
+        self._fs_auto_cycle_timer.setInterval(self._fs_auto_cycle_interval_ms)
+        self._fs_auto_cycle_timer.timeout.connect(self._on_free_switch_auto_cycle_tick)
+        self._fs_cycle_order = ("webcam", "vr", "dual")
+        self._fs_cycle_idx = 0
+
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
 
     # ---------------- Fonts / Styles ----------------
@@ -1305,6 +1325,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.requestOpenDualSync.connect(self.on_open_dual_sync_clicked)
         self.control_panel.requestOpenFreeSwitch.connect(self.on_open_free_switch_clicked)
         self.control_panel.requestSwitchSource.connect(self.on_switch_source)
+        self.control_panel.freeSwitchAutoCycleToggled.connect(
+            self._on_free_switch_auto_cycle_toggled
+        )
         self.control_panel.requestStart.connect(self.on_start_clicked)
         self.control_panel.requestFontScale.connect(self.on_font_scale_request)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
@@ -1715,6 +1738,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.free_switch_thread.terminate()
                 self.free_switch_thread.wait(1000)
             self.free_switch_thread = None
+        self._stop_free_switch_auto_cycle()
         self.control_panel.set_free_switch_bar_visible(False)
 
     @QtCore.Slot()
@@ -2030,6 +2054,45 @@ class MainWindow(QtWidgets.QMainWindow):
             self.free_switch_thread.set_active_source(source)
         # Highlight button immediately (don't wait for signal_source_changed round-trip)
         self.control_panel.highlight_switch_source(source)
+        if self._fs_auto_cycle_timer.isActive():
+            try:
+                self._fs_cycle_idx = self._fs_cycle_order.index(source)
+            except ValueError:
+                pass
+
+    def _stop_free_switch_auto_cycle(self) -> None:
+        """Stop the 10s source rotation and clear the toggle (no signal loop)."""
+        self._fs_auto_cycle_timer.stop()
+        b = self.control_panel.btn_fs_auto_cycle
+        if b.isChecked():
+            b.blockSignals(True)
+            b.setChecked(False)
+            b.blockSignals(False)
+
+    @QtCore.Slot(bool)
+    def _on_free_switch_auto_cycle_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self._fs_auto_cycle_timer.stop()
+            return
+        if self.mode != "free_switch" or self.free_switch_thread is None:
+            self.append_text("[FreeSwitch] 10s 輪播需在 Free Switch 模式且攝影機已啟動時使用")
+            self._stop_free_switch_auto_cycle()
+            return
+        cur = self.free_switch_thread.active_source()
+        try:
+            self._fs_cycle_idx = self._fs_cycle_order.index(cur)
+        except ValueError:
+            self._fs_cycle_idx = 0
+        self._fs_auto_cycle_timer.start()
+
+    @QtCore.Slot()
+    def _on_free_switch_auto_cycle_tick(self) -> None:
+        if self.mode != "free_switch" or self.free_switch_thread is None:
+            self._stop_free_switch_auto_cycle()
+            return
+        order = self._fs_cycle_order
+        self._fs_cycle_idx = (self._fs_cycle_idx + 1) % len(order)
+        self.on_switch_source(order[self._fs_cycle_idx])
 
     @QtCore.Slot(str)
     def _on_free_switch_source_changed(self, source: str) -> None:
