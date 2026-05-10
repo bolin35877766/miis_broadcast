@@ -545,12 +545,12 @@ class ControlPanel(QtWidgets.QWidget):
         self.btn_fs_auto_cycle = QtWidgets.QPushButton("10s輪播")
         self.btn_fs_auto_cycle.setCheckable(True)
         self.btn_fs_auto_cycle.setToolTip(
-            "每 10 秒自動依序切換：鏡頭 → VR → 拼接（再回鏡頭）。再按一次可關閉。"
+            "每 10 秒自動依序切換：鏡頭 → VR → 拼接。開啟時會暫時鎖定上方三顆手動按鈕；再按一次關閉輪播。"
         )
         self.btn_fs_auto_cycle.setStyleSheet(_sw_style)
         self.btn_fs_auto_cycle.setSizePolicy(_exp)
         self.btn_fs_auto_cycle.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
-        self.btn_fs_auto_cycle.toggled.connect(self.freeSwitchAutoCycleToggled)
+        self.btn_fs_auto_cycle.toggled.connect(self._forward_free_switch_auto_cycle_toggled)
 
         _bar_row.addWidget(self.btn_sw_webcam, 1)
         _bar_row.addWidget(self.btn_sw_vr, 1)
@@ -1000,6 +1000,12 @@ class ControlPanel(QtWidgets.QWidget):
         self.btn_sw_webcam.setChecked(source == "webcam")
         self.btn_sw_vr.setChecked(    source == "vr")
         self.btn_sw_dual.setChecked(  source == "dual")
+
+    @QtCore.Slot(bool)
+    def _forward_free_switch_auto_cycle_toggled(self, checked: bool) -> None:
+        # QPushButton.toggled -> Signal Forward: wire directly to another Signal() often fails
+        # to invoke MainWindow slots in PySide6; emit explicitly.
+        self.freeSwitchAutoCycleToggled.emit(checked)
 
     def set_start_button_state(self, running: bool) -> None:
         if running:
@@ -2063,16 +2069,25 @@ class MainWindow(QtWidgets.QMainWindow):
     def _stop_free_switch_auto_cycle(self) -> None:
         """Stop the 10s source rotation and clear the toggle (no signal loop)."""
         self._fs_auto_cycle_timer.stop()
+        self._set_free_switch_manual_buttons_enabled(True)
         b = self.control_panel.btn_fs_auto_cycle
         if b.isChecked():
             b.blockSignals(True)
             b.setChecked(False)
             b.blockSignals(False)
 
+    def _set_free_switch_manual_buttons_enabled(self, enabled: bool) -> None:
+        """While 10s auto-rotate runs, disable webcam/vr/dual to avoid fighting the timer."""
+        p = self.control_panel
+        p.btn_sw_webcam.setEnabled(enabled)
+        p.btn_sw_vr.setEnabled(enabled)
+        p.btn_sw_dual.setEnabled(enabled)
+
     @QtCore.Slot(bool)
     def _on_free_switch_auto_cycle_toggled(self, enabled: bool) -> None:
         if not enabled:
             self._fs_auto_cycle_timer.stop()
+            self._set_free_switch_manual_buttons_enabled(True)
             return
         if self.mode != "free_switch" or self.free_switch_thread is None:
             self.append_text("[FreeSwitch] 10s 輪播需在 Free Switch 模式且攝影機已啟動時使用")
@@ -2083,6 +2098,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._fs_cycle_idx = self._fs_cycle_order.index(cur)
         except ValueError:
             self._fs_cycle_idx = 0
+        self._set_free_switch_manual_buttons_enabled(False)
         self._fs_auto_cycle_timer.start()
 
     @QtCore.Slot()
