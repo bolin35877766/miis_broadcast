@@ -518,6 +518,14 @@ class ControlPanel(QtWidgets.QWidget):
                 background-color: #2962ff;
                 color: white;
             }
+            QPushButton:disabled {
+                background-color: #2d2d2d;
+                color: #666;
+            }
+            QPushButton:checked:disabled {
+                background-color: #1a3f9e;
+                color: #aac0ff;
+            }
         """
         _exp = QtWidgets.QSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -545,9 +553,14 @@ class ControlPanel(QtWidgets.QWidget):
         self.btn_fs_auto_cycle = QtWidgets.QPushButton("10s輪播")
         self.btn_fs_auto_cycle.setCheckable(True)
         self.btn_fs_auto_cycle.setToolTip(
-            "每 10 秒自動依序切換：鏡頭 → VR → 拼接。開啟時會暫時鎖定上方三顆手動按鈕；再按一次關閉輪播。"
+            "每 10 秒自動依序切換：鏡頭 → VR → 拼接。啟動後立刻切到下一個；再按一次關閉輪播。"
         )
-        self.btn_fs_auto_cycle.setStyleSheet(_sw_style)
+        self.btn_fs_auto_cycle.setStyleSheet(_sw_style + """
+            QPushButton:checked {
+                background-color: #e65100;
+                color: white;
+            }
+        """)
         self.btn_fs_auto_cycle.setSizePolicy(_exp)
         self.btn_fs_auto_cycle.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
         self.btn_fs_auto_cycle.toggled.connect(self._forward_free_switch_auto_cycle_toggled)
@@ -2099,6 +2112,8 @@ class MainWindow(QtWidgets.QMainWindow):
         except ValueError:
             self._fs_cycle_idx = 0
         self._set_free_switch_manual_buttons_enabled(False)
+        # Advance to next source immediately, then let the timer fire every 10s.
+        self._on_free_switch_auto_cycle_tick()
         self._fs_auto_cycle_timer.start()
 
     @QtCore.Slot()
