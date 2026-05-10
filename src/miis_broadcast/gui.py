@@ -2106,7 +2106,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_text("[FreeSwitch] 10s 輪播需在 Free Switch 模式且攝影機已啟動時使用")
             self._stop_free_switch_auto_cycle()
             return
-        cur = self.free_switch_thread.active_source()
+        cur = self.free_switch_thread.active_source  # @property, not a method call
         try:
             self._fs_cycle_idx = self._fs_cycle_order.index(cur)
         except ValueError:
