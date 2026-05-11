@@ -14,7 +14,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
   - **Free Switch** — both Webcam and OBS Virtual Camera are opened at startup; only the **active** source (Webcam, VR, or stitched dual) is emitted to the video panel and forwarded to LiveCC (local/remote). Switching is a **software selector** only — **no camera reconnection**, sub-frame latency typical.
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Audience second screen (optional)**: In **Free Switch** mode, a browser viewer can subscribe via **LiveKit** to **`broadcast_video`** (full-screen VR, or VR + LiveAvatar PiP) plus **`narration`** (TTS) while the operator’s GUI continues to preview the active source. Setup, flow diagrams, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log reference: [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md).
+- **Audience second screen (optional)**: In **Free Switch** mode, a browser viewer can subscribe via **LiveKit** to **`broadcast_video`** (full-screen VR from the VR line) plus **`narration`** (TTS) while the operator’s GUI continues to preview the active source. Setup, flow diagrams, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log reference: [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md).
 - **Thin-client telemetry**: During **any** remote inference, the **inference server** stdout shows **`[Client]`** and **`[Server]`** lines: host **RAM** (RSS, system %) plus **CUDA VRAM** on **device 0** where available (global used/total, `torch_alloc` for this process). Lines are on a shared ~2 s cadence via `CLIENT_DIAG` and decode-thread sampling. The GUI does **not** print duplicate `[Client]` lines to its own console; optional **session log** may still record the same payload under `[Memory]`.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
@@ -125,7 +125,7 @@ Tune **`_FRAME_QUEUE_MAX`** (`client.py`, default 30) or JPEG quality if you nee
 
 **Online ▾ → Free Switch** opens a dialog (“初始輸入源”) with **Webcam**, **VR**, or **Webcam+VR**. The worker (`FreeSwitchCameraThread` in `workers/free_switch.py`) then keeps **both** capture devices running: every loop it `grab()`s both cameras but `retrieve()`s only the frames needed for the currently selected view — **Webcam** (`640×480`), **VR** (`640×480`), or **dual** side-by-side (`1280×480`, same layout as **VR & Webcam (Sync)**). Changing the source updates an in-memory selector only; **TCP send_frame** and `on_camera_frame` keep running, so remote LiveCC receives a continuous JPEG stream whose content switches instantly. The Source panel shows a small **切換輸入源** bar (鏡頭 / VR / 拼接; buttons remain usable during broadcasting). **10s輪播** (toggle) runs a **10-second** `QTimer` that cycles **Webcam → VR → dual** in order; toggle again to stop. Leaving Free Switch clears the timer and the toggle.
 
-**Audience (second display):** when `audience.enabled` is true in `configs/app.yml`, starting **Free Switch** also starts a **LiveKit publisher** (VR frames + TTS PCM; with **LiveAvatar**, dual-room + WebSocket audio, PiP composite, and isolated **`_vr_executor` / `_avatar_executor`** — see package README). Viewers use a local HTTP page on port **8080** (default). Readiness in the GUI terminal: **`[MEDIA] connected`** (VR-only) or **`[MEDIA] local_room connected`** (LiveAvatar). See **[src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md)** for Docker, firewall, flowcharts, and logs.
+**Audience (second display):** when `audience.enabled` is true in `configs/app.yml`, starting **Free Switch** also starts a **LiveKit publisher** (VR frames + TTS PCM to the local room). Viewers use a local HTTP page on port **8080** (default). Wait for **`[MEDIA] connected`** in the GUI terminal. See **[src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md)** for Docker, firewall, flowcharts, and logs.
 
 Key modules:
 
@@ -203,16 +203,9 @@ Create a `.env` file at the project root:
 
 ```env
 OPENAI_API_KEY=sk-...
-
-# Optional audience / LiveAvatar PiP (when liveavatar.enabled: true in configs/app.yml)
-LIVEAVATAR_API_KEY=
-LIVEAVATAR_AVATAR_ID=
-# LIVEAVATAR_VOICE_ID=
-# Optional: override narration delay for lip sync vs PiP (milliseconds). If unset, use liveavatar.audio_delay_ms in app.yml.
-# LIVEAVATAR_AUDIO_DELAY_MS=850
 ```
 
-This is required for the OpenAI Realtime TTS backend. LiveAvatar keys use the same `.env` (preferred over putting secrets in `app.yml`).
+This is required for the OpenAI Realtime TTS backend.
 
 ### App config ([configs/app.yml](configs/app.yml))
 
@@ -234,8 +227,6 @@ audience:
   room: "broadcast-room"
   port: 8080
 ```
-
-**LiveAvatar:** set `LIVEAVATAR_API_KEY` (and optionally `LIVEAVATAR_AVATAR_ID`) in **`.env`** (gitignored) with `liveavatar.enabled: true` in `app.yml` — see [Environment variables](#environment-variables).
 
 ### Commentary styles ([configs/livecc_prompts.yml](configs/livecc_prompts.yml))
 

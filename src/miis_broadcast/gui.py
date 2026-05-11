@@ -63,23 +63,6 @@ def _find_project_root(start: Path) -> Path:
     return p.parent
 
 
-def _resolve_liveavatar_audio_delay_ms(la_raw: dict) -> int:
-    """Local LiveKit narration delay (ms) for PiP lip sync; env overrides YAML.
-
-    Set ``LIVEAVATAR_AUDIO_DELAY_MS`` in ``.env`` for quick tuning without editing ``app.yml``.
-    """
-    env = (os.environ.get("LIVEAVATAR_AUDIO_DELAY_MS") or "").strip()
-    if env:
-        try:
-            return max(0, int(env))
-        except ValueError:
-            pass
-    try:
-        return max(0, int(la_raw.get("audio_delay_ms", 750)))
-    except (TypeError, ValueError):
-        return 750
-
-
 _configure_qt_highdpi()
 
 
@@ -2015,38 +1998,10 @@ class MainWindow(QtWidgets.QMainWindow):
         api_secret = audience_cfg.get("api_secret", "devsecret")
         room_name = audience_cfg.get("room", "broadcast-room")
 
-        # Build LiveAvatar config if enabled (`liveavatar` block in app.yml + LIVEAVATAR_* in .env).
-        la_raw = self.configs.get("liveavatar", {})
-        liveavatar_cfg = None
-        raw_key = (os.environ.get("LIVEAVATAR_API_KEY") or la_raw.get("api_key") or "").strip()
-        if la_raw.get("enabled", False) and raw_key:
-            liveavatar_cfg = {
-                "api_key":    raw_key,
-                "avatar_id":  (
-                    os.environ.get("LIVEAVATAR_AVATAR_ID")
-                    or la_raw.get("avatar_id")
-                    or ""
-                ).strip(),
-                "voice_id":   (
-                    os.environ.get("LIVEAVATAR_VOICE_ID")
-                    or la_raw.get("voice_id")
-                    or ""
-                ).strip(),
-                "quality":    la_raw.get("quality", "medium"),
-                "audio_delay_ms": _resolve_liveavatar_audio_delay_ms(la_raw),
-                "sandbox":    bool(la_raw.get("sandbox", False)),
-            }
-            print(
-                f"[LIVEAVATAR] on | avatar={liveavatar_cfg['avatar_id'] or '?'} "
-                f"q={liveavatar_cfg['quality']} delay={liveavatar_cfg['audio_delay_ms']}ms"
-            )
-        else:
-            print("[MEDIA] LiveAvatar mode disabled — using VR frame video source")
-
         from .core.models import openai_tts as _tts_mod
 
         self._audience_publisher = AudiencePublisher(
-            lk_url, api_key, api_secret, room_name, liveavatar_cfg=liveavatar_cfg
+            lk_url, api_key, api_secret, room_name
         )
         self._audience_publisher.start()
 

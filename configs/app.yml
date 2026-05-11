@@ -27,16 +27,3 @@ audience:
   api_secret: "miis_broadcast_local_dev_secret_key_01"
   room: "broadcast-room"
   port: 8080       # audience token server / viewer page port
-
-# LiveAvatar LITE (avatar PiP) — set LIVEAVATAR_API_KEY in project-root .env (gitignored).
-# You may leave api_key empty here and use env only.
-#
-# Requirements:
-#   - pip install httpx websockets
-#   - This machine must have outbound internet (HTTPS 443 + UDP high ports) for LiveAvatar cloud
-#   - Windows Firewall: run scripts/open-audience-firewall.ps1 as Administrator
-liveavatar:
-  enabled: true
-  quality: "low"
-  audio_delay_ms: 750  # narration vs PiP lips; raise if sound leads mouth, lower if mouth leads (tune or LIVEAVATAR_AUDIO_DELAY_MS in .env)
-  # sandbox: true   # uses token is_sandbox; see LiveAvatar docs
