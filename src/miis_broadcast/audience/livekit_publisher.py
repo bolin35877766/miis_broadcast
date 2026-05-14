@@ -52,7 +52,9 @@ async def _async_sleep_until_deadline(deadline: float) -> None:
 _AVATAR_HEIGHT_FRAC = 0.35   # avatar occupies this fraction of frame height
 _AVATAR_MARGIN_PX   = 16     # gap from right/bottom edge (pixels)
 _RMS_OPEN_THRESHOLD = 300    # int16 RMS above this value → mouth open
-_MOUTH_HANGOVER_S   = 0.15   # keep mouth open N seconds after last active chunk
+_MOUTH_HANGOVER_S   = 0.30   # keep mouth open N seconds after last active chunk
+                             # must exceed the TTS chunk interval (~250 ms at 4 chunks/s)
+                             # to prevent flickering between chunks
 
 
 def _normalize_avatar_to_bgra(img: np.ndarray, path: Path) -> np.ndarray:
