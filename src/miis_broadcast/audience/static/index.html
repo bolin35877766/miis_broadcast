@@ -46,12 +46,15 @@
       height: 38vh;           /* portrait 1080×1920 video; ~410px tall on 1080p */
     }
 
-    /* Body: the provided animation video; black background removed via screen blend */
-    #avatar-video {
+    /* Body animation: decoded from hidden video; canvas applies black→transparent chroma key */
+    #avatar-src {
+      display: none;
+    }
+
+    #avatar-canvas {
       display: block;
       height: 100%;
       width: auto;
-      mix-blend-mode: screen;
     }
 
     /* Open-mouth PNG overlay — stacked on top of video, alpha-composited */
@@ -169,13 +172,14 @@
 <div id="video-container">
   <video id="video" autoplay playsinline muted></video>
 
-  <!-- Avatar layer: animation video (black bg removed via screen blend) +
-       open-mouth PNG overlay driven by audio volume -->
+  <!-- Avatar: hidden mp4 decoded → canvas black-key → mouth PNG overlay (volume) -->
   <div id="avatar-wrap">
     <div id="avatar-container">
-      <video id="avatar-video"
+      <video id="avatar-src"
              src="/assets/avatar/cat_move.mp4"
              muted playsinline preload="auto"></video>
+      <!-- Internal bitmap size balances chroma CPU cost vs sharpness -->
+      <canvas id="avatar-canvas" width="270" height="480"></canvas>
       <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false" />
     </div>
   </div>
@@ -216,10 +220,11 @@
   const muteBtn      = document.getElementById("mute-btn");
   const fsBtn        = document.getElementById("fs-btn");
   const reconnBtn    = document.getElementById("reconnect-btn");
-  const avatarWrap   = document.getElementById("avatar-wrap");
-  const avatarCont   = document.getElementById("avatar-container");
-  const avatarVideo  = document.getElementById("avatar-video");
-  const avatarOpen   = document.getElementById("avatar-open");
+  const avatarWrap    = document.getElementById("avatar-wrap");
+  const avatarSrc     = document.getElementById("avatar-src");
+  const avatarCanvas    = document.getElementById("avatar-canvas");
+  const avatarOpen      = document.getElementById("avatar-open");
+  const avatarCtx       = avatarCanvas.getContext("2d", { willReadFrequently: true });
 
   // ── State ─────────────────────────────────────────────────────────────
   let room   = null;
@@ -232,30 +237,134 @@
   let audioCtx    = null;
   let analyser    = null;
   let timeDomain  = null;
-  let rafId       = null;
+  let avatarComposerRaf = null;
+  let lastAvatarPaintTs = 0;
+
+  avatarSrc.addEventListener("loadeddata", () => {
+    lastAvatarPaintTs = 0;
+    if (avatarWrap.style.display !== "none") renderAvatarChroma();
+  });
+
   let speakUntil  = 0;          // performance.now() deadline for "speaking" state
   let emaRms      = 0;
   let wasSpeaking = false;
 
   // Tuning knobs:
-  const RMS_THRESH    = 0.018;  // 0-1 normalised amplitude; tweak if too sensitive
-  const HANGOVER_MS   = 320;    // keep animation alive this many ms after audio falls silent
-  const EMA_ALPHA     = 0.28;   // smoothing: lower = smoother but more lag
+  const RMS_THRESH    = 0.018;
+  const HANGOVER_MS   = 320;
+  const EMA_ALPHA     = 0.28;
+  const AVATAR_PAINT_INTERVAL_MS = 1000 / 30;  // ~30 chroma paints per second
+  const CHROMA_LUM    = 32;   // Y (Rec.601) below this → transparent; low = keep dark fur on cat
 
-  // ── Avatar analyser ───────────────────────────────────────────────────
+  // ── Chroma-key the hidden mp4 onto the visible canvas (same-origin: not tainted)
+  function renderAvatarChroma() {
+    const v = avatarSrc;
+    const cw = avatarCanvas.width;
+    const ch = avatarCanvas.height;
+    const vw = v.videoWidth;
+    const vh = v.videoHeight;
+    if (!vw || !vh) return;
+
+    const scale = Math.min(cw / vw, ch / vh);
+    const dw = Math.round(vw * scale);
+    const dh = Math.round(vh * scale);
+    const ox = Math.round((cw - dw) / 2);
+    const oy = Math.round((ch - dh) / 2);
+
+    avatarCtx.clearRect(0, 0, cw, ch);
+    avatarCtx.drawImage(v, ox, oy, dw, dh);
+
+    let img;
+    try {
+      img = avatarCtx.getImageData(0, 0, cw, ch);
+    } catch (e) {
+      console.warn("[AVATAR] getImageData failed:", e);
+      return;
+    }
+
+    const data = img.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const y = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+      if (y < CHROMA_LUM) {
+        data[i + 3] = 0;
+      } else {
+        data[i + 3] = 255;
+      }
+    }
+    avatarCtx.putImageData(img, 0, 0);
+  }
+
+  function avatarComposerTick() {
+    avatarComposerRaf = requestAnimationFrame(avatarComposerTick);
+
+    const now = performance.now();
+    const live = avatarWrap.style.display !== "none";
+    if (live && avatarSrc.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if (now - lastAvatarPaintTs >= AVATAR_PAINT_INTERVAL_MS) {
+        lastAvatarPaintTs = now;
+        renderAvatarChroma();
+      }
+    }
+
+    // Audio → mouth + play/pause mascot video
+    if (!analyser || !timeDomain) {
+      avatarOpen.style.opacity = "0";
+      return;
+    }
+
+    analyser.getByteTimeDomainData(timeDomain);
+
+    let sumSq = 0;
+    for (let i = 0; i < timeDomain.length; i++) {
+      const s = (timeDomain[i] - 128) / 128.0;
+      sumSq += s * s;
+    }
+    const rms = Math.sqrt(sumSq / timeDomain.length);
+    emaRms = EMA_ALPHA * rms + (1 - EMA_ALPHA) * emaRms;
+
+    if (emaRms > RMS_THRESH) speakUntil = now + HANGOVER_MS;
+    const speaking = now < speakUntil;
+
+    if (speaking !== wasSpeaking) {
+      wasSpeaking = speaking;
+      if (speaking) {
+        avatarSrc.play().catch(() => {});
+      } else {
+        avatarSrc.pause();
+        avatarSrc.currentTime = 0;
+      }
+    }
+
+    const mouthAmt = speaking ? Math.min(1, emaRms / (RMS_THRESH * 3.5)) : 0;
+    avatarOpen.style.opacity = mouthAmt.toFixed(3);
+  }
+
+  function startAvatarComposer() {
+    if (avatarComposerRaf != null) return;
+    lastAvatarPaintTs = 0;
+    avatarComposerRaf = requestAnimationFrame(avatarComposerTick);
+  }
+
+  function stopAvatarComposer() {
+    if (avatarComposerRaf != null) {
+      cancelAnimationFrame(avatarComposerRaf);
+      avatarComposerRaf = null;
+    }
+    avatarCtx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
+  }
+
+  // ── Avatar analyser (narration RMS) ───────────────────────────────────
 
   function initAnalyser(mediaStreamTrack) {
     if (analyser || !audioCtx) return;
     try {
       if (audioCtx.state === "suspended") audioCtx.resume();
-      // Tap directly from the MediaStreamTrack so playback path is unaffected.
-      const src = audioCtx.createMediaStreamSource(new MediaStream([mediaStreamTrack]));
+      const srcNode = audioCtx.createMediaStreamSource(new MediaStream([mediaStreamTrack]));
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.55;
-      src.connect(analyser);
+      srcNode.connect(analyser);
       timeDomain = new Uint8Array(analyser.fftSize);
-      rafId = requestAnimationFrame(avatarTick);
       console.log("[AVATAR] analyser ready");
     } catch (e) {
       console.warn("[AVATAR] analyser setup failed:", e);
@@ -263,57 +372,16 @@
   }
 
   function teardownAnalyser() {
-    if (rafId)    { cancelAnimationFrame(rafId); rafId = null; }
     if (analyser) { analyser.disconnect(); analyser = null; }
     if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
     timeDomain  = null;
     emaRms      = 0;
     wasSpeaking = false;
-    avatarVideo.pause();
-    avatarVideo.currentTime = 0;
+    avatarSrc.pause();
+    avatarSrc.currentTime = 0;
     avatarOpen.style.opacity = "0";
-  }
-
-  function avatarTick() {
-    rafId = requestAnimationFrame(avatarTick);
-    if (!analyser || !timeDomain) return;
-
-    analyser.getByteTimeDomainData(timeDomain);
-
-    // RMS in normalised [-1, 1] space
-    let sumSq = 0;
-    for (let i = 0; i < timeDomain.length; i++) {
-      const s = (timeDomain[i] - 128) / 128.0;
-      sumSq += s * s;
-    }
-    const rms = Math.sqrt(sumSq / timeDomain.length);
-
-    // Exponential moving average for stable response
-    emaRms = EMA_ALPHA * rms + (1 - EMA_ALPHA) * emaRms;
-
-    const now = performance.now();
-    if (emaRms > RMS_THRESH) speakUntil = now + HANGOVER_MS;
-
-    const speaking = now < speakUntil;
-
-    // Only touch the DOM / video when state actually changes (avoid 60fps thrash)
-    if (speaking !== wasSpeaking) {
-      wasSpeaking = speaking;
-      if (speaking) {
-        // Resume the animation video from the beginning of its loop
-        avatarVideo.play().catch(() => {});
-      } else {
-        // Freeze on frame 0 while silent
-        avatarVideo.pause();
-        avatarVideo.currentTime = 0;
-      }
-    }
-
-    // Map emaRms → mouth open opacity (0 when silent, smoothly up to 1)
-    const mouthAmt = speaking
-      ? Math.min(1, emaRms / (RMS_THRESH * 3.5))
-      : 0;
-    avatarOpen.style.opacity = mouthAmt.toFixed(3);
+    lastAvatarPaintTs = 0;
+    renderAvatarChroma();
   }
 
   // ── UI helpers ────────────────────────────────────────────────────────
@@ -333,6 +401,7 @@
     statusBar.classList.add("visible");
     controls.style.display = "flex";
     avatarWrap.style.display = "block";
+    startAvatarComposer();
     stateDot.className = "dot live";
     stateText.textContent = "直播中";
   }
@@ -345,9 +414,10 @@
   function showOffline(reason) {
     stateDot.className = "dot offline";
     stateText.textContent = reason || "已中斷";
+    stopAvatarComposer();
     avatarWrap.style.display = "none";
-    avatarVideo.pause();
-    avatarVideo.currentTime = 0;
+    avatarSrc.pause();
+    avatarSrc.currentTime = 0;
     avatarOpen.style.opacity = "0";
   }
 
@@ -460,8 +530,9 @@
 
   reconnBtn.addEventListener("click", async () => {
     teardownAnalyser();
-    avatarVideo.pause();
-    avatarVideo.currentTime = 0;
+    stopAvatarComposer();
+    avatarSrc.pause();
+    avatarSrc.currentTime = 0;
     if (room) { await room.disconnect(); room = null; }
     audioEls.forEach((_, name) => removeAudioByName(name));
     audioEls.clear();
