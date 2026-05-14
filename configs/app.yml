@@ -22,7 +22,7 @@ remote:
 # livekit_url must be reachable from the *viewer* device — not WSL/Hyper-V only (172.x.x.x).
 audience:
   enabled: true
-  livekit_url: "ws://10.48.117.31:7880"
+  livekit_url: "ws://10.207.3.31:7880"
   api_key: "devkey"
   api_secret: "miis_broadcast_local_dev_secret_key_01"
   room: "broadcast-room"
