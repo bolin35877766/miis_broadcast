@@ -49,8 +49,8 @@ async def _async_sleep_until_deadline(deadline: float) -> None:
 
 
 # ── Avatar constants ────────────────────────────────────────────────────────
-_AVATAR_HEIGHT_FRAC = 0.20   # avatar occupies this fraction of frame height
-_AVATAR_MARGIN_PX   = 20     # gap from right/bottom edge (pixels)
+_AVATAR_HEIGHT_FRAC = 0.35   # avatar occupies this fraction of frame height
+_AVATAR_MARGIN_PX   = 16     # gap from right/bottom edge (pixels)
 _RMS_OPEN_THRESHOLD = 300    # int16 RMS above this value → mouth open
 _MOUTH_HANGOVER_S   = 0.15   # keep mouth open N seconds after last active chunk
 
@@ -118,8 +118,10 @@ class AudiencePublisher:
 
         self._connected = False
 
+        # Two workers allow one frame to be composited while the previous frame
+        # is still being captured / encoded by LiveKit, giving a pipeline effect.
         self._vr_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="audience-vr"
+            max_workers=2, thread_name_prefix="audience-vr"
         )
 
         # Avatar state -- written by push_audio_chunk (any thread), read by
@@ -406,16 +408,22 @@ def _build_vr_avatar_frame_sync(
 
     Avatars are always BGRA after load (keyed PNGs): blend using the alpha channel.
 
+    Optimised for CPU throughput: avoids full-frame float32 ops; builds RGBA
+    in-place with a pre-allocated array instead of cvtColor to reduce allocations.
+
     Runs in a thread-pool so the asyncio loop is never stalled by cv2.
     """
     h, w = vr_rgb.shape[:2]
-    canvas: np.ndarray = (
-        cv2.resize(vr_rgb, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-        if (w != out_w or h != out_h)
-        else vr_rgb.copy()
-    )
+    if w != out_w or h != out_h:
+        canvas = cv2.resize(vr_rgb, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+    else:
+        canvas = vr_rgb  # no resize; operate directly (copy happens via RGBA alloc below)
 
     if avatar_img is not None:
+        # Work on a writable copy only when we actually need to paint.
+        if canvas is vr_rgb:
+            canvas = canvas.copy()
+
         ah, aw = avatar_img.shape[:2]
         x0 = max(0, out_w - aw - _AVATAR_MARGIN_PX)
         y0 = max(0, out_h - ah - _AVATAR_MARGIN_PX)
@@ -425,20 +433,23 @@ def _build_vr_avatar_frame_sync(
         ah_clip = y1 - y0
 
         avatar_crop = avatar_img[:ah_clip, :aw_clip]
-
-        alpha_raw = avatar_crop[:, :, 3].astype(np.float32) / 255.0
-        alpha = alpha_raw[:, :, np.newaxis]
-        avatar_bgr = avatar_crop[:, :, :3]
+        alpha_f = avatar_crop[:, :, 3].astype(np.float32) / 255.0  # (H, W)
+        alpha_f = alpha_f[:, :, np.newaxis]                         # (H, W, 1)
 
         # Convert avatar BGR → RGB to match canvas colour order.
-        avatar_rgb = cv2.cvtColor(avatar_bgr, cv2.COLOR_BGR2RGB)
+        avatar_rgb = cv2.cvtColor(avatar_crop[:, :, :3], cv2.COLOR_BGR2RGB)
 
-        roi     = canvas[y0:y1, x0:x1].astype(np.float32)
-        blended = roi * (1.0 - alpha) + avatar_rgb.astype(np.float32) * alpha
+        roi = canvas[y0:y1, x0:x1].astype(np.float32)
+        blended = roi * (1.0 - alpha_f) + avatar_rgb.astype(np.float32) * alpha_f
         canvas[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
 
-    frame_rgba = cv2.cvtColor(canvas, cv2.COLOR_RGB2RGBA)
-    return bytearray(frame_rgba.tobytes())
+    # Build RGBA in a single pre-allocated array; use memoryview to avoid the
+    # intermediate bytes object created by tobytes() — saves one 8 MB allocation
+    # at 1080p per frame.
+    frame_rgba = np.empty((out_h, out_w, 4), dtype=np.uint8)
+    frame_rgba[:, :, :3] = canvas
+    frame_rgba[:, :, 3] = 255
+    return bytearray(frame_rgba.data)
 
 
 # ── Token / LiveKit helpers ────────────────────────────────────────────────

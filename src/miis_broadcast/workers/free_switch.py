@@ -125,6 +125,7 @@ class FreeSwitchCameraThread(QtCore.QThread):
             return
 
         frame_delay = 1.0 / self.target_fps
+        _vr_res_logged = False  # print actual OBS resolution once on first frame
 
         print(
             f"[FreeSwitch] 已開啟 Webcam (idx={self.cam_idx}) + "
@@ -173,6 +174,10 @@ class FreeSwitchCameraThread(QtCore.QThread):
             # Audience second screen: always emit VR at native resolution (no resize).
             # The publisher compositor handles output sizing independently.
             if ret_vr:
+                if not _vr_res_logged:
+                    h_vr, w_vr = f_vr.shape[:2]
+                    print(f"[FreeSwitch] OBS VR 實際解析度: {w_vr}×{h_vr}")
+                    _vr_res_logged = True
                 self.signal_vr_frame.emit(cv2.cvtColor(f_vr, cv2.COLOR_BGR2RGB))
 
             # Pace loop to target FPS
