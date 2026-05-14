@@ -41,12 +41,13 @@
 
     #avatar-container {
       position: absolute;
-      bottom: 5%;
-      right: 4%;
-      height: 38vh;           /* portrait 1080×1920 video; ~410px tall on 1080p */
+      /* Sit above the fixed control bar (~18px bottom + ~44px buttons + margin) */
+      bottom: 90px;
+      right: 18px;
+      height: 34vh;
     }
 
-    /* Body animation: decoded from hidden video; canvas applies black→transparent chroma key */
+    /* Hidden video → canvas: black + neutral-bright (white) keyed to transparent */
     #avatar-src {
       display: none;
     }
@@ -254,9 +255,12 @@
   const HANGOVER_MS   = 320;
   const EMA_ALPHA     = 0.28;
   const AVATAR_PAINT_INTERVAL_MS = 1000 / 30;  // ~30 chroma paints per second
-  const CHROMA_LUM    = 32;   // Y (Rec.601) below this → transparent; low = keep dark fur on cat
+  // cat_anchor.mp4 uses a near-white (≈252) flat backdrop; suit/tie have colour saturation.
+  const CHROMA_BLACK_MAX   = 34;   // Y below → transparent (rare blacks in shadow)
+  const CHROMA_WHITE_MIN   = 233; // Y above this AND low saturation → white backdrop strip
+  const CHROMA_WHITE_SAT_MAX = 42; // max(R,G,B)-min; greys keyed, saturated cat kept opaque
 
-  // ── Chroma-key the hidden mp4 onto the visible canvas (same-origin: not tainted)
+  // ── Chroma-key: dark OR bright-neutral backdrop → transparent; character stays solid opaque
   function renderAvatarChroma() {
     const v = avatarSrc;
     const cw = avatarCanvas.width;
@@ -284,10 +288,21 @@
 
     const data = img.data;
     for (let i = 0; i < data.length; i += 4) {
-      const y = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
-      if (y < CHROMA_LUM) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const y = (0.299 * r + 0.587 * g + 0.114 * b);
+      const cMax = Math.max(r, g, b);
+      const cMin = Math.min(r, g, b);
+      const sat = cMax - cMin;
+
+      if (y < CHROMA_BLACK_MAX) {
+        data[i + 3] = 0;
+      } else if (y >= CHROMA_WHITE_MIN && sat <= CHROMA_WHITE_SAT_MAX) {
+        /* Flat white/light-grey studio backdrop (anchors ~252 luminance on cat_anchor) */
         data[i + 3] = 0;
       } else {
+        /* Keep character pixels fully opaque so the ball court never “bleeds through” */
         data[i + 3] = 255;
       }
     }
