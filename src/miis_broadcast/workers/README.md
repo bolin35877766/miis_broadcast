@@ -156,7 +156,7 @@ CAM idx=0  |  VR idx=5  |  Target: 30 FPS
 | `vr` (`SOURCE_VR`) | `640×480` RGB | OBS/VR captured at **`1920×1080`** (requested), **resized** to **`640×480`** for GUI + LiveCC |
 | `dual` (`SOURCE_DUAL`) | `1280×480` RGB | `hstack(webcam, VR→640×480)` — same layout as **`DualSourceCameraThread`** |
 
-**Audience path:** `signal_vr_frame` always emits the **native VR** frame (no downscale) so `AudiencePublisher` can publish **`1920×1080`** LiveKit video (see `[../audience/README.md](../audience/README.md)`).
+**Audience path:** `signal_vr_frame` always emits the **native VR** frame (no downscale) so `AudiencePublisher` can publish **`1920×1080`** **`broadcast_video`** (**VR pixels only**; no mascot composite in Python). Mascot/anchor overlays run in the **browser** viewer (see `[../audience/README.md](../audience/README.md)`).
 
 ### Why switching feels instant
 
@@ -181,7 +181,7 @@ Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_sw
 
 ### Audience second screen (LiveKit)
 
-When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** carries the **full-resolution OBS/VR** line for **`broadcast_video`** (typically **`1920×1080`**), while **`signal_frame`** stays on **`640×480` / `1280×480`** for the GUI and LiveCC. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code). 👉 Full setup, **flowcharts**, executor notes, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
+When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** carries the **full-resolution OBS/VR** line for **`broadcast_video`** (typically **`1920×1080`** — **pure VR**, not chroma-keyed with a mascot in this process), while **`signal_frame`** stays on **`640×480` / `1280×480`** for the GUI and LiveCC. Viewer-side mascot layers are documented under **Browser mascot overlay** in the audience README. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code). 👉 Full setup, **flowcharts**, executor notes, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
 
 ---
 

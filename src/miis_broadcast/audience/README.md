@@ -1,11 +1,12 @@
 # Audience second screen (LiveKit)
 
-This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC. **`broadcast_video`** is published at **`1920×1080`** when OBS Virtual Camera delivers that resolution (scaled to match `VIDEO_W`/`VIDEO_H` in `livekit_publisher`). The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
+This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC. **`broadcast_video`** carries **only the VR / OBS feed** (no mascot burned in): `AudiencePublisher` scales to **`1920×1080`** when `VIDEO_W`/`VIDEO_H` match and the capture pipeline delivers that resolution. The **mascot / anchor character** is drawn **in the browser** (`static/index.html`): a hidden MP4 is chroma-keyed on a `<canvas>` (auto backdrop colour from the frame border) and an optional mouth PNG follows `narration` volume—**not** via OpenCV in Python. The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
 
 | Topic | Behavior |
 |-------|----------|
 | **Video** | Native-resolution VR from `FreeSwitchCameraThread` via `signal_vr_frame` (typically **1920×1080**; driver may snap to another mode) |
 | **Audio** | TTS PCM → local LiveKit room directly (`_audio_pump_direct`) |
+| **Mascot** | **Viewer only:** `index.html` loads `/assets/avatar/…` (served by `token_server`); canvas chroma + optional `overlay_config.json` overrides—no extra load on `livekit_publisher`. |
 
 **Note:** `signal_frame` still uses **640×480** / **1280×480** for LiveCC; only the audience branch uses full-res VR. Higher video resolution increases **encode bandwidth** and **CPU/GPU** load on the publisher machine.
 
@@ -41,18 +42,32 @@ flowchart LR
 
   subgraph AUD["④ Audience"]
     direction TB
-    HTTP["FastAPI :8080<br/>/audience · /api/audience/join"]
-    BR["Browser<br/>livekit-client"]
+    HTTP["FastAPI :8080<br/>/audience · /api/audience/join<br/>/assets/* static"]
+    BR["Browser · livekit-client<br/>+ canvas mascot layer"]
   end
 
   VR --> PUB
   PCM --> PUB
   PUB -->|"publish broadcast_video + narration"| LK
-  HTTP -->|"HTML + JWT"| BR
+  HTTP -->|"HTML + JWT + avatar assets"| BR
   BR <-->|"subscribe"| LK
 ```
 
-**CPU / threading:** OpenCV (`cv2`) resize and RGBA packing run off the asyncio loop via `loop.run_in_executor(self._vr_executor, ...)` with a **`ThreadPoolExecutor`** (`_vr_executor`, two workers for pipelining).
+**CPU / threading (publisher):** OpenCV (`cv2`) resize and RGBA packing for **VR only** run off the asyncio loop via `loop.run_in_executor(self._vr_executor, …)` with a **`ThreadPoolExecutor`** (`_vr_executor`, two workers). **Mascot** decoding and chroma run in the **viewer’s browser** (main thread + `requestAnimationFrame`).
+
+---
+
+## Browser mascot overlay (`static/index.html`)
+
+| Item | Detail |
+|------|--------|
+| **Video source** | `<video id="avatar-src" src="/assets/avatar/<file>.mp4">` — replace the file name in HTML when you swap the clip; keep a **flat, even backdrop** and the subject away from the frame edges so border sampling stays clean. |
+| **Keying** | Each decoded frame is drawn to a fixed-size `<canvas>`; **backdrop RGB** and a **spherical radius** are estimated once per load from a **border band** of pixels, then pixels inside the sphere (and not “colourful” enough) go transparent. **High-saturation** pixels are always treated as foreground to protect fur / clothing when you change backdrop colour. |
+| **Mouth** | Optional PNG (`cat_mouth_opened.png`) opacity follows **RMS** on the subscribed `narration` track via Web Audio `AnalyserNode`. |
+| **Playback** | While speech energy is detected: mascot MP4 **plays** (`loop`); when silent: **pause** (timeline preserved). |
+| **Tuning** | Copy [`assets/avatar/overlay_config.example.json`](../../../assets/avatar/overlay_config.example.json) to **`assets/avatar/overlay_config.json`** (optional, not required in git) to override `foregroundSatMin`, `backdropRadiusBias`, `backdropRadiusClamp`. |
+
+**Not supported here:** server-side (Python) compositing of the mascot into `broadcast_video`—that path was removed to keep encoder CPU predictable.
 
 ---
 
@@ -86,9 +101,10 @@ sequenceDiagram
 
 | Path | Role |
 |------|------|
-| [token_server.py](token_server.py) | FastAPI + uvicorn on `0.0.0.0`; serves viewer HTML and short-lived subscribe-only JWTs. |
-| [static/index.html](static/index.html) | LiveKit JS viewer: subscribes to published video + audio tracks (`broadcast_video`, `narration`). |
-| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: publishes **`1920×1080`** `broadcast_video` (VR frames resized/RGBA-packed), **30 fps** pacing via sleep-until-deadline; heavy **cv2** on **`_vr_executor`**. |
+| [token_server.py](token_server.py) | FastAPI + uvicorn on `0.0.0.0`; serves viewer HTML, subscribe-only JWTs, and **`/assets/*`** (project `assets/` root for mascot files). |
+| [static/index.html](static/index.html) | LiveKit JS viewer: subscribes to `broadcast_video` + `narration`; **canvas chroma mascot** + optional mouth overlay (see section above). |
+| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: publishes **`1920×1080`** `broadcast_video` (**VR only**, resize + RGBA pack), **30 fps** pacing; **cv2** on **`_vr_executor`**—**no** mascot compositing. |
+| [assets/avatar/](../../../assets/avatar/) | Mascot MP4 + optional mouth PNG; optional **`overlay_config.json`** (see example). |
 | [gui.py](../gui.py) | Starts token server and `AudiencePublisher` when Free Switch runs with `audience.enabled`. |
 | [openai_tts.py](../core/models/openai_tts.py) | `register_pcm_sink`, `clear_audio_queue` + optional `flush_callback` for LiveKit backlog. |
 | [workers/free_switch.py](../workers/free_switch.py) | Emits **`signal_vr_frame`** (native VR, audience) alongside **`signal_frame`** (LiveCC-resolution active view). |
@@ -134,7 +150,7 @@ sequenceDiagram
 | `audience.livekit_url` | WebSocket URL passed to the browser (`ws://…:7880`). |
 | `audience.api_key` / `api_secret` | Must match `livekit.yaml` `keys` (secret ≥ 32 chars on recent LiveKit). |
 | `audience.room` | LiveKit room name (publisher + viewers join the same room). |
-| `audience.port` | HTTP port for `/audience` and `/api/audience/join` (default **8080**). |
+| `audience.port` | HTTP port for `/audience`, `/api/audience/join`, and static **`/assets/*`** (mascot files; default **8080**). |
 
 ---
 
@@ -190,6 +206,7 @@ Rust lines such as `failed to negotiate the publisher` may appear in **`docker c
 | `ERR_CONNECTION_REFUSED` on `:8080` | GUI not running or `audience.enabled: false`. |
 | `ERR_CONNECTION_REFUSED` on `:7880` | `docker compose up -d` and firewall. |
 | Phone cannot connect | Same Wi‑Fi, correct LAN IP in `livekit_url` + `--node-ip`, firewall script. |
+| Mascot holes / fringe after swapping MP4 | Re-open page; tweak `overlay_config.json` (`foregroundSatMin`, radius clamps). Prefer **flat single-colour** backdrop touching all four edges. |
 | Overlapping audio in browser | Ensure a single `narration` element (see `index.html` dedupe by track name); avoid duplicate tabs both unmuted in the same room. |
 | `[MEDIA] fps=…` not ~30 | Current build uses **deadline-based** pacing; sustained **~60+** may indicate an old build or clock skew. |
 | Stutter with remote inference; server stdout shows `JPEG send_queue=30/30` | TCP/client cannot drain frames as fast as produced; often **high client RAM** or network. Root README → *Client send rate* / `_FRAME_QUEUE_MAX`. |
