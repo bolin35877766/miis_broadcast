@@ -44,8 +44,8 @@ Each source thread emits one or two frame signals that `MainWindow` connects to:
 | `CameraByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` |
 | `CameraByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
 | `DualSourceCameraThread` | `signal_frame` | `combined_rgb: np.ndarray` | `on_camera_frame()` |
-| `FreeSwitchCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` (`640×480` **or** stitched `1280×480`) | `on_camera_frame()` |
-| `FreeSwitchCameraThread` | `signal_vr_frame` | `frame_rgb: np.ndarray` — **always OBS/VR**, 640×480 RGB, for audience LiveKit `broadcast_video` | `MainWindow._deliver_audience_vr_frame()` → `AudiencePublisher.push_video_frame()` |
+| `FreeSwitchCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` — **webcam `640×480`**; **`vr`** path is OBS **native (e.g. 1920×1080)** then **downscaled to `640×480`** before emit (LiveCC/inference); **`dual`** stitched **`1280×480`** | `on_camera_frame()` |
+| `FreeSwitchCameraThread` | `signal_vr_frame` | `frame_rgb: np.ndarray` — **always OBS/VR at capture resolution** (typically **`1920×1080`**), for audience LiveKit `broadcast_video` | `MainWindow._deliver_audience_vr_frame()` → `AudiencePublisher.push_video_frame()` |
 | `FreeSwitchCameraThread` | `signal_source_changed` | `str` (`webcam` / `vr` / `dual`) | `_on_free_switch_source_changed()`, also updates switch-bar highlight |
 
 ## Inference Backend: Local vs Remote
@@ -150,11 +150,13 @@ CAM idx=0  |  VR idx=5  |  Target: 30 FPS
 
 `FreeSwitchCameraThread` opens **both** the physical webcam and the OBS Virtual Camera once at startup and keeps them alive for the session. The user selects which view is **emitted**:
 
-| Selector | Resolution | Behaviour |
-|---------|------------|-----------|
-| `webcam` (`SOURCE_WEBCAM`) | `640×480` RGB | `retrieve()` webcam only |
-| `vr` (`SOURCE_VR`) | `640×480` RGB | `retrieve()` OBS/VR only |
-| `dual` (`SOURCE_DUAL`) | `1280×480` RGB | Same `hstack` layout as **`DualSourceCameraThread`** |
+| Selector | Resolution on `signal_frame` | Behaviour |
+|---------|------------------------------|-----------|
+| `webcam` (`SOURCE_WEBCAM`) | `640×480` RGB | Webcam captured at **`640×480`**; emitted as-is |
+| `vr` (`SOURCE_VR`) | `640×480` RGB | OBS/VR captured at **`1920×1080`** (requested), **resized** to **`640×480`** for GUI + LiveCC |
+| `dual` (`SOURCE_DUAL`) | `1280×480` RGB | `hstack(webcam, VR→640×480)` — same layout as **`DualSourceCameraThread`** |
+
+**Audience path:** `signal_vr_frame` always emits the **native VR** frame (no downscale) so `AudiencePublisher` can publish **`1920×1080`** LiveKit video (see `[../audience/README.md](../audience/README.md)`).
 
 ### Why switching feels instant
 
@@ -179,7 +181,7 @@ Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_sw
 
 ### Audience second screen (LiveKit)
 
-When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** always carries the **VR** line for the browser viewer, while **`signal_frame`** remains the operator’s **active** source for the GUI and LiveCC. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code). 👉 Full setup, **flowcharts**, executor notes, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
+When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** carries the **full-resolution OBS/VR** line for **`broadcast_video`** (typically **`1920×1080`** + optional **2D avatar** PiP in `livekit_publisher`), while **`signal_frame`** stays on **`640×480` / `1280×480`** for the GUI and LiveCC. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code). 👉 Full setup, **flowcharts**, executor notes, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
 
 ---
 

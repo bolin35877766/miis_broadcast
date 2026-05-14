@@ -7,9 +7,10 @@ Switching sources = changing one variable; no camera reconnection, no delay.
 
 Source constants
 ----------------
-SOURCE_WEBCAM : "webcam"   640×480 RGB
-SOURCE_VR     : "vr"       640×480 RGB
-SOURCE_DUAL   : "dual"    1280×480 RGB (Webcam | VR side-by-side, same layout as DualSourceCameraThread)
+SOURCE_WEBCAM : "webcam"   640×480 RGB on ``signal_frame``
+SOURCE_VR     : "vr"       native VR (e.g. 1920×1080) on ``signal_vr_frame``;
+               downscaled 640×480 on ``signal_frame`` for LiveCC
+SOURCE_DUAL   : "dual"     1280×480 RGB on ``signal_frame`` (Webcam | VR side-by-side)
 
 Switching protocol
 ------------------
@@ -31,6 +32,15 @@ SOURCE_VR     = "vr"
 SOURCE_DUAL   = "dual"
 
 ALL_SOURCES = (SOURCE_WEBCAM, SOURCE_VR, SOURCE_DUAL)
+
+# Resolution for each capture device.
+# Webcam stays at SD for lightweight LiveCC inference.
+# VR/OBS is requested at 1080p so the audience second screen gets native quality.
+_WEBCAM_W, _WEBCAM_H = 640, 480
+_VR_W,     _VR_H     = 1920, 1080
+
+# LiveCC inference expects 640×480; resize VR frames before emitting signal_frame.
+_LIVECC_W, _LIVECC_H = 640, 480
 
 
 class FreeSwitchCameraThread(QtCore.QThread):
@@ -92,8 +102,8 @@ class FreeSwitchCameraThread(QtCore.QThread):
     # ── QThread entry point ───────────────────────────────────────────────────
 
     def run(self) -> None:
-        # Open Webcam first
-        cap_cam = self._open_cap(self.cam_idx, self.target_fps)
+        # Open Webcam first (SD: used directly for LiveCC inference)
+        cap_cam = self._open_cap(self.cam_idx, self.target_fps, _WEBCAM_W, _WEBCAM_H)
         if cap_cam is None:
             self.signal_error.emit(
                 f"FreeSwitchCamera: 無法開啟 Webcam (index={self.cam_idx})。"
@@ -104,8 +114,8 @@ class FreeSwitchCameraThread(QtCore.QThread):
         # Stagger USB init to avoid Windows DirectShow conflict
         time.sleep(0.35)
 
-        # Open OBS Virtual Camera (VR feed)
-        cap_vr = self._open_cap(self.vr_idx, self.target_fps)
+        # Open OBS Virtual Camera at native resolution (1080p for audience quality).
+        cap_vr = self._open_cap(self.vr_idx, self.target_fps, _VR_W, _VR_H)
         if cap_vr is None:
             cap_cam.release()
             self.signal_error.emit(
@@ -142,14 +152,16 @@ class FreeSwitchCameraThread(QtCore.QThread):
 
             if src == SOURCE_DUAL:
                 if ret_cam and ret_vr:
-                    if f_cam.shape[0] != f_vr.shape[0]:
-                        f_vr = cv2.resize(f_vr, (f_cam.shape[1], f_cam.shape[0]))
-                    combined_bgr = np.hstack((f_cam, f_vr))   # 1280×480 BGR
+                    # Resize VR to webcam height for the side-by-side LiveCC frame.
+                    f_vr_sd = cv2.resize(f_vr, (_LIVECC_W, _LIVECC_H))
+                    combined_bgr = np.hstack((f_cam, f_vr_sd))   # 1280×480 BGR
                     frame_out = cv2.cvtColor(combined_bgr, cv2.COLOR_BGR2RGB)
 
             elif src == SOURCE_VR:
                 if ret_vr:
-                    frame_out = cv2.cvtColor(f_vr, cv2.COLOR_BGR2RGB)
+                    # Resize VR to LiveCC resolution for signal_frame (inference path).
+                    f_vr_sd = cv2.resize(f_vr, (_LIVECC_W, _LIVECC_H))
+                    frame_out = cv2.cvtColor(f_vr_sd, cv2.COLOR_BGR2RGB)
 
             else:  # SOURCE_WEBCAM (default)
                 if ret_cam:
@@ -158,7 +170,8 @@ class FreeSwitchCameraThread(QtCore.QThread):
             if frame_out is not None:
                 self.signal_frame.emit(frame_out)
 
-            # Audience second screen: always emit VR frame regardless of active source
+            # Audience second screen: always emit VR at native resolution (no resize).
+            # The publisher compositor handles output sizing independently.
             if ret_vr:
                 self.signal_vr_frame.emit(cv2.cvtColor(f_vr, cv2.COLOR_BGR2RGB))
 
@@ -175,13 +188,23 @@ class FreeSwitchCameraThread(QtCore.QThread):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _open_cap(idx: int, fps: float) -> Optional[cv2.VideoCapture]:
-        """Try MSMF → DSHOW → CAP_ANY; return first success or None."""
+    def _open_cap(
+        idx: int,
+        fps: float,
+        width: int = 640,
+        height: int = 480,
+    ) -> Optional[cv2.VideoCapture]:
+        """Try MSMF → DSHOW → CAP_ANY; return first success or None.
+
+        ``width`` / ``height`` are requested resolutions; the driver may
+        silently snap to the nearest supported mode (e.g. OBS Virtual Camera
+        will honour 1920×1080 when OBS is running at that resolution).
+        """
         for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY):
             cap = cv2.VideoCapture(idx, backend)
             if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH,  width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
                 cap.set(cv2.CAP_PROP_FPS,          fps)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)   # minimal latency
                 return cap

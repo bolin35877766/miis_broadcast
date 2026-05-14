@@ -1,11 +1,13 @@
 # Audience second screen (LiveKit)
 
-This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`, full-screen **VR** line from Free Switch) plus **TTS narration** (`narration`) over WebRTC. The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
+This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC. **`broadcast_video`** is published at **`1920×1080`** (when OBS Virtual Camera delivers that resolution) with an optional **2D avatar** (PNG open/closed mouth) composited into the bottom-right corner, driven by **TTS PCM volume**. The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
 
 | Topic | Behavior |
 |-------|----------|
-| **Video** | VR camera frames from `FreeSwitchCameraThread` via `signal_vr_frame` |
+| **Video** | Native-resolution VR from `FreeSwitchCameraThread` via `signal_vr_frame` (typically **1920×1080**; driver may snap to another mode) |
 | **Audio** | TTS PCM → local LiveKit room directly (`_audio_pump_direct`) |
+
+**Note:** `signal_frame` still uses **640×480** / **1280×480** for LiveCC; only the audience branch uses full-res VR. Higher video resolution increases **encode bandwidth** and **CPU/GPU** load on the publisher machine.
 
 Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_server`, `_start_audience_services`, `_deliver_audience_vr_frame`). For input workers and frame contracts, see [workers/README.md](../workers/README.md).
 
@@ -86,10 +88,11 @@ sequenceDiagram
 |------|------|
 | [token_server.py](token_server.py) | FastAPI + uvicorn on `0.0.0.0`; serves viewer HTML and short-lived subscribe-only JWTs. |
 | [static/index.html](static/index.html) | LiveKit JS viewer: subscribes to published video + audio tracks (`broadcast_video`, `narration`). |
-| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: local room only; **sleep-until-deadline** 30 fps video pacing; **cv2** on **`_vr_executor`**. |
+| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: publishes **`1920×1080`** `broadcast_video` (VR + optional avatar PiP), **30 fps** pacing via sleep-until-deadline; heavy **cv2** on **`_vr_executor`**. |
+| [assets/avatar/](../../../assets/avatar/) | Default **mouth closed / open** PNGs (`cat_mouth_shut.png`, `cat_mouth_opened.png`) — **BGRA** keyed assets. |
 | [gui.py](../gui.py) | Starts token server and `AudiencePublisher` when Free Switch runs with `audience.enabled`. |
 | [openai_tts.py](../core/models/openai_tts.py) | `register_pcm_sink`, `clear_audio_queue` + optional `flush_callback` for LiveKit backlog. |
-| [workers/free_switch.py](../workers/free_switch.py) | Emits **`signal_vr_frame`** (always VR) alongside **`signal_frame`** (active source). |
+| [workers/free_switch.py](../workers/free_switch.py) | Emits **`signal_vr_frame`** (native VR, audience) alongside **`signal_frame`** (LiveCC-resolution active view). |
 | [docker-compose.yml](../../../docker-compose.yml) | Local LiveKit container; map signaling + UDP ports. |
 | [livekit.yaml](../../../livekit.yaml) | LiveKit server config (keys, RTC port range). |
 | [scripts/open-audience-firewall.ps1](../../../scripts/open-audience-firewall.ps1) | Windows inbound rules for LAN viewers (run elevated). |
