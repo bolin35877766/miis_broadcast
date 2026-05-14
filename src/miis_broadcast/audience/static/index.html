@@ -37,14 +37,14 @@
       pointer-events: none;
       z-index: 15;
       display: none;          /* shown once video track is live */
+      isolation: isolate;
     }
 
     #avatar-container {
       position: absolute;
-      /* Sit above the fixed control bar (~18px bottom + ~44px buttons + margin) */
-      bottom: 90px;
-      right: 18px;
-      height: 34vh;
+      bottom: 64px;
+      right: 56px;
+      height: 40vh;
     }
 
     /* Hidden video → canvas: black + neutral-bright (white) keyed to transparent */
@@ -115,8 +115,8 @@
     /* ── Bottom-right controls ──────────────────────────────────────── */
     #controls {
       position: absolute;
-      bottom: 18px;
-      right: 18px;
+      bottom: 8px;
+      right: 12px;
       display: flex;
       gap: 10px;
       z-index: 20;
@@ -179,8 +179,8 @@
       <video id="avatar-src"
              src="/assets/avatar/cat_anchor.mp4"
              muted playsinline loop preload="auto"></video>
-      <!-- Internal bitmap size balances chroma CPU cost vs sharpness -->
-      <canvas id="avatar-canvas" width="270" height="480"></canvas>
+      <!-- Higher internal res → cleaner chroma + less translucent scaling halos -->
+      <canvas id="avatar-canvas" width="432" height="768"></canvas>
       <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false" />
     </div>
   </div>
@@ -254,13 +254,15 @@
   const RMS_THRESH    = 0.018;
   const HANGOVER_MS   = 320;
   const EMA_ALPHA     = 0.28;
-  const AVATAR_PAINT_INTERVAL_MS = 1000 / 30;  // ~30 chroma paints per second
-  // cat_anchor.mp4 uses a near-white (≈252) flat backdrop; suit/tie have colour saturation.
-  const CHROMA_BLACK_MAX   = 34;   // Y below → transparent (rare blacks in shadow)
-  const CHROMA_WHITE_MIN   = 233; // Y above this AND low saturation → white backdrop strip
-  const CHROMA_WHITE_SAT_MAX = 42; // max(R,G,B)-min; greys keyed, saturated cat kept opaque
+  const AVATAR_PAINT_INTERVAL_MS = 1000 / 33; // ~30 fps; tighter paint budget with larger bitmap
+  // Target only true studio flats: cat_anchor borders are luminance≈252, almost grey (low sat).
+  // Stricter thresholds avoid punching translucent holes that look like “court bleeding through”.
+  const CHROMA_BLACK_MAX       = 22;
+  const CHROMA_WHITE_MIN_Y     = 240;
+  const CHROMA_WHITE_SAT_MAX   = 22;
+  const CHROMA_WHITE_MIN_RGB   = 236; // all channels must be high (neutral bright)
 
-  // ── Chroma-key: dark OR bright-neutral backdrop → transparent; character stays solid opaque
+  // ── Chroma-key: confident backdrop pixels only → transparent; everything else opaque
   function renderAvatarChroma() {
     const v = avatarSrc;
     const cw = avatarCanvas.width;
@@ -276,6 +278,8 @@
     const oy = Math.round((ch - dh) / 2);
 
     avatarCtx.clearRect(0, 0, cw, ch);
+    avatarCtx.imageSmoothingEnabled = true;
+    avatarCtx.imageSmoothingQuality = "high";
     avatarCtx.drawImage(v, ox, oy, dw, dh);
 
     let img;
@@ -291,20 +295,22 @@
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
+      const mn = Math.min(r, g, b);
       const y = (0.299 * r + 0.587 * g + 0.114 * b);
       const cMax = Math.max(r, g, b);
-      const cMin = Math.min(r, g, b);
-      const sat = cMax - cMin;
+      const sat = cMax - mn;
 
-      if (y < CHROMA_BLACK_MAX) {
-        data[i + 3] = 0;
-      } else if (y >= CHROMA_WHITE_MIN && sat <= CHROMA_WHITE_SAT_MAX) {
-        /* Flat white/light-grey studio backdrop (anchors ~252 luminance on cat_anchor) */
-        data[i + 3] = 0;
-      } else {
-        /* Keep character pixels fully opaque so the ball court never “bleeds through” */
-        data[i + 3] = 255;
+      let a = 255;
+      if (y <= CHROMA_BLACK_MAX && sat <= 28) {
+        a = 0;
+      } else if (
+        mn >= CHROMA_WHITE_MIN_RGB &&
+        sat <= CHROMA_WHITE_SAT_MAX &&
+        y >= CHROMA_WHITE_MIN_Y
+      ) {
+        a = 0;
       }
+      data[i + 3] = a;
     }
     avatarCtx.putImageData(img, 0, 0);
   }
@@ -340,15 +346,15 @@
     if (emaRms > RMS_THRESH) speakUntil = now + HANGOVER_MS;
     const speaking = now < speakUntil;
 
-      if (speaking !== wasSpeaking) {
-        wasSpeaking = speaking;
-        if (speaking) {
-          avatarSrc.play().catch(() => {});
-        } else {
-          // Pause while silent only; resume from same timeline when speech returns
-          avatarSrc.pause();
-        }
+    if (speaking !== wasSpeaking) {
+      wasSpeaking = speaking;
+      if (speaking) {
+        avatarSrc.play().catch(() => {});
+      } else {
+        // Pause while silent only; resume from same timeline when speech returns
+        avatarSrc.pause();
       }
+    }
 
     const mouthAmt = speaking ? Math.min(1, emaRms / (RMS_THRESH * 3.5)) : 0;
     avatarOpen.style.opacity = mouthAmt.toFixed(3);
