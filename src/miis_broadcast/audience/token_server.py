@@ -23,6 +23,7 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 
 def _ts() -> str:
@@ -83,6 +84,11 @@ class AudienceTokenServer:
 
         app = FastAPI(docs_url=None, redoc_url=None)
         static_dir = Path(__file__).parent / "static"
+
+        # Serve project-level assets (avatar PNGs, etc.) under /assets
+        assets_dir = Path(__file__).resolve().parents[3] / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
         @app.get("/audience", response_class=HTMLResponse)
         async def audience_page():

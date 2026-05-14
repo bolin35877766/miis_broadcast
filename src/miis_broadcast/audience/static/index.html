@@ -14,9 +14,8 @@
       overflow: hidden;
     }
 
-    /* Anchor the container to the full viewport via position:absolute so it is
-       never affected by flex percentage-height resolution quirks or LiveKit
-       setting width/height HTML attributes on the <video> element. */
+    /* Fixed full-viewport container; immune to flex/height:100% quirks and
+       LiveKit SDK injecting width/height attributes onto <video>. */
     #video-container {
       position: fixed;
       inset: 0;
@@ -31,6 +30,58 @@
       background: #000;
     }
 
+    /* ── Avatar ─────────────────────────────────────────────────────── */
+    #avatar-wrap {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 15;
+      display: none;          /* shown once video track is live */
+    }
+
+    #avatar-container {
+      position: absolute;
+      bottom: 6%;
+      right: 5%;
+      height: 30vh;           /* ~324px on 1080p; scales with viewport */
+      transform-origin: bottom center;
+      /* Smooth return to rest when speaking stops */
+      transition: transform 0.5s ease-out;
+    }
+
+    /* Body sway: only applied when .speaking class is present */
+    #avatar-container.speaking {
+      animation: avatar-sway 1.7s ease-in-out infinite;
+      transition: none;       /* let animation drive transform, not transition */
+    }
+
+    @keyframes avatar-sway {
+      0%   { transform: rotate(0deg)    translateY(0px);  }
+      20%  { transform: rotate(-1.8deg) translateY(-5px); }
+      45%  { transform: rotate(0.7deg)  translateY(-3px); }
+      65%  { transform: rotate(-1.4deg) translateY(-7px); }
+      85%  { transform: rotate(0.4deg)  translateY(-2px); }
+      100% { transform: rotate(0deg)    translateY(0px);  }
+    }
+
+    /* Base (closed mouth) — in normal flow to size the container */
+    #avatar-shut {
+      display: block;
+      height: 100%;
+      width: auto;
+    }
+
+    /* Open-mouth overlay — absolutely stacked on top */
+    #avatar-open {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: auto;
+      opacity: 0;             /* driven by JS per-frame */
+    }
+
+    /* ── Pre-live overlay ───────────────────────────────────────────── */
     #overlay {
       position: absolute;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -70,10 +121,11 @@
       cursor: pointer;
       transition: background 0.2s, transform 0.1s;
     }
-    #start-btn:hover { background: #2563eb; transform: scale(1.03); }
+    #start-btn:hover  { background: #2563eb; transform: scale(1.03); }
     #start-btn:active { transform: scale(0.98); }
     #start-btn:disabled { background: #555; cursor: not-allowed; }
 
+    /* ── Bottom-right controls ──────────────────────────────────────── */
     #controls {
       position: absolute;
       bottom: 18px;
@@ -96,11 +148,9 @@
     }
     .ctrl-btn:hover { background: rgba(255,255,255,0.15); }
 
-    /* Mute: strikethrough reflects "sound is off" (muted), not the action label */
-    #mute-btn.is-muted .mute-txt {
-      text-decoration: line-through;
-    }
+    #mute-btn.is-muted .mute-txt { text-decoration: line-through; }
 
+    /* ── Top-centre status bar ─────────────────────────────────────── */
     #status-bar {
       position: absolute;
       top: 14px;
@@ -115,10 +165,16 @@
       display: none;
     }
     #status-bar.visible { display: block; }
-    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-    .dot.live { background: #22c55e; animation: pulse 1.5s infinite; }
+
+    .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .dot.live      { background: #22c55e; animation: pulse 1.5s infinite; }
     .dot.reconnect { background: #f59e0b; }
-    .dot.offline { background: #ef4444; }
+    .dot.offline   { background: #ef4444; }
 
     @keyframes pulse {
       0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
@@ -129,6 +185,14 @@
 
 <div id="video-container">
   <video id="video" autoplay playsinline muted></video>
+
+  <!-- Avatar layer: closed mouth as base, open mouth as opacity overlay -->
+  <div id="avatar-wrap">
+    <div id="avatar-container">
+      <img id="avatar-shut" src="/assets/avatar/cat_mouth_shut.png"   alt="" draggable="false" />
+      <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false" />
+    </div>
+  </div>
 
   <div id="overlay">
     <div id="logo">MIIS Broadcast</div>
@@ -154,32 +218,110 @@
   import { Room, RoomEvent, Track, ConnectionState }
     from "https://cdn.jsdelivr.net/npm/livekit-client@2/+esm";
 
-  const videoEl    = document.getElementById("video");
-  const overlay    = document.getElementById("overlay");
-  const statusTxt  = document.getElementById("status");
-  const startBtn   = document.getElementById("start-btn");
-  const statusBar  = document.getElementById("status-bar");
-  const stateDot   = document.getElementById("state-dot");
-  const stateText  = document.getElementById("state-text");
-  const controls   = document.getElementById("controls");
-  const muteBtn    = document.getElementById("mute-btn");
-  const fsBtn      = document.getElementById("fs-btn");
-  const reconnBtn  = document.getElementById("reconnect-btn");
+  // ── DOM refs ─────────────────────────────────────────────────────────
+  const videoEl      = document.getElementById("video");
+  const overlay      = document.getElementById("overlay");
+  const statusTxt    = document.getElementById("status");
+  const startBtn     = document.getElementById("start-btn");
+  const statusBar    = document.getElementById("status-bar");
+  const stateDot     = document.getElementById("state-dot");
+  const stateText    = document.getElementById("state-text");
+  const controls     = document.getElementById("controls");
+  const muteBtn      = document.getElementById("mute-btn");
+  const fsBtn        = document.getElementById("fs-btn");
+  const reconnBtn    = document.getElementById("reconnect-btn");
+  const avatarWrap   = document.getElementById("avatar-wrap");
+  const avatarCont   = document.getElementById("avatar-container");
+  const avatarOpen   = document.getElementById("avatar-open");
 
-  let room = null;
-  let muted = false;
-  // Key = track name (e.g. "narration"); removes stale element when publisher reconnects
-  const audioEls = new Map();
+  // ── State ─────────────────────────────────────────────────────────────
+  let room   = null;
+  let muted  = false;
+  const audioEls = new Map();   // track name → <audio> element
 
-  function removeAudioByName(name) {
-    if (audioEls.has(name)) {
-      const el = audioEls.get(name);
-      el.pause();
-      el.srcObject = null;
-      el.remove();
-      audioEls.delete(name);
+  // ── Avatar / audio-analysis state ─────────────────────────────────────
+  // AudioContext created on the start-button click (user gesture) so the
+  // browser does not block it under its autoplay policy.
+  let audioCtx    = null;
+  let analyser    = null;
+  let timeDomain  = null;
+  let rafId       = null;
+  let speakUntil  = 0;          // performance.now() deadline for "speaking" state
+  let emaRms      = 0;
+  let wasSpeaking = false;
+
+  // Tuning knobs:
+  const RMS_THRESH    = 0.018;  // 0-1 normalised amplitude; tweak if too sensitive
+  const HANGOVER_MS   = 320;    // keep animation alive this many ms after audio falls silent
+  const EMA_ALPHA     = 0.28;   // smoothing: lower = smoother but more lag
+
+  // ── Avatar analyser ───────────────────────────────────────────────────
+
+  function initAnalyser(mediaStreamTrack) {
+    if (analyser || !audioCtx) return;
+    try {
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      // Tap directly from the MediaStreamTrack so playback path is unaffected.
+      const src = audioCtx.createMediaStreamSource(new MediaStream([mediaStreamTrack]));
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.55;
+      src.connect(analyser);
+      timeDomain = new Uint8Array(analyser.fftSize);
+      rafId = requestAnimationFrame(avatarTick);
+      console.log("[AVATAR] analyser ready");
+    } catch (e) {
+      console.warn("[AVATAR] analyser setup failed:", e);
     }
   }
+
+  function teardownAnalyser() {
+    if (rafId)    { cancelAnimationFrame(rafId); rafId = null; }
+    if (analyser) { analyser.disconnect(); analyser = null; }
+    if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+    timeDomain  = null;
+    emaRms      = 0;
+    wasSpeaking = false;
+    avatarCont.classList.remove("speaking");
+    avatarOpen.style.opacity = "0";
+  }
+
+  function avatarTick() {
+    rafId = requestAnimationFrame(avatarTick);
+    if (!analyser || !timeDomain) return;
+
+    analyser.getByteTimeDomainData(timeDomain);
+
+    // RMS in normalised [-1, 1] space
+    let sumSq = 0;
+    for (let i = 0; i < timeDomain.length; i++) {
+      const s = (timeDomain[i] - 128) / 128.0;
+      sumSq += s * s;
+    }
+    const rms = Math.sqrt(sumSq / timeDomain.length);
+
+    // Exponential moving average for stable response
+    emaRms = EMA_ALPHA * rms + (1 - EMA_ALPHA) * emaRms;
+
+    const now = performance.now();
+    if (emaRms > RMS_THRESH) speakUntil = now + HANGOVER_MS;
+
+    const speaking = now < speakUntil;
+
+    // Only touch the DOM when state actually changes (avoid 60fps class thrash)
+    if (speaking !== wasSpeaking) {
+      avatarCont.classList.toggle("speaking", speaking);
+      wasSpeaking = speaking;
+    }
+
+    // Map emaRms → mouth open opacity (0 when silent, smoothly up to 1)
+    const mouthAmt = speaking
+      ? Math.min(1, emaRms / (RMS_THRESH * 3.5))
+      : 0;
+    avatarOpen.style.opacity = mouthAmt.toFixed(3);
+  }
+
+  // ── UI helpers ────────────────────────────────────────────────────────
 
   function setStatus(msg) { statusTxt.textContent = msg; }
 
@@ -195,6 +337,7 @@
     overlay.classList.add("hidden");
     statusBar.classList.add("visible");
     controls.style.display = "flex";
+    avatarWrap.style.display = "block";
     stateDot.className = "dot live";
     stateText.textContent = "直播中";
   }
@@ -206,8 +349,24 @@
 
   function showOffline(reason) {
     stateDot.className = "dot offline";
-    stateText.textContent = reason || "中斷";
+    stateText.textContent = reason || "已中斷";
+    avatarWrap.style.display = "none";
+    avatarCont.classList.remove("speaking");
+    avatarOpen.style.opacity = "0";
   }
+
+  // ── Audio element helpers ─────────────────────────────────────────────
+
+  function removeAudioByName(name) {
+    if (!audioEls.has(name)) return;
+    const el = audioEls.get(name);
+    el.pause();
+    el.srcObject = null;
+    el.remove();
+    audioEls.delete(name);
+  }
+
+  // ── LiveKit connection ────────────────────────────────────────────────
 
   async function connect() {
     startBtn.disabled = true;
@@ -220,26 +379,20 @@
 
       setStatus("連線中…");
 
-      room = new Room({
-        // Disable adaptive stream to reduce latency on local network
-        adaptiveStream: false,
-        dynacast: false,
-      });
+      room = new Room({ adaptiveStream: false, dynacast: false });
 
       room.on(RoomEvent.TrackSubscribed, (track, _pub, _participant) => {
         const tname = track.name || track.sid;
+
         if (track.kind === Track.Kind.Video) {
           track.attach(videoEl);
-          // Remove any width/height HTML attributes the SDK may have injected;
-          // CSS (with !important) controls sizing instead.
+          // Remove any intrinsic-size attributes the SDK may inject; CSS controls layout.
           videoEl.removeAttribute("width");
           videoEl.removeAttribute("height");
           showLive();
         }
+
         if (track.kind === Track.Kind.Audio) {
-          // Always remove existing element for same track name before creating new one.
-          // This prevents double audio when the publisher reconnects and republishes
-          // a track with the same name but a new SID.
           removeAudioByName(tname);
           const audioEl = track.attach();
           audioEl.muted = muted;
@@ -247,16 +400,25 @@
           document.body.appendChild(audioEl);
           audioEls.set(tname, audioEl);
           audioEl.play().catch(() => {});
-          console.log("[AUDIO] subscribed track:", tname, "total audio els:", audioEls.size);
+          console.log("[AUDIO] subscribed:", tname, "total:", audioEls.size);
+
+          // Hook the avatar analyser onto this audio track's raw MediaStreamTrack.
+          // createMediaStreamSource creates a parallel read path that does not
+          // affect the existing <audio> playback.
+          if (track.mediaStreamTrack) {
+            initAnalyser(track.mediaStreamTrack);
+          }
         }
       });
 
       room.on(RoomEvent.TrackUnsubscribed, (track) => {
         track.detach();
         if (track.kind === Track.Kind.Audio) {
-          const tname = track.name || track.sid;
-          removeAudioByName(tname);
-          console.log("[AUDIO] unsubscribed track:", tname, "remaining:", audioEls.size);
+          removeAudioByName(track.name || track.sid);
+          // Tear down analyser; it will be re-created on the next subscription.
+          teardownAnalyser();
+          // Re-create AudioContext so it's ready for the next track subscription.
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
       });
 
@@ -276,7 +438,15 @@
     }
   }
 
-  startBtn.addEventListener("click", connect);
+  // ── Button listeners ──────────────────────────────────────────────────
+
+  startBtn.addEventListener("click", () => {
+    // Create AudioContext here (user gesture) to satisfy autoplay policy.
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    connect();
+  });
 
   muteBtn.addEventListener("click", () => {
     muted = !muted;
@@ -293,15 +463,18 @@
   });
 
   reconnBtn.addEventListener("click", async () => {
+    teardownAnalyser();
     if (room) { await room.disconnect(); room = null; }
-    // Remove all lingering audio elements before reconnecting
-    audioEls.forEach((el, name) => removeAudioByName(name));
+    audioEls.forEach((_, name) => removeAudioByName(name));
     audioEls.clear();
     overlay.classList.remove("hidden");
+    avatarWrap.style.display = "none";
     startBtn.disabled = false;
     setStatus("點擊重新連線");
     statusBar.classList.remove("visible");
     controls.style.display = "none";
+    // Fresh AudioContext will be created on next button click.
+    audioCtx = null;
   });
 </script>
 </body>
