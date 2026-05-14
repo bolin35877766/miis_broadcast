@@ -181,7 +181,7 @@ Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_sw
 
 ### Audience second screen (LiveKit)
 
-When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** carries the **full-resolution OBS/VR** line for **`broadcast_video`** (typically **`1920×1080`** + optional **2D avatar** PiP in `livekit_publisher`), while **`signal_frame`** stays on **`640×480` / `1280×480`** for the GUI and LiveCC. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code). 👉 Full setup, **flowcharts**, executor notes, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
+When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** carries the **full-resolution OBS/VR** line for **`broadcast_video`** (typically **`1920×1080`**), while **`signal_frame`** stays on **`640×480` / `1280×480`** for the GUI and LiveCC. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code). 👉 Full setup, **flowcharts**, executor notes, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
 
 ---
 

@@ -9,12 +9,9 @@ VR mode (only mode)
 - Video source: VR frames from FreeSwitchCameraThread.signal_vr_frame
 - Audio source: OpenAI TTS PCM sink (push_audio_chunk)
 - Track names: broadcast_video (video), narration (audio)
-- Avatar: two-state (open/closed) 2D cat avatar composited as PiP in
-  the bottom-right corner of each broadcast frame.  Mouth state is derived
-  from PCM RMS with a short hangover so the mouth does not flicker.
 
-Heavy cv2 work runs on a dedicated single-worker ThreadPoolExecutor (_vr_executor)
-so the asyncio event loop is never blocked by resize / RGBA conversion.
+Heavy cv2 work runs on a ThreadPoolExecutor (_vr_executor) so the asyncio event
+loop is never blocked by resize / RGBA conversion.
 """
 
 from __future__ import annotations
@@ -24,7 +21,6 @@ import concurrent.futures
 import queue
 import threading
 import time
-from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -48,43 +44,8 @@ async def _async_sleep_until_deadline(deadline: float) -> None:
         await asyncio.sleep(remaining)
 
 
-# ── Avatar constants ────────────────────────────────────────────────────────
-_AVATAR_HEIGHT_FRAC = 0.35   # avatar occupies this fraction of frame height
-_AVATAR_MARGIN_PX   = 16     # gap from right/bottom edge (pixels)
-_RMS_OPEN_THRESHOLD = 300    # int16 RMS above this value → mouth open
-_MOUTH_HANGOVER_S   = 0.30   # keep mouth open N seconds after last active chunk
-                             # must exceed the TTS chunk interval (~250 ms at 4 chunks/s)
-                             # to prevent flickering between chunks
-
-
-def _normalize_avatar_to_bgra(img: np.ndarray, path: Path) -> np.ndarray:
-    """Normalize loaded PNG to BGRA so open/closed use the same alpha compositing."""
-    if img.ndim == 2:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
-    elif img.ndim == 3:
-        channels = img.shape[2]
-        if channels == 3:
-            h, w = img.shape[:2]
-            alpha = np.full((h, w, 1), 255, dtype=img.dtype)
-            img = np.concatenate([img, alpha], axis=2)
-            print(
-                f"{_ts()} | [AVATAR] WARN: no alpha in {path.name}; compositing as opaque "
-                "(re-export PNG with transparency for keyed assets)"
-            )
-        elif channels == 4:
-            pass
-        else:
-            raise ValueError(f"unexpected channel count for avatar: {path}")
-    return img
-
-
 class AudiencePublisher:
-    """Connects to a local LiveKit room and publishes broadcast_video + narration tracks.
-
-    A 2D avatar image (two PNG frames: mouth closed / open) is composited into
-    the bottom-right corner of every video frame. The open/closed state follows
-    the TTS PCM volume via RMS with a short hangover.
-    """
+    """Connects to a local LiveKit room and publishes broadcast_video + narration tracks."""
 
     VIDEO_W = 1920
     VIDEO_H = 1080
@@ -120,20 +81,10 @@ class AudiencePublisher:
 
         self._connected = False
 
-        # Two workers allow one frame to be composited while the previous frame
-        # is still being captured / encoded by LiveKit, giving a pipeline effect.
+        # Pipeline: compositing one frame while the previous may still encode.
         self._vr_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="audience-vr"
         )
-
-        # Avatar state -- written by push_audio_chunk (any thread), read by
-        # _video_pump_vr (asyncio thread).  float assignment is atomic in CPython.
-        self._mouth_open_until: float = 0.0
-
-        # Pre-loaded avatar images as BGRA (same format for keyed PNGs).
-        self._avatar_closed: Optional[np.ndarray] = None
-        self._avatar_open:   Optional[np.ndarray] = None
-        self._load_avatar_images()
 
     # ── Public API (Qt-thread safe) ───────────────────────────────────────
 
@@ -182,54 +133,14 @@ class AudiencePublisher:
         return last
 
     def push_audio_chunk(self, pcm_int16: np.ndarray) -> None:
-        """Called from TTS PCM sink callback (any thread).
-
-        Also updates mouth-open state: if the chunk is loud enough (RMS above
-        threshold) the mouth stays open until _MOUTH_HANGOVER_S after the last
-        active chunk.
-        """
+        """Called from TTS PCM sink callback (any thread)."""
         _enqueue_drop_oldest(self._audio_q, pcm_int16)
-
-        if pcm_int16.size > 0:
-            rms = float(np.sqrt(np.mean(pcm_int16.astype(np.float32) ** 2)))
-            if rms > _RMS_OPEN_THRESHOLD:
-                # Extend the deadline; float store is atomic in CPython.
-                self._mouth_open_until = time.perf_counter() + _MOUTH_HANGOVER_S
 
     def flush_pending_audio(self) -> None:
         """Drop buffered PCM not yet sent to LiveKit (call when TTS is interrupted/preempted)."""
         _drain_queue(self._audio_q)
-        # Close the mouth immediately on interrupt.
-        self._mouth_open_until = 0.0
 
     # ── Internal ──────────────────────────────────────────────────────────
-
-    def _load_avatar_images(self) -> None:
-        """Load and pre-scale the two avatar PNG files once at start-up."""
-        asset_dir = Path(__file__).resolve().parents[3] / "assets" / "avatar"
-        pairs = [
-            (asset_dir / "cat_mouth_shut.png",   "_avatar_closed"),
-            (asset_dir / "cat_mouth_opened.png", "_avatar_open"),
-        ]
-        target_h = max(1, int(self.VIDEO_H * _AVATAR_HEIGHT_FRAC))
-
-        for path, attr in pairs:
-            raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-            if raw is None:
-                print(f"{_ts()} | [AVATAR] WARNING: cannot load {path}")
-                continue
-            img = _normalize_avatar_to_bgra(raw, path)
-            h, w = img.shape[:2]
-            scale  = target_h / max(h, 1)
-            new_w  = max(1, int(w * scale))
-            img    = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_AREA)
-            setattr(self, attr, img)
-
-        if self._avatar_closed is not None:
-            sz = (self._avatar_closed.shape[1], self._avatar_closed.shape[0])
-            print(f"{_ts()} | [AVATAR] loaded | pip_size={sz[0]}x{sz[1]} px")
-        else:
-            print(f"{_ts()} | [AVATAR] WARNING: avatar images missing; no PiP overlay")
 
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -290,13 +201,7 @@ class AudiencePublisher:
             await _safe_disconnect(room)
 
     async def _video_pump_vr(self, source) -> None:
-        """VR mode: drain _video_q → local VideoSource at a fixed 30 fps.
-
-        Each frame is composited with the avatar PiP in the bottom-right corner.
-        The avatar image (open/closed) is selected based on current TTS audio
-        activity (mouth_open_until deadline) and passed as a snapshot to the
-        thread-pool compositor so the asyncio loop is never blocked by cv2.
-        """
+        """VR mode: drain _video_q → local VideoSource at a fixed 30 fps."""
         from livekit import rtc
 
         TARGET_FPS = 30
@@ -321,15 +226,10 @@ class AudiencePublisher:
                 await _async_sleep_until_deadline(next_deadline)
                 continue
 
-            # Snapshot mouth state before entering the thread pool.
-            is_open    = time.perf_counter() < self._mouth_open_until
-            avatar_img = self._avatar_open if is_open else self._avatar_closed
-
             buf = await loop.run_in_executor(
                 self._vr_executor,
-                _build_vr_avatar_frame_sync,
+                _build_vr_frame_rgba_sync,
                 last_frame_rgb,
-                avatar_img,
                 self.VIDEO_W,
                 self.VIDEO_H,
             )
@@ -344,12 +244,11 @@ class AudiencePublisher:
             fps_count += 1
             now = time.perf_counter()
             if now - fps_ts >= self.STATS_INTERVAL_S:
-                fps  = fps_count / (now - fps_ts)
+                fps = fps_count / (now - fps_ts)
                 drop = self._video_q.qsize()
-                mouth_state = "open" if is_open else "closed"
-                print(f"{_ts()} | [MEDIA] fps={fps:.1f} drop={drop} mouth={mouth_state}")
+                print(f"{_ts()} | [MEDIA] fps={fps:.1f} drop={drop}")
                 fps_count = 0
-                fps_ts    = now
+                fps_ts = now
 
             next_deadline += frame_interval
             now = time.perf_counter()
@@ -397,57 +296,17 @@ class AudiencePublisher:
                 stats_ts = now
 
 
-# ── Module-level frame compositors (run inside _vr_executor) ──────────────
+# ── Module-level frame helper (runs inside _vr_executor) ──────────────────
 
 
-def _build_vr_avatar_frame_sync(
-    vr_rgb: np.ndarray,
-    avatar_img: Optional[np.ndarray],
-    out_w: int,
-    out_h: int,
-) -> bytearray:
-    """Resize VR to output size, overlay avatar PiP in bottom-right corner.
-
-    Avatars are always BGRA after load (keyed PNGs): blend using the alpha channel.
-
-    Optimised for CPU throughput: avoids full-frame float32 ops; builds RGBA
-    in-place with a pre-allocated array instead of cvtColor to reduce allocations.
-
-    Runs in a thread-pool so the asyncio loop is never stalled by cv2.
-    """
+def _build_vr_frame_rgba_sync(vr_rgb: np.ndarray, out_w: int, out_h: int) -> bytearray:
+    """Resize VR RGB frame to output size and pack as RGBA for LiveKit VideoFrame."""
     h, w = vr_rgb.shape[:2]
     if w != out_w or h != out_h:
         canvas = cv2.resize(vr_rgb, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
     else:
-        canvas = vr_rgb  # no resize; operate directly (copy happens via RGBA alloc below)
+        canvas = vr_rgb
 
-    if avatar_img is not None:
-        # Work on a writable copy only when we actually need to paint.
-        if canvas is vr_rgb:
-            canvas = canvas.copy()
-
-        ah, aw = avatar_img.shape[:2]
-        x0 = max(0, out_w - aw - _AVATAR_MARGIN_PX)
-        y0 = max(0, out_h - ah - _AVATAR_MARGIN_PX)
-        x1 = min(out_w, x0 + aw)
-        y1 = min(out_h, y0 + ah)
-        aw_clip = x1 - x0
-        ah_clip = y1 - y0
-
-        avatar_crop = avatar_img[:ah_clip, :aw_clip]
-        alpha_f = avatar_crop[:, :, 3].astype(np.float32) / 255.0  # (H, W)
-        alpha_f = alpha_f[:, :, np.newaxis]                         # (H, W, 1)
-
-        # Convert avatar BGR → RGB to match canvas colour order.
-        avatar_rgb = cv2.cvtColor(avatar_crop[:, :, :3], cv2.COLOR_BGR2RGB)
-
-        roi = canvas[y0:y1, x0:x1].astype(np.float32)
-        blended = roi * (1.0 - alpha_f) + avatar_rgb.astype(np.float32) * alpha_f
-        canvas[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
-
-    # Build RGBA in a single pre-allocated array; use memoryview to avoid the
-    # intermediate bytes object created by tobytes() — saves one 8 MB allocation
-    # at 1080p per frame.
     frame_rgba = np.empty((out_h, out_w, 4), dtype=np.uint8)
     frame_rgba[:, :, :3] = canvas
     frame_rgba[:, :, 3] = 255

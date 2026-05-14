@@ -1,6 +1,6 @@
 # Audience second screen (LiveKit)
 
-This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC. **`broadcast_video`** is published at **`1920×1080`** (when OBS Virtual Camera delivers that resolution) with an optional **2D avatar** (PNG open/closed mouth) composited into the bottom-right corner, driven by **TTS PCM volume**. The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
+This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC. **`broadcast_video`** is published at **`1920×1080`** when OBS Virtual Camera delivers that resolution (scaled to match `VIDEO_W`/`VIDEO_H` in `livekit_publisher`). The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
 
 | Topic | Behavior |
 |-------|----------|
@@ -52,7 +52,7 @@ flowchart LR
   BR <-->|"subscribe"| LK
 ```
 
-**CPU / threading:** OpenCV (`cv2`) resize and RGBA conversion run off the asyncio loop via `loop.run_in_executor(self._vr_executor, ...)` with a **single-worker** `ThreadPoolExecutor` (`_vr_executor`).
+**CPU / threading:** OpenCV (`cv2`) resize and RGBA packing run off the asyncio loop via `loop.run_in_executor(self._vr_executor, ...)` with a **`ThreadPoolExecutor`** (`_vr_executor`, two workers for pipelining).
 
 ---
 
@@ -88,8 +88,7 @@ sequenceDiagram
 |------|------|
 | [token_server.py](token_server.py) | FastAPI + uvicorn on `0.0.0.0`; serves viewer HTML and short-lived subscribe-only JWTs. |
 | [static/index.html](static/index.html) | LiveKit JS viewer: subscribes to published video + audio tracks (`broadcast_video`, `narration`). |
-| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: publishes **`1920×1080`** `broadcast_video` (VR + optional avatar PiP), **30 fps** pacing via sleep-until-deadline; heavy **cv2** on **`_vr_executor`**. |
-| [assets/avatar/](../../../assets/avatar/) | Default **mouth closed / open** PNGs (`cat_mouth_shut.png`, `cat_mouth_opened.png`) — **BGRA** keyed assets. |
+| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: publishes **`1920×1080`** `broadcast_video` (VR frames resized/RGBA-packed), **30 fps** pacing via sleep-until-deadline; heavy **cv2** on **`_vr_executor`**. |
 | [gui.py](../gui.py) | Starts token server and `AudiencePublisher` when Free Switch runs with `audience.enabled`. |
 | [openai_tts.py](../core/models/openai_tts.py) | `register_pcm_sink`, `clear_audio_queue` + optional `flush_callback` for LiveKit backlog. |
 | [workers/free_switch.py](../workers/free_switch.py) | Emits **`signal_vr_frame`** (native VR, audience) alongside **`signal_frame`** (LiveCC-resolution active view). |
@@ -163,7 +162,7 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[MEDIA] publisher starting \| room=… mode=vr` | `AudiencePublisher.start()`. |
 | `[MEDIA] connected \| room=…` | Local room connected. |
 | `[MEDIA] publish_start track=broadcast_video (vr mode)` | Video track published. |
-| `[MEDIA] fps=29.0 drop=0 (vr)` | Video pump stats; `drop` = `_video_q` depth. |
+| `[MEDIA] fps=29.0 drop=0` | Video pump stats; `drop` = `_video_q` depth. |
 | `[MEDIA] disconnected from LiveKit` | Clean disconnect. |
 | `[MEDIA] publisher stopped` | Thread joined after `stop()`. |
 | `[WARN] [MEDIA] publisher thread hung; forcing event loop stop` | Graceful shutdown timed out. |
