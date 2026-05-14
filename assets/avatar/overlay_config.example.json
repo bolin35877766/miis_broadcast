@@ -1,0 +1,6 @@
+{
+  "_comment_en": "Copy to overlay_config.json to override auto backdrop detection (optional).",
+  "foregroundSatMin": 28,
+  "backdropRadiusBias": 0,
+  "backdropRadiusClamp": [18, 72]
+}

@@ -242,6 +242,7 @@
   let lastAvatarPaintTs = 0;
 
   avatarSrc.addEventListener("loadeddata", () => {
+    backdropCalibrated = false;
     lastAvatarPaintTs = 0;
     if (avatarWrap.style.display !== "none") renderAvatarChroma();
   });
@@ -250,19 +251,104 @@
   let emaRms      = 0;
   let wasSpeaking = false;
 
+  // Auto backdrop calibration (per mascot video src): avoids hard-coded luminance thresholds
+  // breaking when swapping to another flat-colour backdrop.
+  let backdropCalibrated              = false;
+  let backdropKeyR                   = 250;
+  let backdropKeyG                   = 250;
+  let backdropKeyB                   = 250;
+  let backdropSphereRadiusSq         = 45 * 45;
+  /** @type {{foregroundSatMin?: number, backdropRadiusBias?: number, backdropRadiusClamp?: [number, number]}} */
+  let overlayOverrides               = {};
+
   // Tuning knobs:
   const RMS_THRESH    = 0.018;
   const HANGOVER_MS   = 320;
   const EMA_ALPHA     = 0.28;
-  const AVATAR_PAINT_INTERVAL_MS = 1000 / 33; // ~30 fps; tighter paint budget with larger bitmap
-  // Target only true studio flats: cat_anchor borders are luminance≈252, almost grey (low sat).
-  // Stricter thresholds avoid punching translucent holes that look like “court bleeding through”.
-  const CHROMA_BLACK_MAX       = 22;
-  const CHROMA_WHITE_MIN_Y     = 240;
-  const CHROMA_WHITE_SAT_MAX   = 22;
-  const CHROMA_WHITE_MIN_RGB   = 236; // all channels must be high (neutral bright)
+  const AVATAR_PAINT_INTERVAL_MS = 1000 / 33;
+  /** Any pixel with saturation >= this is treated as mascot foreground (opaque). */
+  const DEFAULT_FG_SAT_MIN         = 30;
 
-  // ── Chroma-key: confident backdrop pixels only → transparent; everything else opaque
+  // Optional JSON tweaks: copy overlay_config.example.json → overlay_config.json
+  fetch("/assets/avatar/overlay_config.json")
+    .then((res) => (res.ok ? res.json() : null))
+    .then((cfg) => {
+      if (cfg && typeof cfg === "object") {
+        overlayOverrides = cfg;
+        backdropCalibrated = false;
+      }
+    })
+    .catch(() => {});
+
+  function fgSatThreshold() {
+    const v = overlayOverrides.foregroundSatMin ?? overlayOverrides.fgSatMinOpaque;
+    return typeof v === "number" && Number.isFinite(v) ? v : DEFAULT_FG_SAT_MIN;
+  }
+
+  function quantileSorted(sortedAsc, q) {
+    if (!sortedAsc.length) return 0;
+    const pos = Math.min(sortedAsc.length - 1, Math.max(0, Math.floor(q * (sortedAsc.length - 1))));
+    return sortedAsc[pos];
+  }
+
+  /**
+   * Sample border-band pixels after drawImage; estimate mean backdrop RGB + sphere radius so
+   * different flat keys (grey / green / beige) reuse the same maths.
+   */
+  function calibrateBackdropFromImageData(img, width, height) {
+    const d = img.data;
+    const margin = Math.max(4, Math.floor(Math.min(width, height) * 0.056));
+    const rs = []; const gs = []; const bs = []; const dists = [];
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (x >= margin && x < width - margin && y >= margin && y < height - margin)
+          continue;
+        const i = (y * width + x) * 4;
+        rs.push(d[i]); gs.push(d[i + 1]); bs.push(d[i + 2]);
+      }
+    }
+    if (!rs.length) return;
+
+    const mr = rs.reduce((a, c) => a + c, 0) / rs.length;
+    const mg = gs.reduce((a, c) => a + c, 0) / gs.length;
+    const mb = bs.reduce((a, c) => a + c, 0) / bs.length;
+
+    backdropKeyR = mr;
+    backdropKeyG = mg;
+    backdropKeyB = mb;
+
+    for (let i = 0; i < rs.length; i++) {
+      const dr = rs[i] - mr;
+      const dg = gs[i] - mg;
+      const db = bs[i] - mb;
+      dists.push(Math.sqrt(dr * dr + dg * dg + db * db));
+    }
+    dists.sort((a, b) => a - b);
+    let radius = quantileSorted(dists, 0.9) + 14;
+    const bias = overlayOverrides.backdropRadiusBias;
+    if (typeof bias === "number" && Number.isFinite(bias)) radius += bias;
+    const clamp = overlayOverrides.backdropRadiusClamp;
+    let rMin = 18;
+    let rMax = 72;
+    if (Array.isArray(clamp) && clamp.length === 2 &&
+        typeof clamp[0] === "number" && typeof clamp[1] === "number") {
+      rMin = clamp[0]; rMax = clamp[1];
+    }
+    radius = Math.min(rMax, Math.max(rMin, radius));
+    backdropSphereRadiusSq = radius * radius;
+
+    backdropCalibrated = true;
+    console.info(
+      "[AVATAR] backdrop calibrated R,G,B=(" +
+        backdropKeyR.toFixed(1) + "," +
+        backdropKeyG.toFixed(1) + "," +
+        backdropKeyB.toFixed(1) +
+        ") sphereR≈" + radius.toFixed(1),
+    );
+  }
+
+  /** Remove backdrop via sphere in RGB plus strong colour = foreground heuristic. */
   function renderAvatarChroma() {
     const v = avatarSrc;
     const cw = avatarCanvas.width;
@@ -290,28 +376,38 @@
       return;
     }
 
+    if (!backdropCalibrated) {
+      calibrateBackdropFromImageData(img, cw, ch);
+    }
+
     const data = img.data;
+    const kr = backdropKeyR;
+    const kg = backdropKeyG;
+    const kb = backdropKeyB;
+    const fgSat = fgSatThreshold();
+    const r2 = backdropSphereRadiusSq;
+
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
-      const mn = Math.min(r, g, b);
-      const y = (0.299 * r + 0.587 * g + 0.114 * b);
+      const cMin = Math.min(r, g, b);
       const cMax = Math.max(r, g, b);
-      const sat = cMax - mn;
+      const sat = cMax - cMin;
 
-      let a = 255;
-      if (y <= CHROMA_BLACK_MAX && sat <= 28) {
-        a = 0;
-      } else if (
-        mn >= CHROMA_WHITE_MIN_RGB &&
-        sat <= CHROMA_WHITE_SAT_MAX &&
-        y >= CHROMA_WHITE_MIN_Y
-      ) {
-        a = 0;
+      if (sat >= fgSat) {
+        data[i + 3] = 255;
+        continue;
       }
-      data[i + 3] = a;
+
+      const dr = r - kr;
+      const dg = g - kg;
+      const db = b - kb;
+      const distSq = dr * dr + dg * dg + db * db;
+
+      data[i + 3] = distSq <= r2 ? 0 : 255;
     }
+
     avatarCtx.putImageData(img, 0, 0);
   }
 
