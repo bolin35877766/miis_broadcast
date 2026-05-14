@@ -41,44 +41,27 @@
 
     #avatar-container {
       position: absolute;
-      bottom: 6%;
-      right: 5%;
-      height: 30vh;           /* ~324px on 1080p; scales with viewport */
-      transform-origin: bottom center;
-      /* Smooth return to rest when speaking stops */
-      transition: transform 0.5s ease-out;
+      bottom: 5%;
+      right: 4%;
+      height: 38vh;           /* portrait 1080×1920 video; ~410px tall on 1080p */
     }
 
-    /* Body sway: only applied when .speaking class is present */
-    #avatar-container.speaking {
-      animation: avatar-sway 1.7s ease-in-out infinite;
-      transition: none;       /* let animation drive transform, not transition */
-    }
-
-    @keyframes avatar-sway {
-      0%   { transform: rotate(0deg)    translateY(0px);  }
-      20%  { transform: rotate(-1.8deg) translateY(-5px); }
-      45%  { transform: rotate(0.7deg)  translateY(-3px); }
-      65%  { transform: rotate(-1.4deg) translateY(-7px); }
-      85%  { transform: rotate(0.4deg)  translateY(-2px); }
-      100% { transform: rotate(0deg)    translateY(0px);  }
-    }
-
-    /* Base (closed mouth) — in normal flow to size the container */
-    #avatar-shut {
+    /* Body: the provided animation video; black background removed via screen blend */
+    #avatar-video {
       display: block;
       height: 100%;
       width: auto;
+      mix-blend-mode: screen;
     }
 
-    /* Open-mouth overlay — absolutely stacked on top */
+    /* Open-mouth PNG overlay — stacked on top of video, alpha-composited */
     #avatar-open {
       position: absolute;
       top: 0;
       left: 0;
       height: 100%;
       width: auto;
-      opacity: 0;             /* driven by JS per-frame */
+      opacity: 0;             /* driven by JS per-frame via audio RMS */
     }
 
     /* ── Pre-live overlay ───────────────────────────────────────────── */
@@ -186,10 +169,13 @@
 <div id="video-container">
   <video id="video" autoplay playsinline muted></video>
 
-  <!-- Avatar layer: closed mouth as base, open mouth as opacity overlay -->
+  <!-- Avatar layer: animation video (black bg removed via screen blend) +
+       open-mouth PNG overlay driven by audio volume -->
   <div id="avatar-wrap">
     <div id="avatar-container">
-      <img id="avatar-shut" src="/assets/avatar/cat_mouth_shut.png"   alt="" draggable="false" />
+      <video id="avatar-video"
+             src="/assets/avatar/cat_move.mp4"
+             muted playsinline preload="auto"></video>
       <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false" />
     </div>
   </div>
@@ -232,6 +218,7 @@
   const reconnBtn    = document.getElementById("reconnect-btn");
   const avatarWrap   = document.getElementById("avatar-wrap");
   const avatarCont   = document.getElementById("avatar-container");
+  const avatarVideo  = document.getElementById("avatar-video");
   const avatarOpen   = document.getElementById("avatar-open");
 
   // ── State ─────────────────────────────────────────────────────────────
@@ -282,7 +269,8 @@
     timeDomain  = null;
     emaRms      = 0;
     wasSpeaking = false;
-    avatarCont.classList.remove("speaking");
+    avatarVideo.pause();
+    avatarVideo.currentTime = 0;
     avatarOpen.style.opacity = "0";
   }
 
@@ -308,10 +296,17 @@
 
     const speaking = now < speakUntil;
 
-    // Only touch the DOM when state actually changes (avoid 60fps class thrash)
+    // Only touch the DOM / video when state actually changes (avoid 60fps thrash)
     if (speaking !== wasSpeaking) {
-      avatarCont.classList.toggle("speaking", speaking);
       wasSpeaking = speaking;
+      if (speaking) {
+        // Resume the animation video from the beginning of its loop
+        avatarVideo.play().catch(() => {});
+      } else {
+        // Freeze on frame 0 while silent
+        avatarVideo.pause();
+        avatarVideo.currentTime = 0;
+      }
     }
 
     // Map emaRms → mouth open opacity (0 when silent, smoothly up to 1)
@@ -351,7 +346,8 @@
     stateDot.className = "dot offline";
     stateText.textContent = reason || "已中斷";
     avatarWrap.style.display = "none";
-    avatarCont.classList.remove("speaking");
+    avatarVideo.pause();
+    avatarVideo.currentTime = 0;
     avatarOpen.style.opacity = "0";
   }
 
@@ -464,6 +460,8 @@
 
   reconnBtn.addEventListener("click", async () => {
     teardownAnalyser();
+    avatarVideo.pause();
+    avatarVideo.currentTime = 0;
     if (room) { await room.disconnect(); room = null; }
     audioEls.forEach((_, name) => removeAudioByName(name));
     audioEls.clear();
