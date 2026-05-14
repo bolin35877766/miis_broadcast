@@ -176,8 +176,8 @@
   <div id="avatar-wrap">
     <div id="avatar-container">
       <video id="avatar-src"
-             src="/assets/avatar/cat_move.mp4"
-             muted playsinline preload="auto"></video>
+             src="/assets/avatar/cat_anchor.mp4"
+             muted playsinline loop preload="auto"></video>
       <!-- Internal bitmap size balances chroma CPU cost vs sharpness -->
       <canvas id="avatar-canvas" width="270" height="480"></canvas>
       <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false" />
@@ -325,15 +325,15 @@
     if (emaRms > RMS_THRESH) speakUntil = now + HANGOVER_MS;
     const speaking = now < speakUntil;
 
-    if (speaking !== wasSpeaking) {
-      wasSpeaking = speaking;
-      if (speaking) {
-        avatarSrc.play().catch(() => {});
-      } else {
-        avatarSrc.pause();
-        avatarSrc.currentTime = 0;
+      if (speaking !== wasSpeaking) {
+        wasSpeaking = speaking;
+        if (speaking) {
+          avatarSrc.play().catch(() => {});
+        } else {
+          // Pause while silent only; resume from same timeline when speech returns
+          avatarSrc.pause();
+        }
       }
-    }
 
     const mouthAmt = speaking ? Math.min(1, emaRms / (RMS_THRESH * 3.5)) : 0;
     avatarOpen.style.opacity = mouthAmt.toFixed(3);
