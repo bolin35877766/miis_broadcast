@@ -79,6 +79,14 @@ Webcam
 
 The server receives **only subject-crop JPEGs** (640×480) in this path — **no** ByteTrack on the
 host; the server decodes JPEG and runs LiveCC only.
+
+### `Stop Broadcasting` vs changing input (`obs_track`)
+
+| User action | `CameraByteTrackThread` |
+|-------------|-------------------------|
+| **Stop Broadcasting** | Thread **keeps running**. `MainWindow.stop_inference()` sets **`is_inference_running = false`** first; `on_obs_track_subject_frame()` stops enqueueing JPEGs to TCP/local LiveCC, while **`signal_frame`** still updates the **annotated preview**. |
+| **Switch source** (open another Online/Offline mode) | `MainWindow._stop_all_source_threads()` calls **`disconnect` → `requestStop()` → `wait(~6s)` + `terminate()`** so the worker fully exits — the UI **may hitch briefly** on Windows if `cap.read()` blocks. |
+
 ---
 
 ## Dual-Source Sync Worker (`dual_source.py`)
@@ -250,6 +258,7 @@ When using remote inference, the server (`python -m miis_broadcast.server`) emit
 | `LiveCC run #N buffer_size=M clip_ok` | Background inference cycle started (≈ every 2 s) |
 | `SEGMENT out #N t=[s,e] text…` | Commentary sent to client (logged on #1 and every 10th; others at DEBUG) |
 | `MSG_STOP rx_frames=N tx_segments=K` | Client clicked Stop |
+| `[SESSION AVG] Server (n=…) …` / `[SESSION AVG] Client (n=…) …` | **Once**, right after **`Inference STOP`** — arithmetic means of **`[Server]`** / **`[Client]`** samples (`session.py` stdout); see root README → *Session averages*. |
 | `Inference STOP rx_frames=N tx_segments=K infer_cycles=J` | Session totals |
 
 **`FRAME stats` field meanings**
@@ -327,7 +336,7 @@ when inference is **remote**; local-only sessions omit them).
 2. **Add a `QtCore.Signal()`** to `ControlPanel` in `gui.py` (e.g. `requestOpenNewSource = QtCore.Signal()`).
 3. **Wire up the menu action** in `ControlPanel.setup_ui()` to emit the new signal.
 4. **Add a slot** `on_open_new_source_clicked()` in `MainWindow` that calls `_stop_all_source_threads()`, instantiates the new thread, connects its signals, and starts it.
-5. **Register the thread** in `_stop_all_source_threads()` using the same `wait(3000) + terminate()` pattern to ensure clean shutdown on mode switch.
+5. **Register the thread** in `_stop_all_source_threads()` using the same **`wait(~6000 ms)` + `terminate()`** pattern as existing camera workers when changing input mode — **not** the same as **Stop Broadcasting** (see `obs_track` table above).
 6. **Connect the new signal** in `MainWindow._initUI()` alongside the existing signal connections.
 
 > **Important:** Always call `_stop_all_source_threads()` before starting a new source thread. This disconnects residual frame signals and prevents ghost frames after switching modes.

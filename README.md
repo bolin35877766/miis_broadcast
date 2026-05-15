@@ -16,8 +16,9 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
 - **Audience second screen (optional)**: In **Free Switch** mode, a browser viewer can subscribe via **LiveKit** to **`broadcast_video`** (full-screen VR at **native resolution**, typically **1920×1080**) plus **`narration`** (TTS) while the operator’s GUI continues to preview the active source. **`broadcast_video` is VR-only** (no mascot burned in by Python): an optional mascot/anchor clip is **composited in the browser** (`static/index.html` + `/assets/avatar/…` served from the token server). Setup, flow diagrams, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log reference: [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md).
 - **Thin-client telemetry**: During **any** remote inference, the **inference server** stdout shows **`[Client]`** and **`[Server]`** lines: host **RAM** (RSS, system %) plus **CUDA VRAM** on **device 0** where available (global used/total, `torch_alloc` for this process). Lines are on a shared ~2 s cadence via `CLIENT_DIAG` and decode-thread sampling. The GUI does **not** print duplicate `[Client]` lines to its own console; optional **session log** may still record the same payload under `[Memory]`.
+- **Session averages on Stop**: When **Stop Broadcasting** finishes, the server prints **`[SESSION AVG] Server`** and **`[SESSION AVG] Client`** (means of the periodic samples) on **server stdout**. The GUI prints **`[SESSION AVG] Client-local`**, optional audience **`[SESSION AVG] [MEDIA]`** / **`[AUDIO]`** (Free Switch + audience enabled), and **`[SESSION AVG] ByteTrack`** when **Webcam + Tracking** was used — all on the **client** machine.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
-- **Clean Source Switching**: Automated thread management ensuring smooth transitions between different video inputs. On Windows, a safe `wait(timeout) + terminate()` fallback prevents GUI freezes caused by DirectShow blocking `cap.read()` during mode switches.
+- **Clean source switching vs Stop Broadcasting**: **Changing the input** from the Source menu (`_stop_all_source_threads`) fully stops the old worker with **`QThread.wait(~6s)` + `terminate()`** so a stuck DirectShow `cap.read()` cannot leak threads — the window **may hitch briefly** while joining. **Stop Broadcasting** only ends the **inference session** (`MSG_STOP`, `is_inference_running = false`); in **Webcam + Tracking**, **`CameraByteTrackThread` stays alive** and the **annotated preview keeps updating** (subject crops to the server stop as soon as Stop is pressed).
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
 - **Multiple commentary styles** switchable at runtime:
   - 嘴砲型實況主 (Trash-talk / Roast)
@@ -237,7 +238,7 @@ Add or edit styles under the `styles` key. Each style needs:
 
 ### ByteTrack config ([configs/models.yml](configs/models.yml))
 
-Required when using OBS + tracking mode:
+Required when using **Webcam + Tracking** (`obs_track`):
 
 ```yaml
 bytetrack:
@@ -292,7 +293,7 @@ python -m miis_broadcast
 3. **Select TTS backend** — OpenAI Realtime or ChatterBox Local (Note: ChatterBox may be disabled in some environments)
 4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s on first local use). ByteTrack (YOLOX) preloads in the background so **Webcam + Tracking** is ready without a long stall (local path only).
 5. Commentary text appears in the transcript panel and is read aloud in real time
-6. **Click Stop Broadcasting** to end inference; latency statistics are printed to the console
+6. **Click Stop Broadcasting** to end inference (server + client **`[SESSION AVG]`** lines as above; latency stats may still print per your build). In **Webcam + Tracking**, the **camera + ByteTrack overlay keep running** until you pick another input source.
 
 #### Subject Tracking behavior
 
@@ -367,6 +368,18 @@ When inference runs on a **remote** server (file, webcam, OBS, dual sync, free s
 **Tuning:** use **`[Server]`** alongside **`[Client]`** on the **same** terminal to see whether the bottleneck is decode/LiveCC on the host or encode/TCP on the sender.
 
 The `CLIENT_DIAG` payload is a short JSON message (order of **hundreds of bytes** every ~2 s). Control sends hold the client socket lock only for that small `sendall`.
+
+### Session averages `[SESSION AVG]` (on Stop Broadcasting)
+
+Printed **once** when **`MSG_STOP`** completes (means of snapshots collected during that broadcast):
+
+| Printed line | Where |
+|---|---|
+| `[SESSION AVG] Server (n=…) …` | **Inference server** stdout (`session.py`) |
+| `[SESSION AVG] Client (n=…) …` | **Same server terminal** — mean of **`[Client]`** rows received from `CLIENT_DIAG` |
+| `[SESSION AVG] Client-local (n=…) …` | **Client / GUI** stdout — local CLIENT_DIAG aggregates (`gui.py`) |
+| `[SESSION AVG] [MEDIA]` / `[SESSION AVG] [AUDIO]` … | **Client** stdout when the audience publisher ran (**Free Switch** + `audience.enabled`) (`livekit_publisher.py`) |
+| `[SESSION AVG] ByteTrack (n=…) …` | **Client** stdout in **Webcam + Tracking** (`bytetrack_tracker.py`) |
 
 ### Server logging
 

@@ -193,6 +193,15 @@ These lines appear on **`python -m miis_broadcast`** stdout (not the browser). T
 | `[AUDIO] PCM sink registered \| mute_local=True` | From [openai_tts.py](../core/models/openai_tts.py) when Free Switch registers the audience sink. |
 | `[AUDIO] PCM sink cleared \| mute_local=False` | Publisher stopped / sink removed. |
 
+### `[SESSION AVG]` — audience pumps (printed once on Stop Broadcasting)
+
+When the operator clicks **Stop Broadcasting**, the publisher flushes telemetry and may print:
+
+| Example | Meaning |
+|---------|---------|
+| `[SESSION AVG] [MEDIA] fps=… drop=… (n=…)` | Mean video pump FPS and queue-depth proxy for this session (`livekit_publisher.py`). |
+| `[SESSION AVG] [AUDIO] chunks/s=… sample_rate≈… aq=… (n=…)` | Mean narration chunk rate and **`aq`** (audio queue depth) for this session. |
+
 ### LiveKit **server** (Docker logs)
 
 Rust lines such as `failed to negotiate the publisher` may appear in **`docker compose logs`** during bad ICE / reconnect races; they are **not** the Python `[MEDIA]` prefixes above. Correlate with publisher start/stop on the client.
