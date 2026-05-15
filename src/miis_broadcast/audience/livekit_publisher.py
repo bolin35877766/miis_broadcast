@@ -21,7 +21,7 @@ import concurrent.futures
 import queue
 import threading
 import time
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -86,7 +86,10 @@ class AudiencePublisher:
             max_workers=2, thread_name_prefix="audience-vr"
         )
 
-    # ── Public API (Qt-thread safe) ───────────────────────────────────────
+        # Session totals: periodic [MEDIA]/[AUDIO] stats for end-of-broadcast averages.
+        self._telemetry_lock = threading.Lock()
+        self._telemetry_video_samples: List[Tuple[float, float]] = []
+        self._telemetry_audio_samples: List[Tuple[float, float, float]] = []
 
     def start(self) -> None:
         self._stop_event.clear()
@@ -113,6 +116,38 @@ class AudiencePublisher:
         self._connected = False
         self._vr_executor.shutdown(wait=False, cancel_futures=True)
         print(f"{_ts()} | [MEDIA] publisher stopped")
+
+    def reset_session_telemetry(self) -> None:
+        """Clear accumulated [MEDIA]/[AUDIO] samples (call when a new broadcast starts)."""
+        with self._telemetry_lock:
+            self._telemetry_video_samples.clear()
+            self._telemetry_audio_samples.clear()
+
+    def consume_session_telemetry_average_lines(self) -> List[str]:
+        """
+        Return lines for averages over periodic stats this session; clear stored samples.
+        """
+        with self._telemetry_lock:
+            vs = list(self._telemetry_video_samples)
+            audi = list(self._telemetry_audio_samples)
+            self._telemetry_video_samples.clear()
+            self._telemetry_audio_samples.clear()
+        lines: List[str] = []
+        if vs:
+            fps_m = sum(t[0] for t in vs) / len(vs)
+            dr_m = sum(t[1] for t in vs) / len(vs)
+            lines.append(
+                f"[SESSION AVG] [MEDIA] fps={fps_m:.1f} drop={dr_m:.2f} (n={len(vs)})"
+            )
+        if audi:
+            c_m = sum(t[0] for t in audi) / len(audi)
+            r_m = sum(t[1] for t in audi) / len(audi)
+            aq_m = sum(t[2] for t in audi) / len(audi)
+            lines.append(
+                f"[SESSION AVG] [AUDIO] chunks/s={c_m:.1f} "
+                f"sample_rate≈{r_m:.0f} aq={aq_m:.2f} (n={len(audi)})"
+            )
+        return lines
 
     @property
     def is_connected(self) -> bool:
@@ -247,6 +282,8 @@ class AudiencePublisher:
                 fps = fps_count / (now - fps_ts)
                 drop = self._video_q.qsize()
                 print(f"{_ts()} | [MEDIA] fps={fps:.1f} drop={drop}")
+                with self._telemetry_lock:
+                    self._telemetry_video_samples.append((float(fps), float(drop)))
                 fps_count = 0
                 fps_ts = now
 
@@ -291,6 +328,10 @@ class AudiencePublisher:
                     f"{_ts()} | [AUDIO] chunks/s={chps:.1f} "
                     f"sample_rate≈{rate:.0f} aq={drop}"
                 )
+                with self._telemetry_lock:
+                    self._telemetry_audio_samples.append(
+                        (float(chps), float(rate), float(drop))
+                    )
                 chunk_count = 0
                 samples_out = 0
                 stats_ts = now

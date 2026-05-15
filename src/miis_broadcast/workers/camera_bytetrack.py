@@ -84,6 +84,8 @@ class CameraByteTrackThread(QtCore.QThread):
 
         self._stop_requested    = False
         self._cap = None   # cv2.VideoCapture (released on stop)
+        # Set after tracker init — GUI reads this post-stop for telemetry averages.
+        self._active_tracker: Optional[ByteTrackWrapper] = None
 
     # ------------------------------------------------------------------
     # QThread entry point
@@ -143,6 +145,8 @@ class CameraByteTrackThread(QtCore.QThread):
             except Exception as e:
                 self.signal_error.emit(f"[ByteTrack] Tracker init failed: {e}")
                 return
+
+        self._active_tracker = tracker
 
         frame_id = 0
 

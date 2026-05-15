@@ -15,6 +15,7 @@ import os
 import time
 import types
 import logging
+import threading
 import warnings
 from pathlib import Path
 from typing import Optional, Tuple, List
@@ -257,7 +258,32 @@ class ByteTrackWrapper:
         self._total_frames: int = 0
         self._wall_start: float = time.time()
 
+        self._telemetry_lock = threading.Lock()
+        self._session_perf_snapshots: List[Tuple[float, float, int, Optional[int]]] = []
+
         print("[ByteTrack] 🚀 初始化完成，已進入追蹤待機狀態")
+
+    def consume_session_perf_average_line(self) -> Optional[str]:
+        """
+        One-line [SESSION AVG] for Infer/Wall FPS, Tracks, Subject ID (logged every 20 frames).
+        Clears stored samples after formatting.
+        """
+        with self._telemetry_lock:
+            if not self._session_perf_snapshots:
+                return None
+            snaps = list(self._session_perf_snapshots)
+            self._session_perf_snapshots.clear()
+        n = len(snaps)
+        infer_m = sum(s[0] for s in snaps) / n
+        wall_m = sum(s[1] for s in snaps) / n
+        tr_m = sum(s[2] for s in snaps) / n
+        ids = [s[3] for s in snaps if s[3] is not None]
+        subj_txt = f"{sum(ids) / len(ids):.1f}" if ids else "n/a"
+        return (
+            f"[SESSION AVG] ByteTrack (n={n})  "
+            f"Infer FPS: {infer_m:.1f} | Wall FPS: {wall_m:.1f} | "
+            f"Tracks: {tr_m:.1f} | Subject ID: {subj_txt}"
+        )
 
     # -----------------------------------------------------------------------
     # Public API
@@ -400,6 +426,18 @@ class ByteTrackWrapper:
                 f"Infer FPS: {infer_fps:.1f} | Wall FPS: {wall_fps:.1f} | "
                 f"Tracks: {len(online_tlwhs)} | Subject ID: {self._subject_tid}"
             )
+            _sid_opt = (
+                int(self._subject_tid) if self._subject_tid is not None else None
+            )
+            with self._telemetry_lock:
+                self._session_perf_snapshots.append(
+                    (
+                        float(infer_fps),
+                        float(wall_fps),
+                        int(len(online_tlwhs)),
+                        _sid_opt,
+                    )
+                )
 
         # ── Draw annotated frame ───────────────────────────────────────────
         annotated_bgr = self._plot_tracking(
@@ -421,6 +459,8 @@ class ByteTrackWrapper:
         self._total_frames = 0
         self._wall_start   = time.time()
         self._timer        = _Timer()
+        with self._telemetry_lock:
+            self._session_perf_snapshots.clear()
         print("[ByteTrack] 🔄 追蹤狀態已重置")
 
     # -----------------------------------------------------------------------

@@ -21,7 +21,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from queue import Empty, Full, Queue
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 import torch
@@ -84,6 +84,15 @@ def _is_cuda_recoverable_inference_error(exc: BaseException) -> bool:
 
 def _is_oob_vocab_value_error(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and "input_ids out of vocab" in str(exc).lower()
+
+
+def _mean_float(xs: List[float]) -> Optional[float]:
+    return sum(xs) / len(xs) if xs else None
+
+
+def _mean_optional(vals: List[Optional[float]]) -> Optional[float]:
+    xs = [float(x) for x in vals if x is not None]
+    return sum(xs) / len(xs) if xs else None
 # ---------------------------------------------------------------------------
 # FrameItem: mirrors workers/livecc.py to avoid circular import
 # ---------------------------------------------------------------------------
@@ -121,6 +130,9 @@ class ClientSession:
         self._last_segment_text: str = ""
         # Throttle server-side RSS print (~2s, aligned with thin-client QTimer)
         self._server_ram_last_mono: float = 0.0
+        # One inference session (START→STOP): rolling numeric samples for end-of-session AVG
+        self._telemetry_server_samples: List[Dict[str, Any]] = []
+        self._telemetry_client_samples: List[Dict[str, Any]] = []
     # ------------------------------------------------------------------ #
     # Public entry point
     # ------------------------------------------------------------------ #
@@ -187,6 +199,8 @@ class ClientSession:
         self._infer_cycles = 0
         self._last_segment_text = ""
         self._server_ram_last_mono = time.monotonic() - 2.01
+        self._telemetry_server_samples = []
+        self._telemetry_client_samples = []
         buffer: deque[_FrameItem] = deque(maxlen=180)
         stop_event = threading.Event()
         # Single-slot pending JPEG: recv overwrites with the latest FRAME (temporal sampling —
@@ -233,6 +247,7 @@ class ClientSession:
             stop_event.set()
             frame_thread.join(timeout=5.0)
             infer_thread.join(timeout=5.0)
+            self._print_session_telemetry_averages()
             log.info(
                 "[Session %s] Inference STOP  rx_frames=%d tx_segments=%d infer_cycles=%d",
                 self.addr,
@@ -268,10 +283,22 @@ class ClientSession:
             f"[Client] RSS={rss:.1f} MiB | JPEG send_queue={qu}/{qm} | "
             f"system_RAM_used={sp:.0f}%{gpu_sfx}"
         )
-    @staticmethod
-    def _print_server_process_ram(buffer_len: int) -> None:
+        self._telemetry_client_samples.append(
+            {
+                "rss_mib": rss,
+                "jpeg_q_used": qu,
+                "jpeg_q_max": qm,
+                "sys_ram_pct": sp,
+                "gpu_vram_used_mib": gu_f,
+                "gpu_vram_total_mib": gt_f,
+                "gpu_torch_alloc_mib": gto_f,
+            }
+        )
+
+    def _print_server_process_ram(self, buffer_len: int) -> None:
         """
         RSS of this server's Python process (inference host: LiveCC + JPEG decode).
+        Records a snapshot for end-of-session [SESSION AVG] on MSG_STOP path.
         """
         try:
             import psutil
@@ -281,10 +308,92 @@ class ClientSession:
             return
         snap = cuda_vram_snapshot(0)
         gpu_sfx = vram_log_suffix(snap)
+
+        gpu_used = snap.used_mib if snap is not None else None
+        gpu_total = snap.total_mib if snap is not None else None
+        gpu_torch = snap.torch_alloc_mib if snap is not None else None
+
+        self._telemetry_server_samples.append(
+            {
+                "rss_mib": rss_mib,
+                "livecc_buffer": float(buffer_len),
+                "sys_ram_pct": sys_pct,
+                "gpu_used_mib": gpu_used,
+                "gpu_total_mib": gpu_total,
+                "gpu_torch_alloc_mib": gpu_torch,
+            }
+        )
         print(
             f"[Server] RSS={rss_mib:.1f} MiB | livecc_buffer={buffer_len} | "
             f"system_RAM_used={sys_pct:.0f}%{gpu_sfx}"
         )
+
+    def _print_session_telemetry_averages(self) -> None:
+        """Pretty-print averages for Server + Client telemetry samples (same fields as periodic lines)."""
+        srv_rows = getattr(self, "_telemetry_server_samples", None) or []
+        cli_rows = getattr(self, "_telemetry_client_samples", None) or []
+
+        if srv_rows:
+            rss = _mean_float([float(r["rss_mib"]) for r in srv_rows])
+            buf = _mean_float([float(r["livecc_buffer"]) for r in srv_rows])
+            sysp = _mean_float([float(r["sys_ram_pct"]) for r in srv_rows])
+
+            gpu_used_avg = _mean_optional(
+                [r.get("gpu_used_mib") for r in srv_rows]
+            )
+            gpu_tot_ref: Optional[float] = None
+            for r in reversed(srv_rows):
+                gt = r.get("gpu_total_mib")
+                if gt is not None and isinstance(gt, (int, float)) and float(gt) > 0:
+                    gpu_tot_ref = float(gt)
+                    break
+
+            sfx: str
+            if (
+                gpu_used_avg is None
+                or gpu_tot_ref is None
+                or gpu_tot_ref <= 0
+            ):
+                sfx = " | GPU_VRAM=n/a"
+            else:
+                pct = 100.0 * float(gpu_used_avg) / float(gpu_tot_ref)
+                ga = _mean_optional(
+                    [r.get("gpu_torch_alloc_mib") for r in srv_rows]
+                )
+                torch_part = f"{ga:.0f}" if ga is not None else "0"
+                sfx = (
+                    f" | GPU_VRAM={gpu_used_avg:.0f}/{gpu_tot_ref:.0f} MiB "
+                    f"({pct:.0f}%) torch_alloc={torch_part} MiB"
+                )
+
+            print(
+                f"[SESSION AVG] Server (n={len(srv_rows)})  "
+                f"RSS={rss:.1f} MiB | livecc_buffer={buf:.1f} | "
+                f"system_RAM_used={sysp:.0f}%{sfx}"
+            )
+
+        if cli_rows:
+            rss = _mean_float([float(r["rss_mib"]) for r in cli_rows])
+            qu_avg = _mean_float([float(r["jpeg_q_used"]) for r in cli_rows])
+            qm = int(cli_rows[-1].get("jpeg_q_max", 0)) if cli_rows else 0
+            sysp = _mean_float([float(r["sys_ram_pct"]) for r in cli_rows])
+
+            gu_f = _mean_optional([r.get("gpu_vram_used_mib") for r in cli_rows])
+            gt_ref: Optional[float] = None
+            for r in reversed(cli_rows):
+                tmi = r.get("gpu_vram_total_mib")
+                if tmi is not None and isinstance(tmi, (int, float)) and float(tmi) > 0:
+                    gt_ref = float(tmi)
+                    break
+            gto_avg = _mean_optional([r.get("gpu_torch_alloc_mib") for r in cli_rows])
+            gpu_sfx = vram_log_suffix_from_wire(gu_f, gt_ref, gto_avg)
+
+            print(
+                f"[SESSION AVG] Client (n={len(cli_rows)})  "
+                f"RSS={rss:.1f} MiB | JPEG send_queue={qu_avg:.2f}/{qm} | "
+                f"system_RAM_used={sysp:.0f}%{gpu_sfx}"
+            )
+
     # ------------------------------------------------------------------ #
     # Frame handling (recv: enqueue JPEG only; decode in _frame_processor_loop)
     # ------------------------------------------------------------------ #

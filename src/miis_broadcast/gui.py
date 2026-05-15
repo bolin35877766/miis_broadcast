@@ -6,7 +6,7 @@ import os
 import time
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -24,7 +24,11 @@ from .audience.token_server import AudienceTokenServer
 # so this process never loads the VLM on a thin client.
 from .core.prompt.prompt_manager import PromptManager
 from .core.utils.session_logger import SessionLogger
-from .core.utils.gpu_telemetry import cuda_vram_snapshot, vram_log_suffix
+from .core.utils.gpu_telemetry import (
+    cuda_vram_snapshot,
+    vram_log_suffix,
+    vram_log_suffix_from_wire,
+)
 from .network.client import SocketClientRunner
 from collections import deque
 
@@ -1075,6 +1079,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._socket_runner: Optional[SocketClientRunner] = None
         # Periodic thin-client RAM + JPEG queue (all remote inference modes)
         self._remote_client_ram_timer: Optional[QtCore.QTimer] = None
+        # Local copies of CLIENT_DIAG samples for session-average summary on STOP
+        self._local_client_diag_samples: list = []
 
         # client_only: only controls whether local LiveCC/ByteTrack are loaded at startup.
         # All GUI behavior is identical once connected; default = True (don't load 7B locally).
@@ -1467,6 +1473,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 g_torch = gpu_snap.torch_alloc_mib
             else:
                 g_torch = None
+            self._local_client_diag_samples.append(
+                {
+                    "rss_mib": float(rss_mb),
+                    "jpeg_q_used": int(q_used),
+                    "jpeg_q_max": int(q_max),
+                    "sys_ram_pct": float(sys_pct),
+                    "gpu_vram_used_mib": gu,
+                    "gpu_vram_total_mib": gt,
+                    "gpu_torch_alloc_mib": g_torch,
+                }
+            )
             self._socket_runner.send_client_diagnostic(
                 rss_mb,
                 q_used,
@@ -1478,6 +1495,64 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         except Exception as e:
             print(f"[Remote] telemetry send failed: {e}")
+
+    def _clear_local_inference_telemetry_for_new_session(self) -> None:
+        """Reset per-broadcast samples (CLIENT_DIAG copies + audience stats)."""
+        self._local_client_diag_samples.clear()
+        pub = self._audience_publisher
+        if pub is not None:
+            pub.reset_session_telemetry()
+
+    def _flush_local_inference_telemetry_summary(
+        self,
+        obs_tracker_opt: Optional[Any] = None,
+    ) -> None:
+        """Print mean telemetry for this broadcast on this machine (thin-client + extras)."""
+        def _avg(nums: list) -> Optional[float]:
+            return sum(nums) / len(nums) if nums else None
+
+        xs = self._local_client_diag_samples
+        if xs:
+            rss_m = _avg([float(r["rss_mib"]) for r in xs])
+            q_u_m = _avg([float(r["jpeg_q_used"]) for r in xs])
+            q_max = int(xs[-1].get("jpeg_q_max", 0))
+            sysp_m = _avg([float(r["sys_ram_pct"]) for r in xs])
+            gpu_used_nums = [
+                float(r["gpu_vram_used_mib"])
+                for r in xs
+                if r.get("gpu_vram_used_mib") is not None
+            ]
+            gu_m = _avg(gpu_used_nums)
+            gt_ref: Optional[float] = None
+            for row in reversed(xs):
+                t = row.get("gpu_vram_total_mib")
+                if t is not None:
+                    gt_ref = float(t)
+                    break
+            torch_nums = [
+                float(r["gpu_torch_alloc_mib"])
+                for r in xs
+                if r.get("gpu_torch_alloc_mib") is not None
+            ]
+            ga_m = _avg(torch_nums) if torch_nums else None
+            sfx = vram_log_suffix_from_wire(gu_m, gt_ref, ga_m)
+            print(
+                f"[SESSION AVG] Client-local (n={len(xs)})  RSS={rss_m:.1f} MiB | "
+                f"JPEG send_queue={q_u_m:.2f}/{q_max} | "
+                f"system_RAM_used={sysp_m:.0f}%{sfx}"
+            )
+
+        pub = self._audience_publisher
+        if pub is not None:
+            for ln in pub.consume_session_telemetry_average_lines():
+                print(ln)
+
+        if obs_tracker_opt is not None:
+            ln = obs_tracker_opt.consume_session_perf_average_line()
+            if ln:
+                print(ln)
+
+        self._local_client_diag_samples.clear()
 
     @QtCore.Slot(str, int)
     def on_remote_connect_clicked(self, host: str, port: int) -> None:
@@ -2003,6 +2078,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._audience_publisher = AudiencePublisher(
             lk_url, api_key, api_secret, room_name
         )
+        self._audience_publisher.reset_session_telemetry()
         self._audience_publisher.start()
 
         if self.free_switch_thread is not None:
@@ -2124,6 +2200,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         print(f"[Main] Session log started: {log_path}")
 
+        self._clear_local_inference_telemetry_for_new_session()
+
         style_key = self.control_panel.get_selected_style_key()
         style_label = self.control_panel.get_selected_style_label()
 
@@ -2199,6 +2277,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def stop_inference(self) -> None:
         if not self.is_inference_running:
             return
+        obs_tracker_for_avg = None
         self._stop_remote_client_ram_monitor()
         self.append_text("Stopping inference")
         if hasattr(self, "_pending_segments"):
@@ -2232,10 +2311,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.obs_thread = None
 
         if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:
-            self.obs_bytetrack_thread.requestStop()
-            if not self.obs_bytetrack_thread.wait(3000):
-                self.obs_bytetrack_thread.terminate()
-                self.obs_bytetrack_thread.wait(1000)
+            _tr_bt = self.obs_bytetrack_thread
+            _tr_bt.requestStop()
+            if not _tr_bt.wait(3000):
+                _tr_bt.terminate()
+                _tr_bt.wait(1000)
+            obs_tracker_for_avg = getattr(_tr_bt, "_active_tracker", None)
             self.obs_bytetrack_thread = None
 
         if self.mode == "dual_sync" and self.dual_sync_thread is not None:
@@ -2244,6 +2325,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.dual_sync_thread.terminate()
                 self.dual_sync_thread.wait(1000)
             self.dual_sync_thread = None
+
+        self._flush_local_inference_telemetry_summary(obs_tracker_for_avg)
 
         self.is_inference_running = False
         self._last_track_preview_mono = 0.0
