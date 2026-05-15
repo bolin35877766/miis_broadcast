@@ -1081,6 +1081,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remote_client_ram_timer: Optional[QtCore.QTimer] = None
         # Local copies of CLIENT_DIAG samples for session-average summary on STOP
         self._local_client_diag_samples: list = []
+        self._busy_stopping_inference: bool = False
 
         # client_only: only controls whether local LiveCC/ByteTrack are loaded at startup.
         # All GUI behavior is identical once connected; default = True (don't load 7B locally).
@@ -1496,6 +1497,35 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             print(f"[Remote] telemetry send failed: {e}")
 
+    def _join_worker_thread_smooth(
+        self,
+        worker: Optional[QtCore.QThread],
+        *,
+        timeout_ms: int = 6000,
+        terminate_grace_ms: int = 1200,
+        slice_ms: int = 75,
+    ) -> None:
+        """Wait for worker to finish while pumping Qt events (keeps UI repainting).
+
+        Camera workers often block inside OpenCV capture or GPU inference until the next loop
+        tick observes requestStop(); a single blocking wait(...) would freeze MainWindow."""
+        if worker is None or not worker.isRunning():
+            return
+        app = QtWidgets.QApplication.instance()
+        elapsed = QtCore.QElapsedTimer()
+        elapsed.start()
+        while worker.isRunning() and int(elapsed.elapsed()) < timeout_ms:
+            remaining = timeout_ms - int(elapsed.elapsed())
+            chunk = max(1, min(slice_ms, remaining))
+            worker.wait(chunk)
+            if app is not None:
+                app.processEvents(
+                    QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+                )
+        if worker.isRunning():
+            worker.terminate()
+            worker.wait(terminate_grace_ms)
+
     def _clear_local_inference_telemetry_for_new_session(self) -> None:
         """Reset per-broadcast samples (CLIENT_DIAG copies + audience stats)."""
         self._local_client_diag_samples.clear()
@@ -1772,9 +1802,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.obs_thread.signal_frame.disconnect()
             except RuntimeError:
                 pass
-            if not self.obs_thread.wait(3000):
-                self.obs_thread.terminate()
-                self.obs_thread.wait(1000)
+            self._join_worker_thread_smooth(self.obs_thread)
             self.obs_thread = None
         if self.obs_bytetrack_thread:
             self.obs_bytetrack_thread.requestStop()  # also releases DirectShow capture
@@ -1783,11 +1811,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.obs_bytetrack_thread.signal_subject_frame.disconnect()
             except RuntimeError:
                 pass
-            # Use a timeout so the GUI main thread never freezes if the worker
-            # thread is still blocked (e.g. DirectShow did not release in time).
-            if not self.obs_bytetrack_thread.wait(3000):
-                self.obs_bytetrack_thread.terminate()
-                self.obs_bytetrack_thread.wait(1000)
+            self._join_worker_thread_smooth(self.obs_bytetrack_thread)
             self.obs_bytetrack_thread = None
         if self.dual_sync_thread:
             self.dual_sync_thread.requestStop()
@@ -1795,9 +1819,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.dual_sync_thread.signal_frame.disconnect()
             except RuntimeError:
                 pass
-            if not self.dual_sync_thread.wait(3000):
-                self.dual_sync_thread.terminate()
-                self.dual_sync_thread.wait(1000)
+            self._join_worker_thread_smooth(self.dual_sync_thread)
             self.dual_sync_thread = None
         if self.free_switch_thread:
             # Must run before thread is nulled so signal_vr_frame disconnect works
@@ -1811,9 +1833,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
             except RuntimeError:
                 pass
-            if not self.free_switch_thread.wait(3000):
-                self.free_switch_thread.terminate()
-                self.free_switch_thread.wait(1000)
+            self._join_worker_thread_smooth(self.free_switch_thread)
             self.free_switch_thread = None
         self._stop_free_switch_auto_cycle()
         self.control_panel.set_free_switch_bar_visible(False)
@@ -2277,61 +2297,63 @@ class MainWindow(QtWidgets.QMainWindow):
     def stop_inference(self) -> None:
         if not self.is_inference_running:
             return
+        if self._busy_stopping_inference:
+            return
         obs_tracker_for_avg = None
-        self._stop_remote_client_ram_monitor()
-        self.append_text("Stopping inference")
-        if hasattr(self, "_pending_segments"):
-            self._pending_segments.clear()
-        if self.tts_mode == "openai":
-            try: self.signal_tts_interrupt.emit()
-            except: pass
+        self._busy_stopping_inference = True
+        try:
+            self._stop_remote_client_ram_monitor()
+            self.append_text("Stopping inference")
+            if hasattr(self, "_pending_segments"):
+                self._pending_segments.clear()
+            if self.tts_mode == "openai":
+                try:
+                    self.signal_tts_interrupt.emit()
+                except Exception:
+                    pass
 
-        # Remote: tell server to stop
-        if self._socket_runner is not None:
-            try:
-                self._socket_runner.stop_inference()
-            except Exception:
-                pass
+            # Remote: tell server to stop
+            if self._socket_runner is not None:
+                try:
+                    self._socket_runner.stop_inference()
+                except Exception:
+                    pass
 
-        if hasattr(self, "livecc_worker") and self.livecc_worker is not None:
-            self.livecc_worker.requestStop()
-        if hasattr(self, "cam_worker") and self.cam_worker is not None:
-            self.cam_worker.requestStop()
+            if hasattr(self, "livecc_worker") and self.livecc_worker is not None:
+                self.livecc_worker.requestStop()
+            if hasattr(self, "cam_worker") and self.cam_worker is not None:
+                self.cam_worker.requestStop()
 
-        if self.mode == "file" and self.video_thread:
-            self.video_thread.requestStop()
-            self.video_thread.wait()
-            self.video_thread = None
+            if self.mode == "file" and self.video_thread:
+                self.video_thread.requestStop()
+                self.video_thread.wait()
+                self.video_thread = None
 
-        if self.mode == "obs" and self.obs_thread is not None:
-            self.obs_thread.requestStop()
-            if not self.obs_thread.wait(3000):
-                self.obs_thread.terminate()
-                self.obs_thread.wait(1000)
-            self.obs_thread = None
+            if self.mode == "obs" and self.obs_thread is not None:
+                self.obs_thread.requestStop()
+                self._join_worker_thread_smooth(self.obs_thread)
+                self.obs_thread = None
 
-        if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:
-            _tr_bt = self.obs_bytetrack_thread
-            _tr_bt.requestStop()
-            if not _tr_bt.wait(3000):
-                _tr_bt.terminate()
-                _tr_bt.wait(1000)
-            obs_tracker_for_avg = getattr(_tr_bt, "_active_tracker", None)
-            self.obs_bytetrack_thread = None
+            if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:
+                _tr_bt = self.obs_bytetrack_thread
+                _tr_bt.requestStop()
+                self._join_worker_thread_smooth(_tr_bt)
+                obs_tracker_for_avg = getattr(_tr_bt, "_active_tracker", None)
+                self.obs_bytetrack_thread = None
 
-        if self.mode == "dual_sync" and self.dual_sync_thread is not None:
-            self.dual_sync_thread.requestStop()
-            if not self.dual_sync_thread.wait(3000):
-                self.dual_sync_thread.terminate()
-                self.dual_sync_thread.wait(1000)
-            self.dual_sync_thread = None
+            if self.mode == "dual_sync" and self.dual_sync_thread is not None:
+                self.dual_sync_thread.requestStop()
+                self._join_worker_thread_smooth(self.dual_sync_thread)
+                self.dual_sync_thread = None
 
-        self._flush_local_inference_telemetry_summary(obs_tracker_for_avg)
+            self._flush_local_inference_telemetry_summary(obs_tracker_for_avg)
 
-        self.is_inference_running = False
-        self._last_track_preview_mono = 0.0
-        self.control_panel.set_start_button_state(False)
-        self.control_panel.set_tts_controls_enabled(True)  # Unlock after stop
+            self.is_inference_running = False
+            self._last_track_preview_mono = 0.0
+            self.control_panel.set_start_button_state(False)
+            self.control_panel.set_tts_controls_enabled(True)  # Unlock after stop
+        finally:
+            self._busy_stopping_inference = False
 
     # ---------------- Frame handlers ----------------
 
