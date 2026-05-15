@@ -28,6 +28,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - OpenAI Realtime API (low-latency streaming, cloud)
   - ChatterBox TTS (local, voice-cloning)
 - **Latency monitoring** — tracks LiveCC inference time, TTS latency, and end-to-end (vision → audio) latency
+- **OpenAI TTS live queue**: Incoming commentary lines enqueue **FIFO** in `core/models/openai_tts.py` (bounded by **`_MAX_PENDING_UTTERANCES`**; exceeding drops **oldest** backlog). **`drop_outdated=True`** (optional API) still clears pending text explicitly.
 - **PySide6 GUI** with dark theme, video seek bar, and live transcript panel
 
 ---
