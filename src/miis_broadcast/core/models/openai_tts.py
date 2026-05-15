@@ -83,6 +83,7 @@ STRICT PROTOCOLS (DO NOT BREAK):
 - **NEVER** reply to the text. Just read it.
 - **NO** introductory phrases. Start reading the input text instantly.
 - **NO** concluding phrases. Stop speaking immediately after the text ends.
+- The input lines are already **broadcast-ready captions**. **NEVER** replace them with meta lines like “sorry”, “無法看清”, “沒有資料”, or “no footage” unless those exact phrases appear verbatim in the input.
 
 VOICE STYLE:
 - Fast-paced, rhythmic, and intense.
@@ -145,6 +146,9 @@ def print_tts_stats() -> None:
 # Queues and thread coordination
 # ==========================================
 _text_queue: "queue.Queue[tuple[str, float]]" = queue.Queue()
+# Bounded backlog when inference outruns TTS (drops oldest pending utterances).
+_MAX_PENDING_UTTERANCES: int = 40
+
 _audio_output_queue: "queue.Queue[np.ndarray]" = queue.Queue()
 _stop_event = threading.Event()
 _tts_threads_started = False
@@ -314,32 +318,31 @@ async def _openai_realtime_worker():
                         _interrupt_event.clear()
 
                     # (C) Send next text — only when no response is currently in progress.
-                    # We never cancel a running response here; the (B) path above handles
-                    # explicit interrupts (Stop button / voice change).  New segments that
-                    # arrive while TTS is speaking are held in _text_queue (drop_outdated keeps
-                    # only the latest), then picked up automatically once response.done fires.
+                    # FIFO: consume one queued utterance per idle window so rapid LiveCC
+                    # SEGMENT bursts (multi-line batches) do not wipe earlier lines —
+                    # the old drain-to-last behaviour made the *last* line (often a stub
+                    # apology) override good commentary.
                     if warmed_up and not awaiting_cancel_ack and not is_response_active:
-                        if not _text_queue.empty():
-                            target_text = None
-                            ref_ts = 0.0
+                        target_text = None
+                        ref_ts = 0.0
+                        try:
+                            item = _text_queue.get_nowait()
+                        except queue.Empty:
+                            item = None
+                        if isinstance(item, tuple):
+                            target_text, ref_ts = item
+                        elif item is not None:
+                            target_text, ref_ts = str(item), 0.0
+                        if target_text and contains_meaningful_text(target_text):
+                            _perf_stats["last_text_sent_ts"] = time.time()
+                            _perf_stats["current_ref_ts"] = ref_ts
 
-                            while not _text_queue.empty():
-                                item = _text_queue.get_nowait()
-                                if isinstance(item, tuple):
-                                    target_text, ref_ts = item
-                                else:
-                                    target_text, ref_ts = item, 0.0
-
-                            if target_text and contains_meaningful_text(target_text):
-                                _perf_stats["last_text_sent_ts"] = time.time()
-                                _perf_stats["current_ref_ts"] = ref_ts
-
-                                await websocket.send(json.dumps({
-                                    "type": "conversation.item.create",
-                                    "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": target_text}]},
-                                }))
-                                await websocket.send(json.dumps({"type": "response.create"}))
-                                is_response_active = True
+                            await websocket.send(json.dumps({
+                                "type": "conversation.item.create",
+                                "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": target_text}]},
+                            }))
+                            await websocket.send(json.dumps({"type": "response.create"}))
+                            is_response_active = True
 
                     # (D) WebSocket recv
                     try:
@@ -557,10 +560,16 @@ def stop_tts_system() -> None:
     _stop_event.set()
     _tts_threads_started = False
 
-def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True) -> None:
+def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = False) -> None:
     if contains_meaningful_text(text):
         if drop_outdated:
             clear_text_queue()
+        else:
+            while _text_queue.qsize() >= _MAX_PENDING_UTTERANCES:
+                try:
+                    _text_queue.get_nowait()
+                except queue.Empty:
+                    break
 
         # ref_ts=0 means caller did not attach a vision timestamp; use wall clock
         ts = ref_ts if ref_ts > 0 else time.time()

@@ -29,7 +29,8 @@ class OpenAITTSWorker(QtCore.QObject):
 
     @QtCore.Slot(str)
     def speak(self, text: str) -> None:
-        enqueue_tts_text(text, drop_outdated=True)
+        # Preserve order vs rapid SEGMENT bursts; see openai_tts realtime worker FIFO path.
+        enqueue_tts_text(text, drop_outdated=False)
 
     @QtCore.Slot()
     def interrupt(self) -> None:
