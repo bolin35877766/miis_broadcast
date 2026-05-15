@@ -1082,6 +1082,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Local copies of CLIENT_DIAG samples for session-average summary on STOP
         self._local_client_diag_samples: list = []
         self._busy_stopping_inference: bool = False
+        # Threads that have been detached (signals disconnected) but not yet joined.
+        # Kept alive so Python GC doesn't collect them before they finish naturally.
+        self._detaching_threads: list = []
 
         # client_only: only controls whether local LiveCC/ByteTrack are loaded at startup.
         # All GUI behavior is identical once connected; default = True (don't load 7B locally).
@@ -1525,6 +1528,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if worker.isRunning():
             worker.terminate()
             worker.wait(terminate_grace_ms)
+
+    def _on_detached_thread_finished(self, thread: QtCore.QThread) -> None:
+        """Remove a detached (non-blocking stop) thread from the keep-alive list."""
+        try:
+            self._detaching_threads.remove(thread)
+        except ValueError:
+            pass
 
     def _clear_local_inference_telemetry_for_new_session(self) -> None:
         """Reset per-broadcast samples (CLIENT_DIAG copies + audience stats)."""
@@ -2336,9 +2346,24 @@ class MainWindow(QtWidgets.QMainWindow):
 
             if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:
                 _tr_bt = self.obs_bytetrack_thread
-                _tr_bt.requestStop()
-                self._join_worker_thread_smooth(_tr_bt)
+                # Read telemetry BEFORE disconnecting (safe; set before main loop).
                 obs_tracker_for_avg = getattr(_tr_bt, "_active_tracker", None)
+                # Disconnect signals FIRST: stops frame flooding into the GUI immediately.
+                try:
+                    _tr_bt.signal_frame.disconnect()
+                    _tr_bt.signal_subject_frame.disconnect()
+                except RuntimeError:
+                    pass
+                # Set stop flag — thread will exit after the current cap.read()+inference cycle.
+                # Do NOT join here: GPU inference + DirectShow can take >100 ms per frame,
+                # which would block the main thread even with sliced waiting.
+                _tr_bt.requestStop()
+                # Keep a Python reference so GC doesn't collect it before it finishes;
+                # QThread.finished removes it from the list.
+                self._detaching_threads.append(_tr_bt)
+                _tr_bt.finished.connect(
+                    lambda t=_tr_bt: self._on_detached_thread_finished(t)
+                )
                 self.obs_bytetrack_thread = None
 
             if self.mode == "dual_sync" and self.dual_sync_thread is not None:
