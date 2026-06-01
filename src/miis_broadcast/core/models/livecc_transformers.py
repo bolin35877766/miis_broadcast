@@ -14,15 +14,9 @@ from livecc_utils import (
     get_smart_resized_clip,
     get_smart_resized_video_reader,
 )
-<<<<<<< HEAD
-from miis_broadcast.core.models.openai_tts import (
-    print_tts_stats,
-)
-=======
 from miis_broadcast.core.models.openai_tts import print_tts_stats
 
 _log = logging.getLogger(__name__)
->>>>>>> Multi-API
 
 # ==========================================
 # 📊 Performance Monitoring: Track LiveCC text generation time only
@@ -352,8 +346,6 @@ class LiveCCInfer:
         self.carry_text_max_chars = int(carry_text_max_chars)
         self.carry_recent_k = int(carry_recent_k)
 
-<<<<<<< HEAD
-=======
     def _pad_token_id_for_generate(self) -> int:
         """Avoid pad_token_id=None, which can destabilize HF generate on some Qwen2 builds."""
         cfg = self.model.config
@@ -361,12 +353,10 @@ class LiveCCInfer:
         for cand in (getattr(cfg, "eos_token_id", None), tok.eos_token_id, tok.pad_token_id):
             if isinstance(cand, int) and cand >= 0:
                 return cand
-        # Fallback: any valid id; last resort
         if hasattr(tok, "eod_id") and isinstance(getattr(tok, "eod_id", None), int):
             return int(tok.eod_id)
         return 0
 
->>>>>>> Multi-API
     def init_state(self, video_path: str) -> Dict[str, Any]:
         return {
             "video_path": video_path,
@@ -701,21 +691,6 @@ class LiveCCInfer:
             # [Key] Record inference start time
             t_gen_start = time.time()
 
-<<<<<<< HEAD
-            outputs = self.model.generate(
-                **inputs,
-                past_key_values=state.get("past_key_values", None),
-                return_dict_in_generate=True,
-                pad_token_id=self.model.config.eos_token_id,
-                do_sample=True,
-                temperature=self._gen_temperature,
-                top_p=self._gen_top_p,
-                top_k=self._gen_top_k,
-                repetition_penalty=self._gen_repetition_penalty,
-                no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
-                max_new_tokens=self.max_new_tokens,
-            )
-=======
             with torch.inference_mode():
                 outputs = self.model.generate(
                     **inputs,
@@ -723,13 +698,13 @@ class LiveCCInfer:
                     return_dict_in_generate=True,
                     pad_token_id=self._pad_token_id_for_generate(),
                     do_sample=True,
-                    temperature=0.9,
-                    top_p=0.9,
-                    top_k=30,
-                    repetition_penalty=1.22,
+                    temperature=self._gen_temperature,
+                    top_p=self._gen_top_p,
+                    top_k=self._gen_top_k,
+                    repetition_penalty=self._gen_repetition_penalty,
+                    no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
                     max_new_tokens=self.max_new_tokens,
                 )
->>>>>>> Multi-API
 
             t_gen_end = time.time()
             log_gen_time(t_gen_end - t_gen_start)
@@ -784,42 +759,6 @@ class LiveCCInfer:
                 add_generation_prompt=True,
             )
 
-<<<<<<< HEAD
-        past_ids = state.get("past_ids", None)
-        if past_ids is not None:
-            if not hasattr(self, "system_prompt_offset"):
-                temp_msg = {"role": "user", "content": [{"type": "text", "text": "livecc"}]}
-                temp_text = self.processor.apply_chat_template([temp_msg], tokenize=False)
-                self.system_prompt_offset = temp_text.index("<|im_start|>user")
-            texts = "<|im_end|>\n" + texts[self.system_prompt_offset :]
-        if response_prefix:
-            texts = texts + response_prefix
-
-        inputs = self.processor(
-            text=texts,
-            images=None,
-            videos=[clip.frames],
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-        inputs = inputs.to(self.device)
-
-        if "pixel_values_videos" in inputs:
-            pv = inputs["pixel_values_videos"]
-            if pv.dtype == torch.float32 and self.model.dtype == torch.bfloat16:
-                inputs["pixel_values_videos"] = pv.to(torch.bfloat16)
-
-        # ✅ token budget truncation (align boundaries, sync KV)
-        new_len = int(inputs.input_ids.shape[1])
-        truncate_state_by_budget(
-            state,
-            new_len,
-            ctx_max=self.ctx_max,
-            max_new_tokens=self.max_new_tokens,
-            headroom=self.headroom,
-            boundary_patterns=self._boundary_patterns,
-        )
-=======
             past_ids = state.get("past_ids", None)
             if past_ids is not None:
                 if not hasattr(self, "system_prompt_offset"):
@@ -827,7 +766,6 @@ class LiveCCInfer:
                     temp_text = self.processor.apply_chat_template([temp_msg], tokenize=False)
                     self.system_prompt_offset = temp_text.index("<|im_start|>user")
                 texts = "<|im_end|>\n" + texts[self.system_prompt_offset :]
->>>>>>> Multi-API
 
             inputs = self.processor(
                 text=texts,
@@ -853,26 +791,6 @@ class LiveCCInfer:
                 headroom=self.headroom,
                 boundary_patterns=self._boundary_patterns,
             )
-<<<<<<< HEAD
-            inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
-
-        # [Key] Record inference start time
-        t_gen_start = time.time()
-
-        outputs = self.model.generate(
-            **inputs,
-            past_key_values=state.get("past_key_values", None),
-            return_dict_in_generate=True,
-            pad_token_id=self.model.config.eos_token_id,
-            do_sample=True,
-            temperature=self._gen_temperature,
-            top_p=self._gen_top_p,
-            repetition_penalty=self._gen_repetition_penalty,
-            no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
-            max_new_tokens=self.max_new_tokens,
-        )
-=======
->>>>>>> Multi-API
 
             _sync_past_ids_and_cache(state)
 
@@ -911,13 +829,6 @@ class LiveCCInfer:
             # [Key] Record inference start time
             t_gen_start = time.time()
 
-<<<<<<< HEAD
-        response = response_prefix + self.processor.decode(
-            outputs.sequences[0, inputs.input_ids.size(1) :],
-            skip_special_tokens=True,
-        )
-=======
-            # inference_mode reduces autograd overhead vs no_grad; helps a bit under GPU memory pressure
             with torch.inference_mode():
                 outputs = self.model.generate(
                     **inputs,
@@ -925,12 +836,12 @@ class LiveCCInfer:
                     return_dict_in_generate=True,
                     pad_token_id=self._pad_token_id_for_generate(),
                     do_sample=True,
-                    temperature=0.9,
-                    top_p=0.9,
-                    repetition_penalty=1.22,
+                    temperature=self._gen_temperature,
+                    top_p=self._gen_top_p,
+                    repetition_penalty=self._gen_repetition_penalty,
+                    no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
                     max_new_tokens=self.max_new_tokens,
                 )
->>>>>>> Multi-API
 
             t_gen_end = time.time()
             log_gen_time(t_gen_end - t_gen_start)
@@ -943,12 +854,8 @@ class LiveCCInfer:
                 skip_special_tokens=True,
             )
 
-<<<<<<< HEAD
-        yield (start_timestamp, stop_timestamp), response, state
-=======
             # ✅ Option A: Update recent commentaries
             self._update_recent_texts(state, response)
 
             yield (start_timestamp, stop_timestamp), response, state
             break
->>>>>>> Multi-API

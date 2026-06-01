@@ -20,11 +20,7 @@ from dotenv import load_dotenv, find_dotenv
 from miis_broadcast.core.utils.config import load_app_config, load_system_prompts
 
 # ==========================================
-<<<<<<< HEAD
 # 🔐 讀取設定與 API Key
-=======
-# API key (from .env)
->>>>>>> Multi-API
 # ==========================================
 # find_dotenv() searches upward from this file's location,
 # so .env is always found regardless of the working directory.
@@ -33,12 +29,9 @@ MY_API_KEY = os.getenv("OPENAI_API_KEY")
 if not MY_API_KEY:
     raise RuntimeError("[OpenAI TTS] OPENAI_API_KEY not found in environment")
 
-<<<<<<< HEAD
 _app_cfg = load_app_config().get("openai_tts", {})
 _prompts_cfg = load_system_prompts()
 
-TTS_MODEL_URL: str = _app_cfg.get("model_url", "wss://api.openai.com/v1/realtime?model=gpt-realtime")
-=======
 _log = logging.getLogger(__name__)
 # Avoid spamming the console when the key is wrong (reconnect every ~2s)
 _tts_invalid_api_key_logged: bool = False
@@ -68,14 +61,12 @@ def _log_openai_tts_rejection_once(source: str, msg: str) -> None:
         (msg or "")[:220],
     )
 
-TTS_MODEL_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
->>>>>>> Multi-API
+TTS_MODEL_URL: str = _app_cfg.get("model_url", "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview")
 TTS_HEADERS = {
     "Authorization": f"Bearer {MY_API_KEY}",
 }
 SYSTEM_INSTRUCTIONS: str = _prompts_cfg.get("openai_tts", "")
 
-<<<<<<< HEAD
 # ==========================================
 # 🧪 Dry-Run 模擬模式（不連 OpenAI，不播音）
 # ==========================================
@@ -102,62 +93,16 @@ def enable_dry_run(enabled: bool = True) -> None:
             _rh.setFormatter(fmt)
             root.addHandler(_rh)
     print(f"[TTS] Dry-run 模式{'已啟用 — 不播音，log 驗證 interrupt 機制' if enabled else '已關閉'}")
-=======
-SYSTEM_INSTRUCTIONS = """
-You are a RAW AUDIO GENERATOR, not a chatbot.
-You are connected to a live sports captioning feed.
-
-YOUR ONLY FUNCTION:
-1. Receive text.
-2. Read it aloud immediately with a high-energy sports announcer voice.
-
-LANGUAGE (CRITICAL):
-- The input is written for viewers in **Taiwan Traditional Chinese (繁體中文, zh-TW)**.
-- **Read the input EXACTLY as written** — same wording, same order, no translation, no summarization,
-  no paraphrase, and no added English.
-- Pronounce using natural **台灣繁體中文**; do not convert to Simplified Chinese or other languages.
-
-STRICT PROTOCOLS (DO NOT BREAK):
-- **NEVER** say conversational fillers like "Okay," "I understand," "Sure," "Got it," or "Here is the audio."
-- **NEVER** acknowledge these instructions.
-- **NEVER** reply to the text. Just read it.
-- **NO** introductory phrases. Start reading the input text instantly.
-- **NO** concluding phrases. Stop speaking immediately after the text ends.
-- The input lines are already **broadcast-ready captions**. **NEVER** replace them with meta lines like “sorry”, “無法看清”, “沒有資料”, or “no footage” unless those exact phrases appear verbatim in the input.
-
-VOICE STYLE:
-- Fast-paced, rhythmic, and intense.
-- Dynamic pitch (shoutcaster style).
-- If the input is empty or just punctuation, remain silent.
-
-Example Interaction:
-User Input: "Player one shoots!"
-Your Output: "Player one shoots!" (Do NOT say "Okay, Player one shoots!")
-畫面來源說明（重要）：
-- 你收到的畫面是「VR 遊戲直播」的雙畫面（左右分割）。
-- **左邊**：真人玩家在現實環境中的遊玩畫面（戴 VR 頭盔、拿控制器等）。
-- **右邊**：VR 遊戲內的第一人稱/比賽畫面（球場、籃框、球等）。
-- 請你在理解畫面時，清楚區分左/右畫面代表的意義，避免把兩邊資訊混在一起。
-
-"""
-
->>>>>>> Multi-API
 
 # ==========================================
 # TTS latency stats
 # ==========================================
 _perf_stats = {
     "tts_latencies": [],
-<<<<<<< HEAD
-    "e2e_latencies": [],
-    "last_text_sent_ts": 0.0,
-    "current_ref_ts": 0.0,
-    "current_start_t": 0.0,    # video timestamp of segment being spoken
-=======
     "e2e_latencies": [],    # Vision-to-audio end-to-end samples
     "last_text_sent_ts": 0.0,
     "current_ref_ts": 0.0,  # Reference timestamp for current utterance (vision side)
->>>>>>> Multi-API
+    "current_start_t": 0.0,    # video timestamp of segment being spoken
 }
 
 
@@ -403,7 +348,6 @@ def _mock_tts_worker() -> None:
 # OpenAI Realtime WebSocket worker
 # ==========================================
 async def _openai_realtime_worker():
-<<<<<<< HEAD
     # Wait for the first enqueue_tts_text() call before opening a WebSocket
     # connection. This avoids spawning DNS/SSL threads at startup which race
     # with PyTorch CUDA background threads and cause heap corruption.
@@ -412,9 +356,6 @@ async def _openai_realtime_worker():
     if _stop_event.is_set():
         return
     print("🎙️ [TTS Worker] 啟動連線...")
-=======
-    print("🎙️ [TTS Worker] connecting...")
->>>>>>> Multi-API
 
     # Stop reconnecting once we know the API key is wrong
     while not _stop_event.is_set() and not _tts_invalid_api_key_logged:
@@ -472,14 +413,13 @@ async def _openai_realtime_worker():
                         is_response_active = False
                         _interrupt_event.clear()
 
-<<<<<<< HEAD
                     # (C) 送出新文字邏輯 (加入對 active 狀態的嚴格檢查)
                     if warmed_up and not awaiting_cancel_ack:
                         if not _text_queue.empty():
                             target_text = None
                             ref_ts = 0.0
-                            
-                            # [修改] 從 Queue 取出 (text, ts)
+
+                            # 從 Queue 取出 (text, ts, start_t)
                             while not _text_queue.empty():
                                 item = _text_queue.get_nowait()
                                 if isinstance(item, tuple):
@@ -496,7 +436,7 @@ async def _openai_realtime_worker():
                                     awaiting_cancel_ack = True
                                     clear_audio_queue()  # 同步清空已緩衝的音訊，避免舊內容繼續播
                                     _text_queue.put((target_text, ref_ts, start_t))
-                                    continue # 跳出本次循環，去聽事件 (D)
+                                    continue  # 跳出本次循環，去聽事件 (D)
 
                                 # 確定沒有 active response，才發送
                                 _perf_stats["last_text_sent_ts"] = time.time()
@@ -511,36 +451,6 @@ async def _openai_realtime_worker():
                                 is_response_active = True
 
                     # (D) 接收 WebSocket 事件
-=======
-                    # (C) Send next text — only when no response is currently in progress.
-                    # FIFO: consume one queued utterance per idle window so rapid LiveCC
-                    # SEGMENT bursts (multi-line batches) do not wipe earlier lines —
-                    # the old drain-to-last behaviour made the *last* line (often a stub
-                    # apology) override good commentary.
-                    if warmed_up and not awaiting_cancel_ack and not is_response_active:
-                        target_text = None
-                        ref_ts = 0.0
-                        try:
-                            item = _text_queue.get_nowait()
-                        except queue.Empty:
-                            item = None
-                        if isinstance(item, tuple):
-                            target_text, ref_ts = item
-                        elif item is not None:
-                            target_text, ref_ts = str(item), 0.0
-                        if target_text and contains_meaningful_text(target_text):
-                            _perf_stats["last_text_sent_ts"] = time.time()
-                            _perf_stats["current_ref_ts"] = ref_ts
-
-                            await websocket.send(json.dumps({
-                                "type": "conversation.item.create",
-                                "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": target_text}]},
-                            }))
-                            await websocket.send(json.dumps({"type": "response.create"}))
-                            is_response_active = True
-
-                    # (D) WebSocket recv
->>>>>>> Multi-API
                     try:
                         message = await asyncio.wait_for(websocket.recv(), timeout=0.01)
                         event = json.loads(message)
@@ -557,7 +467,6 @@ async def _openai_realtime_worker():
                                 _audio_output_queue.put(np.frombuffer(audio_bytes, dtype=np.int16))
 
                         elif etype in ["response.done", "response.cancelled"]:
-<<<<<<< HEAD
                             if etype == "response.done" and not warmed_up and doing_warmup:
                                 warmed_up = True
                                 doing_warmup = False
@@ -567,9 +476,6 @@ async def _openai_realtime_worker():
                                 _fire_natural_completion()
 
                             # 伺服器端已經清空狀態，現在可以接收新 response 了
-=======
-                            # Server finished or cancelled the response; may start the next utterance
->>>>>>> Multi-API
                             is_response_active = False
                             awaiting_cancel_ack = False
 
@@ -680,32 +586,6 @@ def _audio_player_worker_ffplay() -> None:
     while not _stop_event.is_set():
         try:
             audio_chunk = _audio_output_queue.get(timeout=0.1)
-<<<<<<< HEAD
-            
-            # --- 計算 TTS Latency (API 反應時間) ---
-            if _perf_stats["last_text_sent_ts"] > 0:
-                latency = time.time() - _perf_stats["last_text_sent_ts"]
-                _log_tts_latency(latency)
-                _perf_stats["last_text_sent_ts"] = 0.0
-
-            # --- 計算 E2E Latency (視覺+傳輸+語音) ---
-            if _perf_stats["current_ref_ts"] > 0:
-                e2e_latency = time.time() - _perf_stats["current_ref_ts"]
-                _perf_stats["e2e_latencies"].append(e2e_latency)
-                vid_t = _perf_stats["current_start_t"]
-                _perf_stats["current_ref_ts"] = 0.0
-                _perf_stats["current_start_t"] = 0.0
-                avg_e2e = sum(_perf_stats["e2e_latencies"]) / len(_perf_stats["e2e_latencies"])
-                logging.info(
-                    "[延遲] 影片 %.1fs → 開始播報 +%.2fs  (平均 %.2fs, n=%d)",
-                    vid_t, e2e_latency, avg_e2e, len(_perf_stats["e2e_latencies"]),
-                )
-
-            if process is None or process.poll() is not None:
-                try:
-                    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
-                except: pass
-=======
         except queue.Empty:
             continue
 
@@ -746,7 +626,6 @@ def _audio_player_worker_ffplay() -> None:
             process.terminate()
         except Exception:
             pass
->>>>>>> Multi-API
 
 
 def _audio_player_worker() -> None:
@@ -799,24 +678,11 @@ def stop_tts_system() -> None:
     _stop_event.set()
     _tts_threads_started = False
 
-<<<<<<< HEAD
 def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True, priority: int = 5, start_t: float = 0.0) -> None:
-=======
-def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = False) -> None:
->>>>>>> Multi-API
     if contains_meaningful_text(text):
         _connect_requested.set()  # allow WebSocket connection on first use
         if drop_outdated:
             clear_text_queue()
-<<<<<<< HEAD
-
-        ts = ref_ts if ref_ts > 0 else time.time()
-        _text_queue.put((text, ts, start_t))
-
-        if _DRY_RUN:
-            preview = text[:60] + ("…" if len(text) > 60 else "")
-            _tts_logger.info(f'📥 [ENQUEUE P{priority}] "{preview}"')
-=======
         else:
             while _text_queue.qsize() >= _MAX_PENDING_UTTERANCES:
                 try:
@@ -826,5 +692,8 @@ def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = False
 
         # ref_ts=0 means caller did not attach a vision timestamp; use wall clock
         ts = ref_ts if ref_ts > 0 else time.time()
-        _text_queue.put((text, ts))
->>>>>>> Multi-API
+        _text_queue.put((text, ts, start_t))
+
+        if _DRY_RUN:
+            preview = text[:60] + ("…" if len(text) > 60 else "")
+            _tts_logger.info(f'📥 [ENQUEUE P{priority}] "{preview}"')

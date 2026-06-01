@@ -18,12 +18,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Optional
-
-import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from typing import Any, Optional
 
 
 def _ts() -> str:
@@ -48,7 +43,7 @@ class AudienceTokenServer:
         self._host = host
         self._port = port
         self._lan_hint_host = (lan_hint_host or "").strip() or None
-        self._server: Optional[uvicorn.Server] = None
+        self._server: Optional[Any] = None  # uvicorn.Server, imported lazily
         self._thread: Optional[threading.Thread] = None
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -80,6 +75,10 @@ class AudienceTokenServer:
     # ── Internal ──────────────────────────────────────────────────────────
 
     def _run(self) -> None:
+        import uvicorn
+        from fastapi import FastAPI
+        from fastapi.responses import HTMLResponse, JSONResponse
+        from fastapi.staticfiles import StaticFiles
         from livekit.api import AccessToken, VideoGrants
 
         app = FastAPI(docs_url=None, redoc_url=None)

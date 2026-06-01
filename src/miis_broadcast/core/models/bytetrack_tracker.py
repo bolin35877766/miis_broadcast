@@ -215,17 +215,7 @@ class ByteTrackWrapper:
         self.preempt_ratio = preempt_ratio
 
         # ── 4. Load YOLOX model ────────────────────────────────────────────
-<<<<<<< HEAD
-        self.device = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
-        print(f"[ByteTrack] 使用裝置: {self.device}")
-        
-        from miis_broadcast.core.utils.vram_monitor import vram_monitor
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
-            vram_before = vram_monitor.get_allocated_gb(str(self.device))
-=======
         self.device = _resolve_track_device(device)
->>>>>>> Multi-API
 
         exp = get_exp(exp_file, None)
         model = exp.get_model().to(self.device)

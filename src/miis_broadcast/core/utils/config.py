@@ -1,10 +1,9 @@
-<<<<<<< HEAD
 from pathlib import Path
 import yaml
 
 
 def parse_configs(config_path) -> dict:
-    with open(config_path, 'r') as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         configs = yaml.safe_load(f)
     return configs
 
@@ -28,12 +27,3 @@ def load_models_config() -> dict:
 
 def load_system_prompts() -> dict:
     return parse_configs(get_configs_dir() / "system_prompts.yml")
-=======
-import yaml
-
-
-def parse_configs(config_path) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        configs = yaml.safe_load(f)
-    return configs
->>>>>>> Multi-API

@@ -15,11 +15,8 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 # from .workers.chatterbox_tts import ChatterboxTTSWorker  # [ChatterBox disabled]
 from .widgets.text_output import TextOutputWidget
-<<<<<<< HEAD
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.gemini import GeminiWorker
-=======
->>>>>>> Multi-API
 from .workers.openai_tts import OpenAITTSWorker
 from .workers.obs_input import OBSCameraThread
 from .workers.camera_bytetrack import CameraByteTrackThread
@@ -282,26 +279,19 @@ class VideoPanel(QtWidgets.QWidget):
 
 
 class ControlPanel(QtWidgets.QWidget):
-<<<<<<< HEAD
-    requestOpenVideo = QtCore.Signal()
-    requestOpenCamera = QtCore.Signal()
-    requestLoadContext = QtCore.Signal()
-    requestStart = QtCore.Signal()
-    requestFontScale = QtCore.Signal(int)
-=======
     requestOpenVideo       = QtCore.Signal()
     requestOpenCamera      = QtCore.Signal()
-    requestOpenCameraTrack = QtCore.Signal()   # webcam + ByteTrack
+    requestOpenCameraTrack = QtCore.Signal()
     requestOpenOBS         = QtCore.Signal()
-    requestOpenDualSync    = QtCore.Signal()   # Webcam + VR side-by-side
-    requestOpenFreeSwitch  = QtCore.Signal()   # Free Switch (both cams always running)
-    requestSwitchSource    = QtCore.Signal(str)  # "webcam" | "vr" | "dual"
-    freeSwitchAutoCycleToggled = QtCore.Signal(bool)  # True = start 10s rotation among webcam/vr/dual
+    requestOpenDualSync    = QtCore.Signal()
+    requestOpenFreeSwitch  = QtCore.Signal()
+    requestSwitchSource    = QtCore.Signal(str)
+    freeSwitchAutoCycleToggled = QtCore.Signal(bool)
+    requestLoadContext     = QtCore.Signal()
     requestStart           = QtCore.Signal()
     requestFontScale       = QtCore.Signal(int)
-    requestRemoteConnect   = QtCore.Signal(str, int)  # host, port
+    requestRemoteConnect   = QtCore.Signal(str, int)
     requestRemoteDisconnect = QtCore.Signal()
->>>>>>> Multi-API
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -576,10 +566,6 @@ class ControlPanel(QtWidgets.QWidget):
         self.free_switch_bar.setVisible(False)
         v_src.addWidget(self.free_switch_bar)
 
-<<<<<<< HEAD
-        v_src.addLayout(btn_row)
-        v_src.addWidget(self.lbl_status)
-
         ctx_row = QtWidgets.QHBoxLayout()
         ctx_row.setSpacing(8)
 
@@ -594,8 +580,7 @@ class ControlPanel(QtWidgets.QWidget):
         ctx_row.addWidget(self.lbl_context, stretch=1)
         v_src.addLayout(ctx_row)
 
-=======
->>>>>>> Multi-API
+
         layout.addWidget(grp_source)
         self.apply_source_metrics()
 
@@ -964,14 +949,6 @@ class ControlPanel(QtWidgets.QWidget):
 
         show_openai = (mode == "openai")
         show_local = (mode == "local")
-<<<<<<< HEAD
-        self.l_exag.setVisible(show_local)
-        self._exag_row_widget.setVisible(show_local)
-        self.l_cfg.setVisible(show_local)
-        self._cfg_row_widget.setVisible(show_local)
-        # Gemini TTS: no extra UI controls needed (voice set in app.yml)
-=======
-
         rows = getattr(self, "_settings_rows", {})
         if rows:
             rows["voice"].setVisible(show_openai)
@@ -980,7 +957,6 @@ class ControlPanel(QtWidgets.QWidget):
             rows["cfg"].setVisible(show_local)
             return
 
-        # Fallback for partially initialized panels.
         for w in (self.l_voice, self.cmb_voice, self.l_speed, self.slider_speed, self.lbl_speed_val):
             w.setVisible(show_openai)
         for w in (
@@ -992,7 +968,6 @@ class ControlPanel(QtWidgets.QWidget):
             self.lbl_cfg_val,
         ):
             w.setVisible(show_local)
->>>>>>> Multi-API
 
     def set_tts_controls_enabled(self, enabled: bool) -> None:
         # Lock during inference to prevent state corruption
@@ -1146,49 +1121,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bytetrack_wrapper = None          # pre-loaded ByteTrackWrapper (set by background thread)
         self._bytetrack_preload_thread = None   # QThread that loads it
 
-<<<<<<< HEAD
-
-        self._load_livecc_model()
-=======
-        # Remote inference state — use _socket_runner is not None to check active connection
+        # Remote inference state
         self._socket_runner: Optional[SocketClientRunner] = None
-        # Periodic thin-client RAM + JPEG queue (all remote inference modes)
         self._remote_client_ram_timer: Optional[QtCore.QTimer] = None
-        # Local copies of CLIENT_DIAG samples for session-average summary on STOP
         self._local_client_diag_samples: list = []
         self._busy_stopping_inference: bool = False
 
-        # client_only: only controls whether local LiveCC/ByteTrack are loaded at startup.
-        # All GUI behavior is identical once connected; default = True (don't load 7B locally).
         remote_cfg = configs.get("remote", {})
-        self._client_only = bool(remote_cfg.get("client_only", True))
+        self._client_only = bool(remote_cfg.get("client_only", False))
         if self._client_only:
             print("[Main] client_only: local VLM not loaded; connect to remote server.")
         else:
             self._load_livecc_model()
->>>>>>> Multi-API
 
         self._init_fonts()
         self._initUI()
         self._initTTSWorker()
-<<<<<<< HEAD
         self._initGeminiWorker()
-=======
 
         # Pre-fill remote panel host/port from config
-        host = str(remote_cfg.get("host", "127.0.0.1"))
-        port = int(remote_cfg.get("port", 9000))
-        self.control_panel.chk_remote.setChecked(True)
-        self.control_panel.edit_remote_host.setText(host)
-        self.control_panel.edit_remote_port.setText(str(port))
-        if self._client_only:
-            self.control_panel.chk_remote.setEnabled(False)
+        if hasattr(self.control_panel, "edit_remote_host"):
+            host = str(remote_cfg.get("host", "127.0.0.1"))
+            port = int(remote_cfg.get("port", 9000))
+            self.control_panel.edit_remote_host.setText(host)
+            self.control_panel.edit_remote_port.setText(str(port))
 
-        # Pre-load ByteTrack whenever the config section is present (runs locally
-        # regardless of client_only — tracking is now always done on the local machine).
         if self.configs.get("bytetrack"):
             QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
->>>>>>> Multi-API
 
         self._playback_sec: float = 0.0
         self._pending_segments = deque()  # items: (start_t, stop_t, text)
@@ -1420,9 +1379,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Signals
         self.control_panel.requestOpenVideo.connect(self.on_open_video_clicked)
         self.control_panel.requestOpenCamera.connect(self.on_open_camera_clicked)
-<<<<<<< HEAD
         self.control_panel.requestLoadContext.connect(self.on_load_context_clicked)
-=======
         self.control_panel.requestOpenCameraTrack.connect(self.on_open_camera_track_clicked)
         self.control_panel.requestOpenOBS.connect(self.on_open_obs_clicked)
         self.control_panel.requestOpenDualSync.connect(self.on_open_dual_sync_clicked)
@@ -1431,7 +1388,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.freeSwitchAutoCycleToggled.connect(
             self._on_free_switch_auto_cycle_toggled
         )
->>>>>>> Multi-API
         self.control_panel.requestStart.connect(self.on_start_clicked)
         self.control_panel.requestFontScale.connect(self.on_font_scale_request)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
@@ -1557,7 +1513,6 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.cam_worker_thread.start()
 
-<<<<<<< HEAD
     def _initGeminiWorker(self) -> None:
 
         # --- Existing GeminiWorker (kept for file-mode / legacy) ---
@@ -1579,17 +1534,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gemini_bg_worker.signal_broadcast.connect(self.on_segment)
         self.gemini_bg_worker.signal_error.connect(self.on_gemini_error)
 
-        # P3 context pool: signal_livecc_context emitted in GUI thread,
-        # update_context() slot runs in gemini_bg_thread via QueuedConnection.
         self.signal_livecc_context.connect(
             self.gemini_bg_worker.update_context,
             QtCore.Qt.QueuedConnection,
         )
 
         self.gemini_bg_thread.started.connect(self.gemini_bg_worker.initialize)
-        # run_background_loop is NOT started here — it starts when inference
-        # begins (see on_start_clicked), preventing HTTP calls at startup that
-        # race with PyTorch CUDA background threads and cause heap corruption.
         self.gemini_bg_thread.start()
 
         # signal_tts_done → P1 post-interrupt silence handler (all TTS workers)
@@ -1598,9 +1548,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # Interrupt threshold: new_priority must be strictly better than current by this margin
     _INTERRUPT_MATRIX = {
-        1: 2,   # P1 interrupts anything currently >= P2 (i.e. anything but another P1 that's just starting)
-        2: 3,   # P2 interrupts if current >= P3
-        3: 4,   # P3 interrupts if current >= P4
+        1: 2,
+        2: 3,
+        3: 4,
     }
     _TRANSITION_PHRASES = {
         1: "Oh!—",
@@ -1706,7 +1656,7 @@ class MainWindow(QtWidgets.QMainWindow):
             description = raw.strip()
             if description:
                 self.signal_livecc_context.emit(description)
-=======
+
     # ---------------- Remote Socket ----------------
 
     def _stop_remote_client_ram_monitor(self) -> None:
@@ -1926,7 +1876,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text(f"[Remote Error] {msg}")
         if self.is_inference_running:
             self.stop_inference()
->>>>>>> Multi-API
 
     def _initTTSWorker(self) -> None:
             """Initialize all TTS Workers (OpenAI + Local Chatterbox)"""
@@ -2045,27 +1994,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"Font size adjusted to: {self.font_size}pt", 2000)
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
 
-    def _stop_all_source_threads(self) -> None:
-        """Stop every input-source thread unconditionally (used when switching modes)."""
-        if self.obs_thread is not None:
-            self.obs_thread.requestStop()
-            if not self.obs_thread.wait(3000):
-                self.obs_thread.terminate()
-                self.obs_thread.wait(1000)
-            self.obs_thread = None
-
-        if self.obs_bytetrack_thread is not None:
-            self.obs_bytetrack_thread.requestStop()
-            if not self.obs_bytetrack_thread.wait(3000):
-                self.obs_bytetrack_thread.terminate()
-                self.obs_bytetrack_thread.wait(1000)
-            self.obs_bytetrack_thread = None
-
-        if self.camera_thread is not None:
-            self.camera_thread.requestStop()
-            self.camera_thread.wait(1000)
-            self.camera_thread = None
-
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
         dlg = QtWidgets.QFileDialog(self, "Select Video File")
@@ -2101,11 +2029,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(True)
         self._update_start_button_state()
 
-<<<<<<< HEAD
-=======
     def _stop_all_source_threads(self) -> None:
-        """Stop and clean up all live-source threads before switching sources.
-        Explicitly disconnect signals to prevent residual frame emissions after stop."""
+        """Stop and clean up all live-source threads before switching sources."""
         if self.video_thread:
             self.video_thread.requestStop()
             try:
@@ -2131,7 +2056,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._join_worker_thread_smooth(self.obs_thread)
             self.obs_thread = None
         if self.obs_bytetrack_thread:
-            self.obs_bytetrack_thread.requestStop()  # also releases DirectShow capture
+            self.obs_bytetrack_thread.requestStop()
             try:
                 self.obs_bytetrack_thread.signal_frame.disconnect()
                 self.obs_bytetrack_thread.signal_subject_frame.disconnect()
@@ -2139,7 +2064,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             self._join_worker_thread_smooth(self.obs_bytetrack_thread)
             self.obs_bytetrack_thread = None
-        if self.dual_sync_thread:
+        if getattr(self, "dual_sync_thread", None):
             self.dual_sync_thread.requestStop()
             try:
                 self.dual_sync_thread.signal_frame.disconnect()
@@ -2147,8 +2072,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             self._join_worker_thread_smooth(self.dual_sync_thread)
             self.dual_sync_thread = None
-        if self.free_switch_thread:
-            # Must run before thread is nulled so signal_vr_frame disconnect works
+        if getattr(self, "free_switch_thread", None):
             self._stop_audience_publisher_only()
             self.free_switch_thread.requestStop()
             try:
@@ -2161,10 +2085,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             self._join_worker_thread_smooth(self.free_switch_thread)
             self.free_switch_thread = None
-        self._stop_free_switch_auto_cycle()
-        self.control_panel.set_free_switch_bar_visible(False)
+        if hasattr(self, "_stop_free_switch_auto_cycle"):
+            self._stop_free_switch_auto_cycle()
+        if hasattr(self.control_panel, "set_free_switch_bar_visible"):
+            self.control_panel.set_free_switch_bar_visible(False)
 
->>>>>>> Multi-API
+
     @QtCore.Slot()
     def on_open_camera_clicked(self) -> None:
         self.stop_inference()
@@ -2638,11 +2564,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.signal_video_ended.connect(self.on_finished)
             self.video_thread.signal_invalid_video.connect(self.on_error)
             self.video_thread.start()
-<<<<<<< HEAD
             self._livecc_run_id += 1
             self.signal_start_livecc.emit(self.current_video_path, prompt, self._livecc_run_id)
-=======
->>>>>>> Multi-API
 
             if self._socket_runner is not None:
                 # Remote: frames are streamed via on_video_frame → send_frame
@@ -2678,52 +2601,35 @@ class MainWindow(QtWidgets.QMainWindow):
     def stop_inference(self) -> None:
         if not self.is_inference_running:
             return
-<<<<<<< HEAD
-
-        self.append_text("停止推論")
-        self._tts_last_priority = 5
-        self._pending_tts_transition = ""
-        self._last_tts_raw_text = ""
-        self._last_tts_emit_ts = 0.0
-        self._tts_protect_until = 0.0
-        if hasattr(self, "_pending_segments"):
-            self._pending_segments.clear()
-        if self.tts_mode == "openai":
-            try: self.signal_tts_interrupt.emit()
-            except: pass
-        elif self.tts_mode == "gemini":
-            try: self.signal_gemini_tts_interrupt.emit()
-            except: pass
-        elif self.tts_mode == "local":
-            try: self.signal_local_tts_interrupt.emit()
-            except: pass
-        if hasattr(self, "gemini_worker"):
-            self.gemini_worker.flush_and_abort()
-        if hasattr(self, "gemini_bg_worker"):
-            self.gemini_bg_worker.requestStop()
-        self._post_p1_pending = False
-        if hasattr(self, "livecc_worker"):
-            self.livecc_worker.requestStop()
-        if hasattr(self, "cam_worker"):
-            self.cam_worker.requestStop()
-=======
         if self._busy_stopping_inference:
             return
         obs_tracker_for_avg = None
         self._busy_stopping_inference = True
         try:
-            self.append_text("Stopping inference")
-            # First: unblock subject_frame → remote and mute live SEGMENT/TTS ASAP.
+            self.append_text("停止推論")
             self.is_inference_running = False
             self._stop_remote_client_ram_monitor()
+            self._tts_last_priority = 5
+            self._pending_tts_transition = ""
+            self._last_tts_raw_text = ""
+            self._last_tts_emit_ts = 0.0
+            self._tts_protect_until = 0.0
             if hasattr(self, "_pending_segments"):
                 self._pending_segments.clear()
             if self.tts_mode == "openai":
-                try:
-                    self.signal_tts_interrupt.emit()
-                except Exception:
-                    pass
->>>>>>> Multi-API
+                try: self.signal_tts_interrupt.emit()
+                except Exception: pass
+            elif self.tts_mode == "gemini":
+                try: self.signal_gemini_tts_interrupt.emit()
+                except Exception: pass
+            elif self.tts_mode == "local":
+                try: self.signal_local_tts_interrupt.emit()
+                except Exception: pass
+            if hasattr(self, "gemini_worker"):
+                self.gemini_worker.flush_and_abort()
+            if hasattr(self, "gemini_bg_worker"):
+                self.gemini_bg_worker.requestStop()
+            self._post_p1_pending = False
 
             # Remote: tell server to stop
             if self._socket_runner is not None:
@@ -2945,15 +2851,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Camera mode：沒有播放器時間軸可排程，所以直接顯示/唸
         if self.mode != "file":
-<<<<<<< HEAD
-            line = f"[{self._fmt_time(start_t)}] {display_text}"
-            self._append_ui(line)
-=======
             if not self.is_inference_running:
                 return
-            line = f"[{self._fmt_time(start_t)}] {text}"
-            self.text_output.appendText(line)
->>>>>>> Multi-API
+            line = f"[{self._fmt_time(start_t)}] {display_text}"
+            self._append_ui(line)
 
             if not tts_text.strip():
                 return
@@ -2982,17 +2883,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not tts_text.strip():
             return
-<<<<<<< HEAD
         if self._is_duplicate_tts(tts_text):
             return
         now = time.time()
         if seg_priority > self._tts_last_priority and now < self._tts_protect_until:
-            return  # priority guard: don't let lower-priority interrupt active playback
+            return
         self._last_tts_raw_text = tts_text
         self._last_tts_emit_ts = now
         self._tts_protect_until = now + max(2.0, len(tts_text.split()) * 0.3)
         tts_text = self._apply_tts_transition(tts_text, seg_priority)
-        # 根據模式分流
         if self.tts_mode == "openai":
             self.signal_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
         elif self.tts_mode == "gemini":
@@ -3009,26 +2908,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _on_tts_done(self) -> None:
-        """Called when TTS naturally finishes one segment (never on forced interrupt).
-        Triggers the mandatory 1.0s post-P1 silence before Gemini background resumes."""
         if self._post_p1_pending:
             self._post_p1_pending = False
             QtCore.QTimer.singleShot(1000, self._resume_gemini_background)
             logging.info("[P1 Silence] TTS done naturally, scheduling 1.0s before Gemini resumes")
 
     def _resume_gemini_background(self) -> None:
-        """Called 1.0s after P1 TTS finishes. Resumes Gemini slow blade."""
         if hasattr(self, "gemini_bg_worker") and self.is_inference_running:
             QtCore.QMetaObject.invokeMethod(
                 self.gemini_bg_worker, "resume",
                 QtCore.Qt.QueuedConnection,
             )
             logging.info("[P1 Silence] 1.0s elapsed, Gemini background resumed")
-=======
-
-        # TTS: only when _tick_subtitle_scheduler displays the line (stays in sync with video time).
-        # Do not speak here, or OpenAI TTS will fire early / replace queue and desync from on-screen text.
->>>>>>> Multi-API
 
     @QtCore.Slot()
     def on_finished(self) -> None:
@@ -3258,16 +3149,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.local_tts_thread.quit()
             self.local_tts_thread.wait(2000)
 
-<<<<<<< HEAD
         try:
             self.signal_gemini_tts_stop.emit()
-        except: pass
+        except Exception: pass
         if hasattr(self, "gemini_tts_thread") and self.gemini_tts_thread:
             self.gemini_tts_thread.quit()
             self.gemini_tts_thread.wait(2000)
-=======
-        self._stop_audience_publisher_only()
-        self._stop_audience_token_server()
->>>>>>> Multi-API
+        if hasattr(self, "_stop_audience_publisher_only"):
+            self._stop_audience_publisher_only()
+        if hasattr(self, "_stop_audience_token_server"):
+            self._stop_audience_token_server()
 
         super().closeEvent(event)
