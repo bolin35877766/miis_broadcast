@@ -1,2 +1,0 @@
-[console_scripts]
-livecc-run = miis_broadcast.__main__:main
