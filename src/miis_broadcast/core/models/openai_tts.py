@@ -15,7 +15,7 @@ from typing import Optional
 
 import numpy as np
 import websockets
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from miis_broadcast.core.utils.config import load_app_config, load_system_prompts
 
 # ==========================================
@@ -116,6 +116,7 @@ _audio_output_queue: "queue.Queue[np.ndarray]" = queue.Queue()
 _stop_event = threading.Event()
 _tts_threads_started = False
 _interrupt_event = threading.Event()
+_connect_requested = threading.Event()  # set by enqueue_tts_text; prevents DNS/SSL at startup
 
 # ==========================================
 # 🎛️ Runtime TTS Settings
@@ -279,6 +280,13 @@ def _mock_tts_worker() -> None:
 # 🧠 OpenAI Realtime 主 Worker
 # ==========================================
 async def _openai_realtime_worker():
+    # Wait for the first enqueue_tts_text() call before opening a WebSocket
+    # connection. This avoids spawning DNS/SSL threads at startup which race
+    # with PyTorch CUDA background threads and cause heap corruption.
+    while not _stop_event.is_set() and not _connect_requested.is_set():
+        await asyncio.sleep(0.2)
+    if _stop_event.is_set():
+        return
     print("🎙️ [TTS Worker] 啟動連線...")
 
     while not _stop_event.is_set():
@@ -499,6 +507,7 @@ def stop_tts_system() -> None:
 
 def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True, priority: int = 5, start_t: float = 0.0) -> None:
     if contains_meaningful_text(text):
+        _connect_requested.set()  # allow WebSocket connection on first use
         if drop_outdated:
             clear_text_queue()
 

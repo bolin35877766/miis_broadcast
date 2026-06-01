@@ -3,11 +3,14 @@
 import os
 import re
 import logging
+import threading
 from collections import Counter
 from typing import Dict, Any, Generator, List
 
 import numpy as np
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types as genai_types
 
 from miis_broadcast.core.utils.config import load_app_config, load_system_prompts
 
@@ -124,6 +127,7 @@ _SYSTEM_PROMPT: str = (
 )
 
 _client: "genai.Client | None" = None
+_client_lock = threading.Lock()
 
 
 def set_style(style_key: str) -> None:
@@ -190,13 +194,13 @@ def _get_match_state() -> str:
 
 
 def _get_client() -> "genai.Client":
-    from google import genai as genai_module
     global _client
-    if _client is None:
-        if not _GEMINI_API_KEY:
-            raise RuntimeError("[GeminiBroadcaster] GEMINI_API_KEY not found in environment")
-        _client = genai_module.Client(api_key=_GEMINI_API_KEY)
-        logging.info("[GeminiBroadcaster] Gemini client initialized")
+    with _client_lock:
+        if _client is None:
+            if not _GEMINI_API_KEY:
+                raise RuntimeError("[GeminiBroadcaster] GEMINI_API_KEY not found in environment")
+            _client = genai.Client(api_key=_GEMINI_API_KEY)
+            logging.info("[GeminiBroadcaster] Gemini client initialized")
     return _client
 
 
@@ -206,8 +210,7 @@ _MAX_OUTPUT_TOKENS: int = int(_gemini_cfg.get("max_output_tokens", 50))
 
 
 def _make_generate_config() -> Any:
-    from google.genai import types
-    return types.GenerateContentConfig(
+    return genai_types.GenerateContentConfig(
         system_instruction=_SYSTEM_PROMPT,
         temperature=_TEMPERATURE,
         max_output_tokens=_MAX_OUTPUT_TOKENS,

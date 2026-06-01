@@ -7,6 +7,10 @@ from PySide6 import QtCore
 import logging
 import time
 
+# Pre-import in main thread so GeminiWorker and GeminiBackgroundWorker threads
+# don't race on the import lock when both call initialize() simultaneously.
+from ..core.models.gemini_broadcaster import _get_client as _gemini_get_client  # noqa: F401
+
 
 class GeminiWorker(QtCore.QObject):
     """

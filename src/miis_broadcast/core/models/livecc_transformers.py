@@ -14,7 +14,6 @@ from livecc_utils import (
     get_smart_resized_video_reader,
 )
 from miis_broadcast.core.models.openai_tts import (
-    enqueue_tts_text,
     print_tts_stats,
 )
 
@@ -227,7 +226,7 @@ class LiveCCInfer:
             model_path,
             dtype=torch.bfloat16,
             device_map=self.device,
-            attn_implementation=attn_impl,
+            attn_implementation="flash_attention_2",
         )
         self.processor = AutoProcessor.from_pretrained(model_path, use_fast=False)
 
@@ -606,9 +605,6 @@ class LiveCCInfer:
             # ✅ Option A: Update recent commentaries (for the next reset)
             self._update_recent_texts(state, response)
 
-            # [Key] Pass t_gen_start to TTS queue for latency tracking
-            enqueue_tts_text(response, ref_ts=t_gen_start)
-
             yield (start_timestamp, stop_timestamp), response, state
 
     # ------------------------------
@@ -722,8 +718,5 @@ class LiveCCInfer:
 
         # ✅ Option A: Update recent commentaries
         self._update_recent_texts(state, response)
-
-        # [Key] Pass t_gen_start to TTS queue for latency tracking
-        enqueue_tts_text(response, ref_ts=t_gen_start)
 
         yield (start_timestamp, stop_timestamp), response, state

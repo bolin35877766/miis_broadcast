@@ -22,6 +22,7 @@ from .workers.obs_input import OBSCameraThread
 from .workers.obs_bytetrack import OBSByteTrackThread
 from .core.prompt.prompt_manager import PromptManager
 from .core.match_tracker import match_tracker
+from .core.utils.session_logger import SessionLogger
 from collections import deque
 
 # ============================================================
@@ -576,8 +577,6 @@ class ControlPanel(QtWidgets.QWidget):
         layout.addStretch(1)
 
         # Signals
-        self.btn_open.clicked.connect(self.requestOpenVideo.emit)
-        self.btn_camera.clicked.connect(self.requestOpenCamera.emit)
         self.btn_context.clicked.connect(self.requestLoadContext.emit)
         self.btn_start.clicked.connect(self.requestStart.emit)
 
@@ -732,6 +731,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.prompt_manager: Optional[PromptManager] = None
         self._bytetrack_wrapper = None          # pre-loaded ByteTrackWrapper (set by background thread)
         self._bytetrack_preload_thread = None   # QThread that loads it
+
 
         self._load_livecc_model()
 
@@ -1073,6 +1073,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cam_worker_thread.start()
 
     def _initGeminiWorker(self) -> None:
+
         # --- Existing GeminiWorker (kept for file-mode / legacy) ---
         self.gemini_thread = QtCore.QThread(self)
         self.gemini_worker = GeminiWorker()
@@ -1100,12 +1101,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         self.gemini_bg_thread.started.connect(self.gemini_bg_worker.initialize)
-        self.gemini_bg_thread.started.connect(
-            lambda: QtCore.QMetaObject.invokeMethod(
-                self.gemini_bg_worker, "run_background_loop",
-                QtCore.Qt.QueuedConnection,
-            )
-        )
+        # run_background_loop is NOT started here — it starts when inference
+        # begins (see on_start_clicked), preventing HTTP calls at startup that
+        # race with PyTorch CUDA background threads and cause heap corruption.
         self.gemini_bg_thread.start()
 
         # signal_tts_done → P1 post-interrupt silence handler (all TTS workers)
@@ -1247,6 +1245,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # ==========================================
             # 2. Local TTS Worker (本地 Chatterbox) [ChatterBox disabled]
             # ==========================================
+            from .workers.chatterbox_tts import ChatterboxTTSWorker
             self.local_tts_thread = QtCore.QThread(self)
             self.local_tts_worker = ChatterboxTTSWorker()
             self.local_tts_worker.moveToThread(self.local_tts_thread)
@@ -1270,8 +1269,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_tts_mode_changed()
 
             # ==========================================
-            # 3. Gemini TTS Worker
+            # 3. Gemini TTS Worker  [lazy-started like Chatterbox]
             # ==========================================
+            # Thread is set up here but NOT started at launch.
+            # It starts the first time the user selects "gemini" TTS mode
+            # (see _on_tts_mode_changed), avoiding a startup race between
+            # httpx's DNS/SSL threads and PyTorch's CUDA runtime threads.
             from .workers.gemini_tts import GeminiTTSWorker
             self.gemini_tts_thread = QtCore.QThread(self)
             self.gemini_tts_worker = GeminiTTSWorker()
@@ -1280,7 +1283,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.signal_gemini_tts_speak.connect(self.gemini_tts_worker.speak, QtCore.Qt.QueuedConnection)
             self.signal_gemini_tts_interrupt.connect(self.gemini_tts_worker.interrupt, QtCore.Qt.QueuedConnection)
             self.signal_gemini_tts_stop.connect(self.gemini_tts_worker.stop, QtCore.Qt.QueuedConnection)
-            self.gemini_tts_thread.start()
+            # gemini_tts_thread.start() is called lazily in _on_tts_mode_changed()
 
     # ---------------- Slots ----------------
 
@@ -1322,7 +1325,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _on_tts_mode_changed(self) -> None:
-        pass  # [ChatterBox disabled]
+        mode = self.control_panel.get_tts_mode() if hasattr(self, "control_panel") else None
+        if mode == "gemini" and not self.gemini_tts_thread.isRunning():
+            self.gemini_tts_thread.start()
 
     @QtCore.Slot(int)
     def on_font_scale_request(self, size_pt: int) -> None:
@@ -1330,6 +1335,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_styles(self.font_size)
         self.statusBar().showMessage(f"Font size adjusted to: {self.font_size}pt", 2000)
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
+
+    def _stop_all_source_threads(self) -> None:
+        """Stop every input-source thread unconditionally (used when switching modes)."""
+        if self.obs_thread is not None:
+            self.obs_thread.requestStop()
+            if not self.obs_thread.wait(3000):
+                self.obs_thread.terminate()
+                self.obs_thread.wait(1000)
+            self.obs_thread = None
+
+        if self.obs_bytetrack_thread is not None:
+            self.obs_bytetrack_thread.requestStop()
+            if not self.obs_bytetrack_thread.wait(3000):
+                self.obs_bytetrack_thread.terminate()
+                self.obs_bytetrack_thread.wait(1000)
+            self.obs_bytetrack_thread = None
+
+        if self.camera_thread is not None:
+            self.camera_thread.requestStop()
+            self.camera_thread.wait(1000)
+            self.camera_thread = None
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
@@ -1598,6 +1624,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.is_inference_running = True
         self.control_panel.set_start_button_state(True)
         self.control_panel.set_tts_controls_enabled(False)  # Lock during inference
+
+        # Start background Gemini loop on first inference run only.
+        if not getattr(self, "_gemini_bg_loop_started", False):
+            self._gemini_bg_loop_started = True
+            QtCore.QMetaObject.invokeMethod(
+                self.gemini_bg_worker, "run_background_loop",
+                QtCore.Qt.QueuedConnection,
+            )
         self.text_output.setText("")
         self._obs_drop_logged = False  # reset drop-log flag so it fires again if needed
 

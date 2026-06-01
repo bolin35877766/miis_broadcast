@@ -16,6 +16,8 @@ import logging
 from typing import Optional, Callable
 
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types as genai_types
 
 load_dotenv()
 _GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -50,7 +52,6 @@ def _get_client():
         if _client is None:
             if not _GEMINI_API_KEY:
                 raise RuntimeError("[GeminiTTS] GEMINI_API_KEY not found in environment")
-            from google import genai
             _client = genai.Client(api_key=_GEMINI_API_KEY)
             logging.info("[GeminiTTS] Client initialized")
         return _client
@@ -155,7 +156,9 @@ def _parse_sample_rate(mime_type: str) -> int:
 # ==========================================
 def _gemini_tts_worker() -> None:
     logging.info("[GeminiTTS] Worker thread started")
+    print("🚀 [GeminiTTS] Gemini TTS 背景服務已啟動")
     client = _get_client()
+    _first_success = [True]
 
     while not _stop_event.is_set():
         # Drain any pending interrupt before picking next item
@@ -180,15 +183,14 @@ def _gemini_tts_worker() -> None:
         interrupted = False
 
         try:
-            from google.genai import types
             response = client.models.generate_content(
                 model=cfg["model"],
                 contents=text,
-                config=types.GenerateContentConfig(
+                config=genai_types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    speech_config=genai_types.SpeechConfig(
+                        voice_config=genai_types.VoiceConfig(
+                            prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
                                 voice_name=cfg["voice"]
                             )
                         )
@@ -201,6 +203,9 @@ def _gemini_tts_worker() -> None:
                 _interrupt_event.clear()
                 interrupted = True
             else:
+                if _first_success[0]:
+                    print(f"✅ [GeminiTTS] 連線成功！(model={cfg['model']}, voice={cfg['voice']})")
+                    _first_success[0] = False
                 part = response.candidates[0].content.parts[0]
                 audio_bytes: bytes = part.inline_data.data
                 sample_rate = _parse_sample_rate(part.inline_data.mime_type)
