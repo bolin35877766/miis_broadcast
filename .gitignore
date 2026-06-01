@@ -4,3 +4,7 @@ examples/
 
 # Environment variables
 .env
+
+.pyc
+
+.log

@@ -1,0 +1,110 @@
+TTS 未完成項目
+================
+日期：2026-05-23
+
+---
+
+[1] CRITICAL — Local TTS 啟動就失敗：AUDIO_PROMPT_PATH 寫死錯誤路徑
+----------------------------------------------------------------------
+檔案：src/miis_broadcast/core/models/chatterbox_tts.py，第 29 行
+
+現況：
+    AUDIO_PROMPT_PATH = "/home/miislab/livecc_gui/ref_voice/announcer_ref.wav"
+
+問題：
+    路徑指向別台機器（/home/miislab/...），當前機器不存在此路徑。
+    _local_tts_generator_worker() 在第 120-122 行檢查檔案是否存在，
+    找不到就直接 return，整個 Local TTS 執行緒無聲退出，功能完全失效。
+
+實際檔案位置：
+    ref_voice/announcer_ref.wav（就在專案根目錄下，檔案存在）
+
+建議修法：
+    使用相對於專案根目錄的動態路徑，例如：
+        import pathlib
+        _PROJECT_ROOT = pathlib.Path(__file__).parents[4]
+        AUDIO_PROMPT_PATH = str(_PROJECT_ROOT / "ref_voice" / "announcer_ref.wav")
+    或從 configs/app.yml 讀取路徑。
+
+
+---
+
+[2] MEDIUM — vram_monitor.measure_and_evaluate 在音訊 chunk 熱迴圈中
+----------------------------------------------------------------------
+檔案：src/miis_broadcast/core/models/chatterbox_tts.py，第 199-200 行
+
+現況（位於 for audio_chunk, _ in generator 迴圈內）：
+    from miis_broadcast.core.utils.vram_monitor import vram_monitor
+    vram_monitor.measure_and_evaluate("ChatterboxTTS", DEVICE)
+
+問題：
+    每生成一個音訊 chunk 都會執行：
+    - torch.cuda.memory_allocated()
+    - torch.cuda.memory_reserved()
+    - 寫入 log 檔（I/O）
+    這是除錯用的監控程式碼，放在串流生成的熱路徑會對每個 chunk 增加延遲。
+
+建議修法：
+    移到迴圈外（生成完畢後量一次），或直接移除。
+    例如，改成在 finally 或迴圈結束後呼叫一次即可。
+
+
+---
+
+[3] MEDIUM — E2E 延遲統計只量到 TTS 段，缺少視覺→音訊完整路徑 【已完成 2026-05-23】
+----------------------------------------------------------------------
+變更：
+    gui.py:595    signal_tts_speak = QtCore.Signal(str, int, float)  # 加入 ref_ts
+    gui.py:1282   ref_ts = time.time()  # 在 on_segment 入口捕捉 wall-clock 時間
+    gui.py:1315   signal_tts_speak.emit(tts_text, seg_priority, ref_ts)
+    gui.py:1339   signal_tts_speak.emit(tts_text, seg_priority, ref_ts)
+    workers/openai_tts.py:31  speak(text, priority, ref_ts=0.0) 加入參數
+    workers/openai_tts.py:32  enqueue_tts_text(text, ref_ts=ref_ts, ...)
+
+說明：
+    ref_ts 為 on_segment 被呼叫的 wall-clock 時間，即 Gemini 廣播結果抵達 GUI
+    的那一刻。enqueue_tts_text 原本已有 ref_ts 參數，_audio_player_worker 也已
+    有 e2e_latency 計算邏輯，此次補上中間缺失的傳遞路徑即可完成串接。
+    E2E 範圍：LiveCC segment 到達 GUI（含 Gemini 處理時間）→ 第一個音訊 chunk 播出。
+
+
+---
+
+[4] LOW — GeminiWorker 忙碌時 drop segment，無 UI 反饋
+----------------------------------------------------------------------
+檔案：src/miis_broadcast/workers/gemini.py，第 61-63 行
+
+現況：
+    if self._busy:
+        logging.debug("[GeminiWorker] Busy, dropping segment ...")
+        return
+
+問題：
+    只寫 debug 等級 log，使用者完全看不到。
+    若 LiveCC 產出速度 > Gemini 回應速度，大量 segment 被無聲丟棄。
+
+建議修法（擇一）：
+    - 改為 logging.info 讓一般 log 可見
+    - 在 GUI 狀態列顯示「已跳過 N 個片段」計數器
+    - （若需要保留最新）改用 queue(maxsize=1) + 覆寫機制取代直接 drop
+
+
+---
+
+[5] LOW — Game context 沒有清除機制
+----------------------------------------------------------------------
+檔案：
+    src/miis_broadcast/core/models/gemini_broadcaster.py，第 191-195 行（clear_game_context 函式）
+    src/miis_broadcast/gui.py（無對應呼叫）
+
+現況：
+    clear_game_context() 函式已實作但從未被呼叫。
+    GUI 只有「載入比賽資訊」按鈕，沒有「清除比賽資訊」按鈕。
+
+問題：
+    Context 一旦載入就永遠存在直到重啟。
+    若要切換比賽場次或清除舊資訊，需要重啟整個程式。
+
+建議修法：
+    在 ControlPanel 的 lbl_context 旁加一個「清除」按鈕，
+    點擊後呼叫 clear_game_context() 並重置 lbl_context 顯示。

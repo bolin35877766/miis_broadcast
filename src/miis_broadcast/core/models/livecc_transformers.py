@@ -1,4 +1,6 @@
 import functools
+import json
+import re
 import time
 from typing import Dict, Any, Tuple, Generator, List
 import torch
@@ -12,7 +14,6 @@ from livecc_utils import (
     get_smart_resized_video_reader,
 )
 from miis_broadcast.core.models.openai_tts import (
-    start_tts_system,
     enqueue_tts_text,
     print_tts_stats,
 )
@@ -185,33 +186,42 @@ class VideoClip:
 
 
 class LiveCCInfer:
-    fps: float = 4.0
-    initial_fps_frames: int = 12            
-    streaming_fps_frames: int = 8
-    initial_time_interval: float = initial_fps_frames / fps
-    streaming_time_interval: float = streaming_fps_frames / fps
-    frame_time_interval: float = 1.0 / fps
-
     def __init__(
         self,
         model_path: str = "chenjoya/LiveCC-7B-Instruct",
         device_id: int = 0,
-        mm_window_sec: float = 12.0,  # ✅ Option A: Keep only recent N seconds of multimodal context
-        carry_text_max_chars: int = 280,  # ✅ Character limit for context to carry over
-        carry_recent_k: int = 3,  # ✅ Max number of recent commentaries to keep in state
+        mm_window_sec: float = 12.0,
+        carry_text_max_chars: int = 280,
+        carry_recent_k: int = 3,
+        classifier_cfg: dict | None = None,
     ) -> None:
-        print("⏳ Loading LiveCC model, please wait...")
+        cfg = classifier_cfg or {}
+        gen_cfg = cfg.get("generation", {})
+
+        self.fps: float = float(cfg.get("fps", 4.0))
+        self.initial_fps_frames: int = int(cfg.get("initial_fps_frames", 12))
+        self.streaming_fps_frames: int = int(cfg.get("streaming_fps_frames", 8))
+        self.initial_time_interval: float = self.initial_fps_frames / self.fps
+        self.streaming_time_interval: float = self.streaming_fps_frames / self.fps
+        self.frame_time_interval: float = 1.0 / self.fps
+
+        self._gen_temperature: float = float(gen_cfg.get("temperature", 0.8))
+        self._gen_top_p: float = float(gen_cfg.get("top_p", 0.9))
+        self._gen_top_k: int = int(gen_cfg.get("top_k", 30))
+        self._gen_repetition_penalty: float = float(gen_cfg.get("repetition_penalty", 1.2))
+        self._gen_no_repeat_ngram_size: int = int(gen_cfg.get("no_repeat_ngram_size", 4))
+
+        model_path = cfg.get("model_path", model_path)
+        device_id = int(cfg.get("device_id", device_id))
+        mm_window_sec = float(cfg.get("mm_window_sec", mm_window_sec))
+        carry_text_max_chars = int(cfg.get("carry_text_max_chars", carry_text_max_chars))
+        carry_recent_k = int(cfg.get("carry_recent_k", carry_recent_k))
+        print("⏳ 正在載入 LiveCC 模型，請稍候...")
 
         t_load_start = time.time()
         self.device = f"cuda:{device_id}"
-        # Try flash_attention_2 first (requires flash_attn installed);
-        # fall back to sdpa which works without any extra package.
-        try:
-            import flash_attn  # noqa: F401
-            attn_impl = "flash_attention_2"
-        except ImportError:
-            print("flash_attn not found, falling back to sdpa attention.")
-            attn_impl = "sdpa"
+        
+        torch.cuda.empty_cache()
 
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_path,
@@ -222,7 +232,8 @@ class LiveCCInfer:
         self.processor = AutoProcessor.from_pretrained(model_path, use_fast=False)
 
         t_load_end = time.time()
-        print(f"⏱️ [Perf] Model weights loaded, time taken: {t_load_end - t_load_start:.4f} seconds")
+        
+        print(f"⏱️ [Perf] 模型權重載入完成，耗時: {t_load_end - t_load_start:.4f} 秒")
 
         self.model.prepare_inputs_for_generation = functools.partial(
             prepare_multiturn_multimodal_inputs_for_generation,
@@ -235,10 +246,9 @@ class LiveCCInfer:
 
         self._cached_video_readers_with_hw: Dict[str, Any] = {}
 
-        # ✅ Fixed to 48 (Wait, the code says 24 below, let's keep it consistent)
-        self.max_new_tokens: int = 24
+        self.max_new_tokens: int = int(cfg.get("max_new_tokens", 128))
         self.ctx_max: int = _infer_ctx_max(self.model, default=32768)
-        self.headroom: int = 1024
+        self.headroom: int = int(cfg.get("headroom", 1024))
 
         # ✅ Get boundary patterns using tokenizer for accurate slicing
         tok = self.processor.tokenizer
@@ -251,8 +261,6 @@ class LiveCCInfer:
         self.mm_window_sec = float(mm_window_sec)
         self.carry_text_max_chars = int(carry_text_max_chars)
         self.carry_recent_k = int(carry_recent_k)
-
-        start_tts_system()
 
     def init_state(self, video_path: str) -> Dict[str, Any]:
         return {
@@ -308,6 +316,59 @@ class LiveCCInfer:
         # ✅ Reset window start
         state["mm_window_start"] = float(start_ts)
 
+    # Phrases that signal audio transcription or YouTube commentary hallucination
+    _HALLUCINATION_PHRASES = (
+        "subscribe", "like and", "comment", "notification", "welcome back",
+        "what's up", "peace out", "my career", "gameplay", "let's see",
+        "let me", "i'm going", "i'm gonna", "i got", "i have", "i can",
+        "i don't", "i didn't", "i'll", "i've", "i was", "i am ", "we're", "we are",
+        "you guys", "you can", "thank you", "thanks for", "check out",
+        "next time", "another video", "in this game", "oh my", "oh my gosh",
+        "that's so", "think this", "about to become", "what a", "look at this",
+        "he is just", "michael jordan",
+        "diane", "and over", "over again", "let's do", "i mean", "right now",
+        "get off work", "going to", "could just", "you're right", "while they",
+        "all these people", "watching us", "stuff over",
+    )
+
+    def _is_degenerate(self, response: str, query: str) -> bool:
+        text = response.strip()
+        if not text:
+            return True
+
+        words = text.split()
+        if len(words) < 3:
+            return True
+
+        # Excessive length indicates hallucination/wandering (real play descriptions are <80 words)
+        if len(words) > 80:
+            return True
+
+        # prompt leakage：輸出的前 60% 內容出現在 query 裡
+        if query and len(text) > 10:
+            overlap = sum(1 for w in words if w.lower() in query.lower())
+            if overlap / len(words) > 0.6:
+                return True
+
+        # Audio transcription / YouTube commentary hallucination
+        lower = text.lower()
+        if any(phrase in lower for phrase in self._HALLUCINATION_PHRASES):
+            return True
+
+        # First-person pronoun dominant (>18% of words are I/me/my/we/us)
+        first_person = {"i", "me", "my", "we", "us", "our", "i'm", "i've", "i'll", "i'd"}
+        fp_count = sum(1 for w in words if w.lower().rstrip("'s") in first_person)
+        if fp_count / len(words) > 0.18:
+            return True
+
+        # Excessive conjunctions/vague language ("and", "or", "the", "a") > 35% suggests incoherence
+        vague_words = {"and", "or", "the", "a", "an", "is", "are", "was", "were"}
+        vague_count = sum(1 for w in words if w.lower() in vague_words)
+        if vague_count / len(words) > 0.35:
+            return True
+
+        return False
+
     def _update_recent_texts(self, state: Dict[str, Any], response: str) -> None:
         if not isinstance(response, str):
             return
@@ -322,6 +383,30 @@ class LiveCCInfer:
         if len(recent) > self.carry_recent_k:
             recent = recent[-self.carry_recent_k :]
         state["recent_texts"] = recent
+
+    @staticmethod
+    def _parse_visual_json(text: str) -> Dict[str, Any]:
+        stripped = text.strip()
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+        match = re.search(r'\{.*\}', stripped, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group())
+                if isinstance(data, dict):
+                    return data
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return {
+            "event": "raw_description",
+            "target": "unknown",
+            "urgency": 1,
+            "metadata": {"raw": stripped},
+        }
 
     def _build_message_content(
         self,
@@ -361,6 +446,7 @@ class LiveCCInfer:
         query: str,
         state: Dict[str, Any],
         max_pixels: int = 384 * 28 * 28,
+        response_prefix: str = "",
     ) -> Generator[Tuple[Tuple[float, float], str, Dict[str, Any]], None, None]:
 
         video_timestamp = state.get("video_timestamp", 0.0)
@@ -449,6 +535,8 @@ class LiveCCInfer:
             past_ids = state.get("past_ids", None)
             if past_ids is not None:
                 texts = "<|im_end|>\n" + texts[self.system_prompt_offset :]
+            if response_prefix:
+                texts = texts + response_prefix
 
             inputs = self.processor(
                 text=texts,
@@ -496,10 +584,11 @@ class LiveCCInfer:
                 return_dict_in_generate=True,
                 pad_token_id=self.model.config.eos_token_id,
                 do_sample=True,
-                temperature=0.9,
-                top_p=0.9,
-                top_k=30,
-                repetition_penalty=1.1,
+                temperature=self._gen_temperature,
+                top_p=self._gen_top_p,
+                top_k=self._gen_top_k,
+                repetition_penalty=self._gen_repetition_penalty,
+                no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
                 max_new_tokens=self.max_new_tokens,
             )
 
@@ -509,7 +598,7 @@ class LiveCCInfer:
             state["past_key_values"] = outputs.past_key_values
             state["past_ids"] = outputs.sequences[:, :-1]
 
-            response = self.processor.decode(
+            response = response_prefix + self.processor.decode(
                 outputs.sequences[0, inputs.input_ids.size(1) :],
                 skip_special_tokens=True,
             )
@@ -530,6 +619,7 @@ class LiveCCInfer:
         clip: "VideoClip",
         query: str,
         state: Dict[str, Any],
+        response_prefix: str = "",
     ) -> Generator[Tuple[Tuple[float, float], str, Dict[str, Any]], None, None]:
 
         num_frames = int(clip.frames.shape[0])
@@ -564,6 +654,8 @@ class LiveCCInfer:
                 temp_text = self.processor.apply_chat_template([temp_msg], tokenize=False)
                 self.system_prompt_offset = temp_text.index("<|im_start|>user")
             texts = "<|im_end|>\n" + texts[self.system_prompt_offset :]
+        if response_prefix:
+            texts = texts + response_prefix
 
         inputs = self.processor(
             text=texts,
@@ -610,9 +702,10 @@ class LiveCCInfer:
             return_dict_in_generate=True,
             pad_token_id=self.model.config.eos_token_id,
             do_sample=True,
-            temperature=1,
-            top_p=0.9,
-            repetition_penalty=1.1,
+            temperature=self._gen_temperature,
+            top_p=self._gen_top_p,
+            repetition_penalty=self._gen_repetition_penalty,
+            no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
             max_new_tokens=self.max_new_tokens,
         )
 
@@ -622,7 +715,7 @@ class LiveCCInfer:
         state["past_key_values"] = outputs.past_key_values
         state["past_ids"] = outputs.sequences[:, :-1]
 
-        response = self.processor.decode(
+        response = response_prefix + self.processor.decode(
             outputs.sequences[0, inputs.input_ids.size(1) :],
             skip_special_tokens=True,
         )

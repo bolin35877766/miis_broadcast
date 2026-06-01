@@ -1,41 +1,24 @@
 classifiers:
   livecc_7b:
-    desc: LiveCC (streaming video captioner; config not used)
-    model_path: livecc
-    frame_size: 0
-    n_frames: 0
-
-# ---------------------------------------------------------------------------
-# ByteTrack — YOLOX + BYTETracker subject-tracking configuration
-#
-# bytetrack_repo : absolute path to ByteTrack_repo (can also be set via
-#                  BYTETRACK_REPO environment variable)
-# exp_file       : YOLOX experiment config (.py) relative to repo root,
-#                  or an absolute path
-# ckpt_path      : path to the .pth checkpoint file
-# model_size     : informational only (x / l / m / s)
-# device         : "cuda" or "cpu"
-# fp16           : half-precision inference (requires CUDA)
-# fuse           : fuse Conv+BN layers for speed
-# ---------------------------------------------------------------------------
-bytetrack:
-  bytetrack_repo: "/home/miislab-server3/ByteTrack_repo"           # leave blank → auto-detect via BYTETRACK_REPO env var
-  exp_file: "/home/miislab-server3/ByteTrack_repo/exps/example/mot/yolox_x_mix_det.py"
-  ckpt_path: "/home/miislab-server3/ByteTrack_repo/pretrained/bytetrack_x_mot17.pth.tar"
-  model_size: "x"
-  device: "cuda"
-  fp16: true
-  fuse: true
-  # BYTETracker hyper-parameters
-  track_thresh: 0.5
-  match_thresh: 0.8
-  track_buffer: 30
-  aspect_ratio_thresh: 1.6
-  min_box_area: 10
-  mot20: false
-  # Subject-mode
-  subject_only: true
-  subject_pad: 0.15
-  # Subject quality gates
-  min_subject_area_ratio: 0.03   # ignore tracks smaller than 3% of frame area
-  preempt_ratio: 4.0             # switch subject if new track area is 4x larger
+    desc: LiveCC (streaming video captioner)
+    model_path: chenjoya/LiveCC-7B-Instruct
+    device_id: 0
+    fps: 4.0
+    initial_fps_frames: 6
+    streaming_fps_frames: 3
+    max_new_tokens: 12
+    headroom: 1024
+    mm_window_sec: 8.0
+    carry_text_max_chars: 0
+    carry_recent_k: 0
+    generation:
+      temperature: 0.3
+      top_p: 0.75
+      top_k: 15
+      repetition_penalty: 1.5
+      no_repeat_ngram_size: 4
+    camera:
+      window_sec: 1.5
+      target_fps: 2.0
+      infer_interval: 1.0
+      memory_reset_every: 5

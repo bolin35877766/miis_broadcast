@@ -160,6 +160,11 @@ class ByteTrackWrapper:
         # ── 4. Load YOLOX model ────────────────────────────────────────────
         self.device = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
         print(f"[ByteTrack] 使用裝置: {self.device}")
+        
+        from miis_broadcast.core.utils.vram_monitor import vram_monitor
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+            vram_before = vram_monitor.get_allocated_gb(str(self.device))
 
         exp = get_exp(exp_file, None)
         model = exp.get_model().to(self.device)
@@ -178,6 +183,10 @@ class ByteTrackWrapper:
         if fp16 and self.device.type == "cuda":
             model = model.half()
             print("[ByteTrack] FP16 模式啟用")
+
+        if self.device.type == "cuda":
+            vram_after = vram_monitor.get_allocated_gb(str(self.device))
+            vram_monitor.log_diff("ByteTrack", vram_before, vram_after)
 
         self.model = model
         self.exp = exp

@@ -1,8 +1,35 @@
 gui_window:
-  title: MISLAB
-  min_width: 1200
-  min_height: 500
+  title: MIISLAB
+  min_width: 900
+  min_height: 480
   default_open_dir: ./
+
 model:
   classifier_name: livecc_7b
-  
+
+openai_tts:
+  model_url: "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2025-06-03"
+  default_voice: coral
+  default_speed: 1.5
+  temperature: 0.7
+
+chatterbox_tts:
+  audio_prompt_path: /home/miislab/livecc_gui/ref_voice/announcer_ref.wav
+  temperature: 0.7
+  cfg_weight: 1.0
+  chunk_size: 25
+
+gemini_tts:
+  model_name: "models/gemini-3.1-flash-tts-preview"
+  voice: Kore
+
+gemini:
+  model_name: gemini-3.1-flash-lite-preview
+  rag_threshold: 600
+  temperature: 0.4
+  max_output_tokens: 50
+
+inference:
+  dedup_window_s: 3.0
+  dedup_threshold: 0.75
+  max_pending: 400

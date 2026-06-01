@@ -1,0 +1,145 @@
+INFO:TTS.DryRun:============================================================
+INFO:TTS.DryRun:[DRY-RUN] Mock TTS worker 啟動
+INFO:TTS.DryRun:============================================================
+INFO:TTS.DryRun:[DRY-RUN] Warmup 完成 (模擬)，開始監聽文字佇列
+INFO:root:[GeminiBroadcaster] Gemini client initialized
+INFO:root:[GeminiWorker] Ready
+INFO:root:[LiveCCWorker] Start LiveCC inference on: /home/miislab-server5/Poyu/miis_broadcast_poyu/miis_broadcast/examples/basketball_1080p.mp4
+INFO:root:[LiveCCWorker] Cleared cached video readers
+WARNING:root:[LiveCC] Degenerate output skipped: 'No active play.'
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "16 for the Mavs ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [5w ~1.2s] "16 for the Mavs ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:✓ [SPEAK DONE 1.2s] "16 for the Mavs ..."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "against Houston in their last meeting, ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [7w ~1.8s] "against Houston in their last meeting, ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:✓ [SPEAK DONE 1.8s] "against Houston in their last meeting, ..."
+WARNING:root:[LiveCC] Degenerate output skipped: 'and it is a ...'
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "I think it was an inside out pass and ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [10w ~2.5s] "I think it was an inside out pass and ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "they just ran the exact same play, but they're going to get …"
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 2.45s/2.5s (97%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "I think it was an inside out pass and ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [13w ~3.2s] "they just ran the exact same play, but they're going to get ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "the lob again, ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 1.70s/3.2s (52%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "they just ran the exact same play, but they're going to get ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [4w ~1.0s] "the lob again, ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:⚡ [INTERRUPT Path-1] interrupt_tts() called → _interrupt_event set
+INFO:TTS.DryRun:📥 [ENQUEUE P3] "Another lob pass, looking to create an opportunity."
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 0.85s/1.0s (85%)] by Path-1 (priority signal / manual)
+INFO:TTS.DryRun:   └─ was: "the lob again, ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [8w ~2.0s] "Another lob pass, looking to create an opportunity."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "and I think this is how he's got ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 1.30s/2.0s (65%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "Another lob pass, looking to create an opportunity."
+INFO:TTS.DryRun:▶ [SPEAK START] [9w ~2.2s] "and I think this is how he's got ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:✓ [SPEAK DONE 2.2s] "and I think this is how he's got ..."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "to do more of these plays. If you can make those ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [12w ~3.0s] "to do more of these plays. If you can make those ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "lobs work for you as well, ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 1.70s/3.0s (56%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "to do more of these plays. If you can make those ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [7w ~1.8s] "lobs work for you as well, ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:✓ [SPEAK DONE 1.8s] "lobs work for you as well, ..."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "I mean, the lob has been one thing that they've had with him…"
+INFO:TTS.DryRun:▶ [SPEAK START] [32w ~8.0s] "I mean, the lob has been one thing that they've had with him in his ca…"
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "to get going here on offense. Yeah, there ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 1.85s/8.0s (23%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "I mean, the lob has been one thing that they've had with him in his ca…"
+INFO:TTS.DryRun:▶ [SPEAK START] [9w ~2.2s] "to get going here on offense. Yeah, there ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "you go. Look at that play. That was ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 2.05s/2.2s (91%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "to get going here on offense. Yeah, there ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [9w ~2.2s] "you go. Look at that play. That was ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "a good example. Good job by ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 2.05s/2.2s (91%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "you go. Look at that play. That was ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [7w ~1.8s] "a good example. Good job by ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:✓ [SPEAK DONE 1.8s] "a good example. Good job by ..."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "Zach Levine. What does he have ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [7w ~1.8s] "Zach Levine. What does he have ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:✓ [SPEAK DONE 1.8s] "Zach Levine. What does he have ..."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "Luka, and it's the first lead of this game for Dallas. ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [12w ~3.0s] "Luka, and it's the first lead of this game for Dallas. ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:⚡ [INTERRUPT Path-1] interrupt_tts() called → _interrupt_event set
+INFO:TTS.DryRun:📥 [ENQUEUE P1] "Oh!— Luka gives Dallas their first lead of the game!"
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 0.85s/3.0s (28%)] by Path-1 (priority signal / manual)
+INFO:TTS.DryRun:   └─ was: "Luka, and it's the first lead of this game for Dallas. ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [10w ~2.5s] "Oh!— Luka gives Dallas their first lead of the game!"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "to keep an eye on him now. He is such a ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 1.00s/2.5s (40%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "Oh!— Luka gives Dallas their first lead of the game!"
+INFO:TTS.DryRun:▶ [SPEAK START] [12w ~3.0s] "to keep an eye on him now. He is such a ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "great passers in ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 1.85s/3.0s (61%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "to keep an eye on him now. He is such a ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [4w ~1.0s] "great passers in ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:✓ [SPEAK DONE 1.0s] "great passers in ..."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "the rim and scores with ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [6w ~1.5s] "the rim and scores with ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P1] "What a finish! They score with that incredible play."
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 0.85s/1.5s (56%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "the rim and scores with ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [9w ~2.2s] "What a finish! They score with that incredible play."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "a beautiful little floater. ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 1.35s/2.2s (60%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "What a finish! They score with that incredible play."
+INFO:TTS.DryRun:▶ [SPEAK START] [5w ~1.2s] "a beautiful little floater. ..."
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:📥 [ENQUEUE P1] "What a beautiful floater, soft touch!"
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 0.90s/1.2s (72%)] by Path-2 (new text in queue)
+INFO:TTS.DryRun:   └─ was: "a beautiful little floater. ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [6w ~1.5s] "What a beautiful floater, soft touch!"
+WARNING:root:[LiveCC] Degenerate output skipped: 'But ...'
+INFO:TTS.DryRun:✓ [SPEAK DONE 1.5s] "What a beautiful floater, soft touch!"
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "Levine in the early going? ..."
+INFO:TTS.DryRun:▶ [SPEAK START] [6w ~1.5s] "Levine in the early going? ..."
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:TTS.DryRun:✓ [SPEAK DONE 1.5s] "Levine in the early going? ..."
+INFO:TTS.DryRun:📥 [ENQUEUE P5] "his... It's not just, though, is it? I mean, what we're doin…"
+INFO:TTS.DryRun:▶ [SPEAK START] [16w ~4.0s] "his... It's not just, though, is it? I mean, what we're doing now and …"
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:TTS.DryRun:⚡ [INTERRUPT Path-1] interrupt_tts() called → _interrupt_event set
+INFO:root:[LiveCCWorker] Cleared cached video readers on stop request
+INFO:TTS.DryRun:⚡ [SPEAK INTERRUPTED 0.35s/4.0s (8%)] by Path-1 (priority signal / manual)
+INFO:TTS.DryRun:   └─ was: "his... It's not just, though, is it? I mean, what we're doing now and …"
+INFO:root:[LiveCCWorker] Stop requested, breaking inference loop
+INFO:root:[LiveCCWorker] LiveCC inference finished. Took 48.98 s
+INFO:root:[LiveCCWorker] Cleared cached video readers after inference
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"

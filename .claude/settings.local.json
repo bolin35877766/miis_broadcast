@@ -5,7 +5,12 @@
       "Bash(find /c/Users/bolin/miis_broadcast/src/miis_broadcast -name \"*.py\" -type f -exec grep -o \"^import [a-zA-Z0-9_]*\\\\|^from [a-zA-Z0-9_]*\" {})",
       "Bash(sed 's/==.*//')",
       "Bash(python3 -m py_compile src/**/*.py)",
-      "Bash(find /c/Users/bolin/miis_broadcast -type d -not -path */__pycache__*)"
+      "Bash(find /c/Users/bolin/miis_broadcast -type d -not -path */__pycache__*)",
+      "Bash(python3 -c \"import google.genai as genai; print\\(genai.__version__\\)\")",
+      "Bash(python3 -c \"import importlib; import google; print\\(google.__path__\\)\")",
+      "Bash(pip show *)",
+      "Bash(grep -r \"NotImplementedError\\\\|^[[:space:]]*pass[[:space:]]*$\" /home/miislab-server5/Poyu/miis_broadcast_poyu/miis_broadcast/src --include=\"*.py\" -B 2 -n)",
+      "Bash(grep -r \"raise NotImplementedError\\\\|^[[:space:]]*pass[[:space:]]*$\" /home/miislab-server5/Poyu/miis_broadcast_poyu/miis_broadcast/src --include=\"*.py\" -l)"
     ]
   }
 }

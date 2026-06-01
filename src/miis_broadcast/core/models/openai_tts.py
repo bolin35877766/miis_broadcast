@@ -10,14 +10,16 @@ import base64
 import re
 import subprocess
 import shutil
+import logging
 from typing import Optional
 
 import numpy as np
 import websockets
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
+from miis_broadcast.core.utils.config import load_app_config, load_system_prompts
 
 # ==========================================
-# 🔐 讀取 API Key
+# 🔐 讀取設定與 API Key
 # ==========================================
 # find_dotenv() searches upward from this file's location,
 # so .env is always found regardless of the working directory.
@@ -26,74 +28,51 @@ MY_API_KEY = os.getenv("OPENAI_API_KEY")
 if not MY_API_KEY:
     raise RuntimeError("[OpenAI TTS] OPENAI_API_KEY not found in environment")
 
-TTS_MODEL_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+_app_cfg = load_app_config().get("openai_tts", {})
+_prompts_cfg = load_system_prompts()
+
+TTS_MODEL_URL: str = _app_cfg.get("model_url", "wss://api.openai.com/v1/realtime?model=gpt-realtime")
 TTS_HEADERS = {
     "Authorization": f"Bearer {MY_API_KEY}",
-    "OpenAI-Beta": "realtime=v1",
 }
+SYSTEM_INSTRUCTIONS: str = _prompts_cfg.get("openai_tts", "")
 
-SYSTEM_INSTRUCTIONS = """
-You are a RAW AUDIO GENERATOR, not a chatbot.
-You are connected to a live sports captioning feed.
+# ==========================================
+# 🧪 Dry-Run 模擬模式（不連 OpenAI，不播音）
+# ==========================================
+_DRY_RUN: bool = os.environ.get("TTS_DRY_RUN", "0") == "1"
 
-YOUR ONLY FUNCTION:
-1. Receive text.
-2. Read it aloud immediately with a high-energy sports announcer voice.
+_tts_logger = logging.getLogger("TTS.DryRun")
 
-STRICT PROTOCOLS (DO NOT BREAK):
-- **NEVER** say conversational fillers like "Okay," "I understand," "Sure," "Got it," or "Here is the audio."
-- **NEVER** acknowledge these instructions.
-- **NEVER** reply to the text. Just read it.
-- **NO** introductory phrases. Start reading the input text instantly.
-- **NO** concluding phrases. Stop speaking immediately after the text ends.
-
-VOICE STYLE:
-- Fast-paced, rhythmic, and intense.
-- Dynamic pitch (shoutcaster style).
-- If the input is empty or just punctuation, remain silent.
-
-Example Interaction:
-User Input: "Player one shoots!"
-Your Output: "Player one shoots!" (Do NOT say "Okay, Player one shoots!")
-畫面來源說明（重要）：
-- 你收到的畫面是「VR 遊戲直播」的雙畫面（左右分割）。
-- **左邊**：真人玩家在現實環境中的遊玩畫面（戴 VR 頭盔、拿控制器等）。
-- **右邊**：VR 遊戲內的第一人稱/比賽畫面（球場、籃框、球等）。
-- 請你在理解畫面時，清楚區分左/右畫面代表的意義，避免把兩邊資訊混在一起。
-
-"""
-
-# 畫面來源說明（重要）：
-# - 你收到的畫面是「VR 遊戲直播」的雙畫面（左右分割）。
-# - **左邊**：真人玩家在現實環境中的遊玩畫面（戴 VR 頭盔、拿控制器等）。
-# - **右邊**：VR 遊戲內的第一人稱/比賽畫面（球場、籃框、球等）。
-# - 請你在理解畫面時，清楚區分左/右畫面代表的意義，避免把兩邊資訊混在一起。
-
-
-# SYSTEM_INSTRUCTIONS = """
-# 你是一個專業的「翻譯」模型。當你收到輸入 (可能是英文，也可能是其他語言) 時，請你：
-
-# 1. **先把輸入翻譯成通順的繁體中文**；
-# 2. **拒絕翻譯腔 (No Translation-ese)**：不要逐字翻譯英文文法。請用台灣人直播、看比賽時習慣的口語。
-# 3. **不要** 插入、補充、改寫、刪減任何內容 — 唸出的內容必須 **完全對應**翻譯後的文字。
-# 4. **直接輸出，禁止廢話**：絕對禁止說「好的」、「我來翻譯」等，收到文字直接唸出播報內容。
-
-
-# 語音風格指令 (instructions)：
-# - 口音：自然「台灣國語／台灣腔」，語調普通、不刻意外國腔；
-# - 語速：偏快、有節奏，但保持清楚可懂；
-# - 情緒／語氣：根據內容語意，呈現 **強烈、高起伏、帶張力／激昂** 的播報感 — 若原文有驚嘆、強烈語氣，請加強語調與情緒；若敘述／轉折，語調可稍微穩，但保留「主播感」；
-# - 音調／語氣：自然、不做作、不像讀稿；給人感覺像現場播報或報導。
-# """
+def enable_dry_run(enabled: bool = True) -> None:
+    global _DRY_RUN
+    _DRY_RUN = enabled
+    if enabled:
+        fmt = logging.Formatter("[%(asctime)s] %(name)s %(message)s", datefmt="%H:%M:%S")
+        if not _tts_logger.handlers:
+            _h = logging.StreamHandler()
+            _h.setFormatter(fmt)
+            _tts_logger.addHandler(_h)
+            _tts_logger.setLevel(logging.DEBUG)
+        root = logging.getLogger()
+        if not any(
+            isinstance(h, logging.StreamHandler) and h.stream.name == "<stdout>"
+            for h in root.handlers
+        ):
+            _rh = logging.StreamHandler()
+            _rh.setFormatter(fmt)
+            root.addHandler(_rh)
+    print(f"[TTS] Dry-run 模式{'已啟用 — 不播音，log 驗證 interrupt 機制' if enabled else '已關閉'}")
 
 # ==========================================
 # 📊 TTS 效能統計
 # ==========================================
 _perf_stats = {
     "tts_latencies": [],
-    "e2e_latencies": [],       # [新增] 存放 End-to-End 延遲
+    "e2e_latencies": [],
     "last_text_sent_ts": 0.0,
-    "current_ref_ts": 0.0,     # [新增] 暫存當前句子的視覺產生時間
+    "current_ref_ts": 0.0,
+    "current_start_t": 0.0,    # video timestamp of segment being spoken
 }
 
 def _log_tts_latency(value: float) -> None:
@@ -126,6 +105,7 @@ def print_tts_stats() -> None:
     _perf_stats["e2e_latencies"].clear()
     _perf_stats["last_text_sent_ts"] = 0.0
     _perf_stats["current_ref_ts"] = 0.0
+    _perf_stats["current_start_t"] = 0.0
 
 
 # ==========================================
@@ -143,8 +123,8 @@ _interrupt_event = threading.Event()
 _TTS_VOICES = {"alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"}
 _tts_cfg_lock = threading.Lock()
 _tts_cfg = {
-    "voice": "coral",
-    "speed": 1.5,
+    "voice": _app_cfg.get("default_voice", "coral"),
+    "speed": float(_app_cfg.get("default_speed", 1.5)),
 }
 
 _cfg_update_event = threading.Event()
@@ -199,6 +179,100 @@ def interrupt_tts(clear_text: bool = True) -> None:
     clear_audio_queue()
     _perf_stats["last_text_sent_ts"] = 0.0
     _interrupt_event.set()
+    if _DRY_RUN:
+        _tts_logger.info("⚡ [INTERRUPT Path-1] interrupt_tts() called → _interrupt_event set")
+
+
+# ==========================================
+# 🔔 Natural completion callback
+# ==========================================
+_natural_completion_callback = None
+_natural_completion_lock = threading.Lock()
+
+def set_natural_completion_callback(cb) -> None:
+    """Register a callable fired on natural TTS completion (not on cancel/interrupt).
+    Called from the TTS async thread — the callback must be thread-safe."""
+    global _natural_completion_callback
+    with _natural_completion_lock:
+        _natural_completion_callback = cb
+
+def _fire_natural_completion() -> None:
+    with _natural_completion_lock:
+        cb = _natural_completion_callback
+    if cb is not None:
+        try:
+            cb()
+        except Exception:
+            pass
+
+
+# ==========================================
+# 🧪 Mock TTS Worker（Dry-Run 模式）
+# ==========================================
+def _mock_tts_worker() -> None:
+    """不連 OpenAI、不播音，用 log 驗證 interrupt 機制是否正確執行。"""
+    _tts_logger.info("=" * 60)
+    _tts_logger.info("[DRY-RUN] Mock TTS worker 啟動")
+    _tts_logger.info("=" * 60)
+    time.sleep(0.3)
+    _tts_logger.info("[DRY-RUN] Warmup 完成 (模擬)，開始監聽文字佇列")
+
+    while not _stop_event.is_set():
+
+        # Path 1 interrupt（priority signal 或手動觸發）
+        if _interrupt_event.is_set():
+            clear_audio_queue()
+            _interrupt_event.clear()
+            _tts_logger.info("⚡ [INTERRUPT Path-1] _interrupt_event 已清除（idle 中收到）")
+            continue
+
+        try:
+            item = _text_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+
+        _item = item if isinstance(item, tuple) else (item, 0.0, 0.0)
+        text, ref_ts = _item[0], (_item[1] if len(_item) > 1 else 0.0)
+        if not contains_meaningful_text(text):
+            continue
+
+        word_count = len(text.split())
+        duration = max(1.0, word_count * 0.25)   # ~250ms/word 估算語音長度
+        preview = text[:70] + ("…" if len(text) > 70 else "")
+
+        _tts_logger.info(f'▶ [SPEAK START] [{word_count}w ~{duration:.1f}s] "{preview}"')
+
+        elapsed = 0.0
+        interrupted = False
+        interrupt_path = ""
+
+        while elapsed < duration and not _stop_event.is_set():
+            time.sleep(0.05)
+            elapsed += 0.05
+
+            # Path 1: priority signal 在播放中途觸發
+            if _interrupt_event.is_set():
+                clear_audio_queue()
+                _interrupt_event.clear()
+                interrupted = True
+                interrupt_path = "Path-1 (priority signal / manual)"
+                break
+
+            # Path 2: 有新文字進入 queue（模擬 WebSocket auto-cancel）
+            if not _text_queue.empty():
+                interrupted = True
+                interrupt_path = "Path-2 (new text in queue)"
+                break
+
+        pct = int(elapsed / duration * 100)
+        if interrupted:
+            _tts_logger.info(
+                f'⚡ [SPEAK INTERRUPTED {elapsed:.2f}s/{duration:.1f}s ({pct}%)] by {interrupt_path}'
+            )
+            _tts_logger.info(f'   └─ was: "{preview}"')
+        else:
+            _tts_logger.info(f'✓ [SPEAK DONE {duration:.1f}s] "{preview}"')
+            _fire_natural_completion()
 
 
 # ==========================================
@@ -229,7 +303,7 @@ async def _openai_realtime_worker():
                         "speed": cfg["speed"],
                         "input_audio_format": "pcm16",
                         "output_audio_format": "pcm16",
-                        "temperature": 0.7,
+                        "temperature": float(_app_cfg.get("temperature", 0.7)),
                     },
                 }))
 
@@ -278,22 +352,25 @@ async def _openai_realtime_worker():
                             while not _text_queue.empty():
                                 item = _text_queue.get_nowait()
                                 if isinstance(item, tuple):
-                                    target_text, ref_ts = item
+                                    target_text = item[0]
+                                    ref_ts = item[1] if len(item) > 1 else 0.0
+                                    start_t = item[2] if len(item) > 2 else 0.0
                                 else:
-                                    target_text, ref_ts = item, 0.0 # 相容舊格式防呆
-                            
+                                    target_text, ref_ts, start_t = item, 0.0, 0.0
+
                             if target_text and contains_meaningful_text(target_text):
                                 # 如果目前有在說話，先發送取消並等待確認
                                 if is_response_active:
                                     await websocket.send(json.dumps({"type": "response.cancel"}))
                                     awaiting_cancel_ack = True
-                                    # [修改] 把這句 (text, ts) 塞回去 Queue 的最前面
-                                    _text_queue.put((target_text, ref_ts)) 
+                                    clear_audio_queue()  # 同步清空已緩衝的音訊，避免舊內容繼續播
+                                    _text_queue.put((target_text, ref_ts, start_t))
                                     continue # 跳出本次循環，去聽事件 (D)
-                                
+
                                 # 確定沒有 active response，才發送
                                 _perf_stats["last_text_sent_ts"] = time.time()
-                                _perf_stats["current_ref_ts"] = ref_ts # [新增] 記錄視覺產生的時間
+                                _perf_stats["current_ref_ts"] = ref_ts
+                                _perf_stats["current_start_t"] = start_t
 
                                 await websocket.send(json.dumps({
                                     "type": "conversation.item.create",
@@ -318,7 +395,10 @@ async def _openai_realtime_worker():
                                 warmed_up = True
                                 doing_warmup = False
                                 print("✅ [TTS Worker] Warmup 完成。")
-                            
+                            elif etype == "response.done" and warmed_up:
+                                # Natural completion (not warmup, not cancelled) — notify worker
+                                _fire_natural_completion()
+
                             # 伺服器端已經清空狀態，現在可以接收新 response 了
                             is_response_active = False
                             awaiting_cancel_ack = False
@@ -365,11 +445,18 @@ def _audio_player_worker():
                 _log_tts_latency(latency)
                 _perf_stats["last_text_sent_ts"] = 0.0
 
-            # --- 計算 E2E Latency (新增: 視覺+傳輸+語音) ---
+            # --- 計算 E2E Latency (視覺+傳輸+語音) ---
             if _perf_stats["current_ref_ts"] > 0:
                 e2e_latency = time.time() - _perf_stats["current_ref_ts"]
                 _perf_stats["e2e_latencies"].append(e2e_latency)
-                _perf_stats["current_ref_ts"] = 0.0  # 重置，避免同一句重複計算
+                vid_t = _perf_stats["current_start_t"]
+                _perf_stats["current_ref_ts"] = 0.0
+                _perf_stats["current_start_t"] = 0.0
+                avg_e2e = sum(_perf_stats["e2e_latencies"]) / len(_perf_stats["e2e_latencies"])
+                logging.info(
+                    "[延遲] 影片 %.1fs → 開始播報 +%.2fs  (平均 %.2fs, n=%d)",
+                    vid_t, e2e_latency, avg_e2e, len(_perf_stats["e2e_latencies"]),
+                )
 
             if process is None or process.poll() is not None:
                 try:
@@ -394,10 +481,14 @@ def start_tts_system() -> None:
     global _tts_threads_started
     if _tts_threads_started: return
     _stop_event.clear()
-    t1 = threading.Thread(target=lambda: asyncio.run(_openai_realtime_worker()), daemon=True)
-    t1.start()
-    t2 = threading.Thread(target=_audio_player_worker, daemon=True)
-    t2.start()
+    if _DRY_RUN:
+        threading.Thread(target=_mock_tts_worker, daemon=True).start()
+        print("🧪 [TTS] Dry-run 模式 — Mock TTS worker 已啟動（不播音）")
+    else:
+        t1 = threading.Thread(target=lambda: asyncio.run(_openai_realtime_worker()), daemon=True)
+        t1.start()
+        t2 = threading.Thread(target=_audio_player_worker, daemon=True)
+        t2.start()
     _tts_threads_started = True
     print("🚀 [TTS] OpenAI TTS 背景服務已啟動")
 
@@ -406,14 +497,14 @@ def stop_tts_system() -> None:
     _stop_event.set()
     _tts_threads_started = False
 
-def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True) -> None:
+def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True, priority: int = 5, start_t: float = 0.0) -> None:
     if contains_meaningful_text(text):
         if drop_outdated:
-            # 1. 清空文字隊列
             clear_text_queue()
-        
-        # 如果沒傳時間 (ref_ts=0)，就用當下時間當作 fallback
+
         ts = ref_ts if ref_ts > 0 else time.time()
-        
-        # [修改] 放入 tuple (text, timestamp)
-        _text_queue.put((text, ts))
+        _text_queue.put((text, ts, start_t))
+
+        if _DRY_RUN:
+            preview = text[:60] + ("…" if len(text) > 60 else "")
+            _tts_logger.info(f'📥 [ENQUEUE P{priority}] "{preview}"')

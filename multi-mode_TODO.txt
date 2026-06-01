@@ -1,0 +1,493 @@
+# 技術需求文件：MIIS Broadcast 純視覺多模態雙軌播報系統更新
+## 修訂版 (2026-05-24) — 依現有架構校正可行性
+
+---
+
+## 0. 現有架構盤點（開發前必讀）
+
+在讀本文件前，必須先了解哪些已存在、哪些是空的：
+
+| 功能模組 | 現況 | 備注 |
+|---|---|---|
+| LiveCC Camera 推論 | ✅ 完整實作 | `LiveCCCameraWorker` (workers/livecc.py) |
+| 滑動窗口 + FPS 降頻 | ✅ 完整實作 | `window_sec=2.0`, `target_fps=2.0` in models.yml |
+| 時間驅動 KV 快取重置 | ✅ 完整實作 | `memory_reset_every=5`（每5次推論清空） |
+| RAG 靜態知識庫 | ✅ 完整實作 | `_ContextRetriever` (TF-IDF) in gemini_broadcaster.py |
+| Gemini 流式生成 | ✅ 完整實作 | `stream_gemini()` in gemini_broadcaster.py |
+| Gemini 優先級系統 | ✅ 完整實作 | 輸出格式 `P1:~P5:` 已有 |
+| TTS 中斷機制 | ✅ 完整實作 | `interrupt_tts()`, `enqueue_tts_text(priority=...)` |
+| TTS 優先級佇列 | ✅ 完整實作 | `enqueue_tts_text(text, priority=N)` |
+| 幻覺過濾 | ✅ 完整實作 | `_is_degenerate()` in livecc_transformers.py |
+| **MatchTracker 比分追蹤** | ❌ 不存在 | 待實作 |
+| **快軌關鍵字掃描** | ❌ 不存在 | 待實作（見第2節） |
+| **GeminiWorker P1 插隊** | ❌ 有嚴重 Bug | `_busy` flag 會把 P1 事件丟棄！見第3節 |
+| **事件驅動 KV 重置** | ❌ 不存在 | 僅有時間驅動，無法響應 P1/P2 信號 |
+| **LiveCC 純自然語言輸出** | ❌ 仍在解析 JSON | `_parse_visual_json()` 仍被呼叫 |
+| **MatchTracker 注入 Gemini** | ❌ 不存在 | Prompt 僅含 RAG context + visual |
+
+---
+
+## 1. 系統願景與核心架構（修訂）
+
+MIIS Broadcast 旨在 VR 環境下達成亞秒級 AI 賽事播報。系統確立「視覺感知、後端快慢雙軌調度」架構：
+
+```
+LiveCCCameraWorker
+  │  每 2 秒推論一次，輸出自然語言描述
+  │
+  ▼
+[快軌 Fast Path] ─── 關鍵字掃描 ──────────────────► 若 P1: 立即 interrupt_tts()
+  │                                                     + 觸發 MatchTracker 計分
+  │
+  ▼
+[慢軌 Smart Path]
+  │  完整語句 → GeminiWorker（帶 MatchTracker + RAG）
+  │
+  ▼
+Gemini 串流生成 P1~P5 口播稿
+  │
+  ▼
+OpenAI TTS（優先級播放）
+```
+
+**架構核心原則（三條不能妥協）：**
+1. 比分數值由 Python `MatchTracker` 維護，絕不交給 LLM 計算
+2. P1 事件不能因 Gemini 忙碌而被丟棄（現有 `_busy` flag 是 Bug，必須修）
+3. 快軌不等待 Gemini 回應，直接決定 TTS 中斷
+
+---
+
+## 2. 快軌 (Fast Path)：可行設計修訂
+
+### 2.1 設計澄清——不是「字元流」而是「段落級搶先掃描」
+
+原始文件描述「字元流毫秒級掃描」。**實際上在現有架構中不可行**，原因：
+- `live_cc_from_frames()` generator 只在整個 segment 生成完畢後才 yield
+- Token 在 `model.generate()` 內部流動，沒有對外 emit 的鉤子
+
+**可行且等效的方案（段落級快軌）：**
+```
+LiveCCCameraWorker.signal_segment 發出原始文字
+  │
+  ▼ [GUI thread：on_segment_received()]
+  立即掃描 raw_text（LiveCC 完成 = Gemini 尚未開始）
+  │
+  ├─ P1 關鍵字命中 → [全線清除] + 排入 Gemini（計分延遲到 Gemini 確認後）
+  │                   └─ 1. interrupt_tts()（清 TTS 文字佇列 + 音訊佇列）
+  │                      2. gemini_worker.flush_and_abort()（直接呼叫，非 Signal）
+  │                      3. gemini_worker.process_segment(...)
+  │
+  ├─ P2 關鍵字命中 → Gemini 任務插到 deque 最前端（不清除舊任務，不中斷 TTS）
+  └─ 其他 → Gemini 任務附加到 deque 尾端
+```
+
+這在「LiveCC 生成完 ↔ Gemini 開始前」的間隙完成掃描，實際延遲 <5ms，對播報時序完全足夠。
+
+### 2.2 關鍵字優先級表
+
+| 優先權 | 觸發關鍵字 | 後端動作 |
+|---|---|---|
+| **P1** | `score, goal, foul, shot, basket, 進球, 得分, 犯規, 投籃` | 全線清除（TTS 佇列 + Gemini 佇列 + 中止當前 stream）→ 立即處理 → **Gemini 回傳 P1 後**才由 MatchTracker 計分 |
+| **P2** | `pass, timeout, intercept, block, 傳球, 暫停, 抄截, 封蓋` | Gemini 任務插到 deque 最前端（不清除舊任務，不中斷 TTS） |
+| **P3** | 其他描述 | 正常附加到 deque 尾端 |
+
+**P1「全線清除」的核心邏輯**：P1 代表場上出現了一個關鍵轉折點。此時間點之前排隊的所有描述都是舊世界資訊，播出去只會讓觀眾困惑。清得越乾淨，P1 播報越快，高潮同步感越強。
+
+**計分在 Gemini 確認後才觸發的原因**：快軌掃描只知道「有得分關鍵字」，但不知道是哪隊、是真實得分還是進攻失敗的描述（如 "attempts a shot"）。由 Gemini 分析完整語意後，在 `signal_broadcast` 回傳 `action_label == "score"` 時才呼叫 `MatchTracker.add_score(team)`，可避免 LiveCC 幻覺或模糊描述造成的計分錯誤。
+
+P2 不清除的原因：賽事節奏轉折（換人、暫停）屬於「連續情境」，前一句話的脈絡還有用，插隊但不清除舊內容。
+
+### 2.3 實作位置
+
+快軌掃描邏輯寫在 `gui.py` 的 `on_segment_received()` handler（連接 `signal_segment`），**不要寫成獨立 worker**，避免增加不必要的執行緒開銷。
+
+---
+
+## 3. 關鍵 Bug 修復：GeminiWorker `_busy` flag
+
+### 3.1 問題
+
+`workers/gemini.py:62-63`：
+```python
+if self._busy:
+    logging.debug("[GeminiWorker] Busy, dropping segment %.2f-%.2f", start_t, stop_t)
+    return
+```
+
+**當 Gemini 正在處理 P3 日常描述時，進球事件的 P1 segment 直接被丟棄。** 這讓整個優先級系統形同虛設。
+
+### 3.2 解決方案：deque 佇列 + 跨執行緒中止旗標
+
+GeminiWorker 需要同時具備兩個能力：
+1. **清除舊任務**（已排隊但尚未開始處理的 segment）
+2. **中止當前任務**（正在跑的 `stream_gemini()` 迭代）
+
+#### 為什麼不能用 Qt QueuedConnection 呼叫 flush_and_abort()
+
+`stream_gemini()` 是一個阻塞的 HTTP 串流請求，執行時整個 QThread 的事件迴圈被佔用。若用 Signal 的 `QueuedConnection` 呼叫 `flush_and_abort()`，該呼叫會排到事件佇列裡，永遠等不到 `stream_gemini()` 結束後才執行——P1 中止就失效了。
+
+**正確做法**：`flush_and_abort()` 從 GUI thread **直接呼叫**（非 Signal），利用 Python GIL 保護跨執行緒的 bool 寫入。`collections.deque` 本身的 `appendleft` / `clear` 在 CPython 下是執行緒安全的。
+
+```python
+# GeminiWorker 改造方向
+from collections import deque
+import threading
+
+# deque 替代 queue.Queue：
+#   - P3: deque.append(task)         → 排到尾端
+#   - P2: deque.appendleft(task)     → 插到最前端
+#   - P1: deque.clear() + append(task) → 清空後排入
+_task_deque: deque = deque()
+_abort_current: bool = False   # 跨執行緒旗標，GIL 保護下安全
+
+def flush_and_abort(self) -> None:
+    """P1 觸發時由 GUI thread 直接呼叫（不用 Signal），立即生效。"""
+    self._task_deque.clear()        # 清空待處理任務
+    self._abort_current = True      # 通知進行中的 stream_gemini() 提前退出
+    logging.info("[GeminiWorker] Flushed deque and set abort flag (P1 event)")
+
+@QtCore.Slot(float, float, object)
+def process_segment(self, start_t: float, stop_t: float, data: object) -> None:
+    """P3 用途：由 Signal 呼叫，任務排到尾端。"""
+    self._task_deque.append((start_t, stop_t, data))
+    if not self._busy:
+        self._drain_deque()
+
+def enqueue_front(self, start_t: float, stop_t: float, data: object) -> None:
+    """P2 用途：由 GUI thread 直接呼叫，任務插到最前端。"""
+    self._task_deque.appendleft((start_t, stop_t, data))
+    if not self._busy:
+        self._drain_deque()
+
+def _drain_deque(self) -> None:
+    """在 Worker QThread 內執行，持續消化直到 deque 清空。"""
+    self._busy = True
+    try:
+        while self._task_deque:
+            start_t, stop_t, data = self._task_deque.popleft()
+            self._abort_current = False
+            self._process_one(start_t, stop_t, data)
+    finally:
+        self._busy = False
+
+def _process_one(self, start_t, stop_t, data) -> None:
+    """實際呼叫 stream_gemini()，每次 yield 後檢查 _abort_current。"""
+    for ev in stream_gemini(data):
+        if self._abort_current:
+            logging.info("[GeminiWorker] Aborted mid-stream %.2f-%.2f", start_t, stop_t)
+            return
+        if not priority_emitted and ev.priority is not None:
+            self.signal_priority.emit(start_t, stop_t, ev.priority, bool(ev.should_speak))
+            priority_emitted = True
+        if not broadcast_emitted and ev.broadcast_text is not None:
+            self.signal_broadcast.emit(start_t, stop_t, ev.to_dict())
+            broadcast_emitted = True
+```
+
+**GUI 呼叫時序（P1 命中時）：**
+```python
+# on_segment_received() 中
+if is_p1:
+    interrupt_tts()                                        # 清 TTS 佇列（直接呼叫 core 函式）
+    self._gemini_worker.flush_and_abort()                  # 直接呼叫，不用 Signal
+    self._gemini_worker.enqueue_front(start_t, stop_t, data)  # 直接呼叫，插最前
+
+# P2 命中時
+elif is_p2:
+    self._gemini_worker.enqueue_front(start_t, stop_t, data)  # 直接呼叫
+
+# P3 命中時（一般路徑）
+else:
+    self._gemini_worker_signal.emit(start_t, stop_t, data)    # 走 Signal 佇列正常排
+```
+
+**P1 觸發後的狀態**：deque 清空、TTS 佇列清空、`_abort_current=True` 讓進行中的 stream 在下一個 yield 點退出，系統只剩 P1 這一個任務待處理。
+
+---
+
+## 4. MatchTracker 實作規格
+
+### 4.1 位置與職責
+
+新建 `src/miis_broadcast/core/match_tracker.py`，Singleton 模式，執行緒安全。
+
+```python
+class MatchTracker:
+    """Python 側唯一真相來源。LLM 只看、不寫。"""
+    red_score: int
+    blue_score: int
+    period: int
+    last_event: str  # 最後一個 P1 事件描述
+
+    def add_score(self, team: str) -> None  # thread-safe
+    def get_state_string(self) -> str       # 供注入 Gemini prompt
+    def reset(self) -> None
+    def set_period(self, n: int) -> None
+```
+
+### 4.2 計分觸發時機（已確定）
+
+**快軌不直接計分，由 Gemini 確認後觸發。**
+
+流程：
+1. 快軌掃描到 P1 關鍵字 → 觸發全線清除 + 優先送 Gemini
+2. Gemini 分析完整語意，在 `signal_broadcast` 回傳 `action_label` 含 `"score"` 或 `"goal"`
+3. GUI 的 `on_broadcast_received()` 收到後，呼叫 `MatchTracker.add_score(team)`
+
+**為什麼不在快軌直接計分**：快軌只看關鍵字，無法辨識隊伍（jersey number → team 需要查表），也無法區分「進球成功」與「嘗試投籃」的描述。Gemini 有完整語意和 RAG 知識（球員所屬隊伍），是唯一能可靠判斷的節點。
+
+`MatchTracker.add_score()` 的 `team` 參數來自 Gemini 回傳的 `action_label`，格式建議：`"score_red"` / `"score_blue"`，由 Gemini system prompt 約束輸出。
+
+GUI 提供手動修正介面（+/- 按鈕）處理誤判。
+
+### 4.3 注入 Gemini 的格式
+
+在 `gemini_broadcaster.py` 的 `stream_gemini()` 中，擴充 prompt：
+
+```
+[Game context: {rag_data}]
+[Match state: {match_tracker.get_state_string()}]
+{livecc_visual}
+```
+
+`get_state_string()` 範例輸出：`"Red 3 : Blue 2, Q2, last event: jump shot"`
+
+---
+
+## 5. 事件驅動 KV 快取重置
+
+### 5.1 現況
+
+`LiveCCCameraWorker` 已有 `memory_reset_every=5` 時間驅動重置。
+
+### 5.2 缺口
+
+P1 事件（死球、進球）後應立即重置，避免 KV cache 帶著舊的動作記憶推論新的開球畫面。
+
+### 5.3 修法
+
+在 `LiveCCCameraWorker` 加一個 Slot：
+
+```python
+@QtCore.Slot()
+def requestMemoryReset(self) -> None:
+    """外部呼叫（P1 信號觸發），立即清空 KV Cache。"""
+    self._state = {}
+    logging.info("[LiveCCCameraWorker] Memory reset triggered by P1 event")
+```
+
+GUI 側：接收到 `signal_priority(P1)` → 連接 `liveCCCameraWorker.requestMemoryReset()`
+
+---
+
+## 6. LiveCC 輸出格式遷移（JSON → 純文字）
+
+### 6.1 現況說明（比預期好）
+
+`livecc_transformers.py` 的 `_parse_visual_json()` **已有純文字 fallback**（L390-395）：
+```python
+return {
+    "event": "raw_description",
+    "target": "unknown",
+    "urgency": 1,
+    "metadata": {"raw": stripped},
+}
+```
+當 LiveCC 輸出非 JSON 文字時，它已正確包裝成 dict，`_extract_text()` 讀取的是 `metadata.raw`，可正常傳入 Gemini。
+
+**因此 Phase 1 只需做一件事**：修改 `configs/livecc_prompts.yml`，移除 JSON 格式指令即可。`_parse_visual_json()` 不需要改動。
+
+### 6.2 遷移策略
+
+**Phase 1（只改 prompt，低風險）**：
+- 修改 `configs/livecc_prompts.yml`，移除 JSON 格式指令（見第 8 節）
+- 驗證 `_extract_text()` 正確從 `metadata.raw` 取出文字後送 Gemini
+
+**Phase 2（可選重構，非緊急）**：
+- 讓 `signal_segment` 直接 emit raw text string，而非 dict，簡化資料流
+- 需同步更新 `GeminiWorker.process_segment` 入參與快軌掃描邏輯
+
+---
+
+## 7. 視覺窗口參數（依現有 models.yml 確認值）
+
+目前 `configs/models.yml` 的 camera 區塊設定：
+
+```yaml
+camera:
+  window_sec: 2.0      # 每次推論取最近 2 秒的 frame buffer
+  target_fps: 2.0      # buffer 降頻至 2 FPS
+  infer_interval: 2.0  # 每 2 秒觸發一次推論
+  memory_reset_every: 5 # 每 5 次推論時間重置一次
+```
+
+TODO 文件建議的 1.0~1.5 秒窗口**對應的是 `window_sec`**，可調整：
+
+```yaml
+camera:
+  window_sec: 1.5      # ✏️ 從 2.0 改為 1.5（縮短視覺殘留，降低延遲）
+  target_fps: 2.0      # 維持
+  infer_interval: 1.5  # ✏️ 從 2.0 改為 1.5（配合窗口長度）
+  memory_reset_every: 5 # 維持
+```
+
+注意：`mm_window_sec: 12.0` 是 LiveCC 模型層的 KV cache 多模態記憶視窗，與 frame buffer 是兩層不同概念，**不要混淆**。
+
+---
+
+## 8. 提示詞更新規格
+
+### 8.1 LiveCC Prompt (`configs/livecc_prompts.yml`)
+
+移除任何 JSON 格式指令，改為純自然語言描述約束：
+
+```yaml
+system_prompt: |
+  You are a real-time visual commentator for a live sports broadcast.
+  Describe only what you see in the current short video clip.
+
+  Rules:
+  - Output 1-2 short, objective sentences only.
+  - Mention team colors and jersey numbers when visible.
+  - Do NOT output JSON, markdown, or any special symbols.
+  - Do NOT refer to yourself or address the audience.
+
+  Example:
+  "Red team player number 10 drives to the basket and scores."
+  "White team number 5 commits a foul on the blue defender."
+```
+
+### 8.2 Gemini Prompt（含 MatchTracker 注入）
+
+修改 `gemini_broadcaster.py` 的 `stream_gemini()` 中的 prompt 構建邏輯：
+
+```python
+# 目前：
+prompt = f"[Game context: {ctx}]\n{visual}" if ctx else visual
+
+# 修改後：
+match_state = _match_tracker.get_state_string() if _match_tracker else ""
+parts = []
+if ctx:       parts.append(f"[Game context: {ctx}]")
+if match_state: parts.append(f"[Match state: {match_state}]")
+parts.append(visual)
+prompt = "\n".join(parts)
+```
+
+### 8.3 Gemini System Prompt（`configs/system_prompts.yml`）
+
+在現有風格 prompt 中加入約束：
+
+```
+【強制規則】
+- 比分、進球數等數字資訊：必須且只能引用 [Match state] 中的數值，禁止自行計算或猜測。
+- 若 [Match state] 未提供，不播報任何數值。
+- 輸出格式維持：第一行 P<1-5>: <口播文字>，第二行 LABEL: <label>
+```
+
+---
+
+## 9. 實作任務清單（優先順序）
+
+### 🔴 P0：必須先修，否則系統邏輯有根本性缺陷
+
+**任務 1：重構 GeminiWorker（deque 佇列 + 中止旗標）**
+- 檔案：`src/miis_broadcast/workers/gemini.py`
+- 用 `collections.deque` 取代 `_busy` 丟棄邏輯
+- 新增 `flush_and_abort()`、`enqueue_front()`、`_drain_deque()`、`_process_one()`
+- 詳見第 3.2 節程式碼
+
+**任務 2：修復 `start_tts_system()` 錯誤耦合**
+- 檔案：`src/miis_broadcast/core/models/livecc_transformers.py:264`
+- 從 `LiveCCInfer.__init__()` 移除 `start_tts_system()` 呼叫
+- 確認 `OpenAITTSWorker.start()` Slot 已負責啟動（`workers/openai_tts.py:26` 已有）
+
+### 🟠 P1：核心新功能，直接影響播報品質（依序執行）
+
+**任務 3：實作 MatchTracker**（任務 4、5 的前置條件）
+- 新建 `src/miis_broadcast/core/match_tracker.py`
+- Singleton、執行緒安全、`add_score(team)`、`get_state_string()`、`reset()`
+- GUI 新增比分顯示面板與手動 +/- 按鈕
+
+**任務 4：快軌關鍵字掃描**（依賴任務 1、3）
+- 在 `gui.py` 的 `on_segment_received()` 加入 P1/P2 關鍵字掃描
+- P1：`interrupt_tts()` + `gemini_worker.flush_and_abort()` + `gemini_worker.enqueue_front()`
+- P2：`gemini_worker.enqueue_front()`
+- P3：`gemini_worker.process_segment()` Signal（走正常佇列）
+
+**任務 5：Gemini LABEL 格式擴充與 MatchTracker 計分觸發**（依賴任務 3）
+- 更新 Gemini system prompt：LABEL 格式改為 `score_red` / `score_blue` / `foul` 等
+- 在 `gui.py` 的 `on_broadcast_received()` 中，根據 `action_label` 呼叫 `MatchTracker.add_score()`
+
+**任務 6：事件驅動 KV 重置**
+- `LiveCCCameraWorker` 加 `requestMemoryReset()` Slot（`self._state = {}`）
+- GUI 的 `on_broadcast_received()` 收到 P1 後，透過 Signal 呼叫（QueuedConnection，執行在 Worker thread）
+
+### 🟡 P2：改善播報品質
+
+**任務 7：LiveCC Prompt 遷移（JSON → 純文字）**
+- 僅修改 `configs/livecc_prompts.yml`，移除 JSON 格式指令（見第 8.1 節）
+- `_parse_visual_json()` 不需要修改，fallback 已存在
+
+**任務 8：MatchTracker 注入 Gemini Prompt**（依賴任務 3）
+- 修改 `gemini_broadcaster.py`，在 `stream_gemini()` 的 prompt 組裝中加入 `[Match state: ...]`
+- 更新 Gemini system prompt，加入「禁止自行計算數值」約束（見第 8.3 節）
+
+**任務 9：視覺窗口調參**
+- `configs/models.yml`：`window_sec: 1.5`、`infer_interval: 1.5`
+- 注意：`target_fps: 2.0` + `window_sec: 1.5` = 每次推論約 3 frames，觀察是否足夠辨識動作
+- 若畫面過少，可改 `target_fps: 3.0`（每次 4-5 frames）
+
+### 🟢 P3：優化
+
+**任務 10：LiveCC signal_segment 改為 emit 純文字**（可選重構）
+- 讓資料流更清晰，移除 dict 包裝
+- 需同步更新 GeminiWorker 和快軌掃描的資料接收邏輯
+
+---
+
+## 10. 開發前仍需確認的事項
+
+### 10.1 Gemini LABEL 格式的向下相容
+
+任務 5 要把 LABEL 格式從 `score` 改為 `score_red` / `score_blue`。需確認現有 GUI 中所有讀取 `action_label` 的地方（`gui.py` 的 `on_broadcast_received()`）都同步更新，否則會靜默失效（讀到舊格式 label 不計分）。
+
+### 10.2 Gemini 模型版本
+
+`gemini_broadcaster.py:195` 目前使用的模型從 `configs/app.yml` 的 `gemini.model_name` 讀取，預設值 `"gemini-3.1-flash-lite-preview"`。任務開始前確認這是否為目標版本，或需換成延遲更低 / 語意更強的版本。
+
+### 10.3 requestMemoryReset() 的連線方式
+
+任務 6 的 `requestMemoryReset()` Slot **必須用 Signal 呼叫（QueuedConnection）**，不能直接呼叫。直接從 GUI thread 呼叫會在 Worker thread 正在執行推論時競爭 `self._state`，造成不可預期的行為。連接寫法：
+```python
+self.signal_p1_event.connect(
+    self._livecc_camera_worker.requestMemoryReset,
+    QtCore.Qt.QueuedConnection
+)
+```
+
+---
+
+## 附錄：關鍵檔案位置速查
+
+```
+src/miis_broadcast/
+├── workers/
+│   ├── livecc.py              # LiveCCCameraWorker — 加 requestMemoryReset()
+│   ├── gemini.py              # GeminiWorker — 修 _busy Bug
+│   └── openai_tts.py          # TTS Worker — interrupt() 已存在
+├── core/
+│   ├── models/
+│   │   ├── livecc_transformers.py   # _parse_visual_json, _is_degenerate
+│   │   ├── gemini_broadcaster.py    # stream_gemini, _ContextRetriever (RAG)
+│   │   └── openai_tts.py            # interrupt_tts(), enqueue_tts_text()
+│   ├── match_tracker.py        # ❌ 待建立
+│   └── prompt/
+│       └── prompt_manager.py
+├── gui.py                      # 主 UI — 快軌掃描邏輯加在這
+configs/
+├── models.yml                  # camera window_sec / infer_interval
+├── livecc_prompts.yml          # LiveCC prompt — 移除 JSON 要求
+├── system_prompts.yml          # Gemini system prompt
+└── app.yml                     # Gemini model_name, temperature
+```

@@ -17,10 +17,10 @@ from ..core.models.openai_tts import print_tts_stats
 class LiveCCWorker(QtCore.QObject):
     # 模型載入完成
     signal_model_loaded = QtCore.Signal()
-    # 推論過程中的每一段字幕 (start_t, stop_t, text)
-    signal_segment = QtCore.Signal(float, float, str)
-    # 整段影片結束
-    signal_finished = QtCore.Signal()
+    # 推論過程中的每一段字幕 (start_t, stop_t, parsed_dict)
+    signal_segment = QtCore.Signal(float, float, object)
+    # 整段影片結束，攜帶 run_id 防止 stale signal 誤殺下一輪
+    signal_finished = QtCore.Signal(int)
     # 出錯
     signal_error = QtCore.Signal(str)
     # 新增：轉發背景日誌給 GUI 存檔 (source, level, message)
@@ -31,6 +31,7 @@ class LiveCCWorker(QtCore.QObject):
         self.device_id = device_id
         self.livecc: Optional[LiveCCInfer] = None
         self._stop_requested = False
+        self.response_prefix: str = ""
 
     @QtCore.Slot()
     def loadModel(self) -> None:
@@ -51,15 +52,15 @@ class LiveCCWorker(QtCore.QObject):
             logging.exception("[LiveCCWorker] Error while loading LiveCC model")
             self.signal_error.emit(str(e))
 
-    @QtCore.Slot(str, str)
-    def runInference(self, video_path: str, query: str) -> None:
+    @QtCore.Slot(str, str, int)
+    def runInference(self, video_path: str, query: str, run_id: int = 0) -> None:
         """在 QThread 裡跑整段 LiveCC streaming 推論。"""
         if self.livecc is None:
             self.signal_error.emit("LiveCC model not loaded yet.")
             return
 
         try:
-            logging.info("[LiveCCWorker] Start LiveCC inference on: %s", video_path)
+            logging.info("[LiveCCWorker] Start LiveCC inference on: %s (run_id=%d)", video_path, run_id)
             self._stop_requested = False
 
             t0 = datetime.now()
@@ -87,10 +88,12 @@ class LiveCCWorker(QtCore.QObject):
 
                 # 推論一個 segment（或多個，或零個）
                 segment_count = 0
-                for (start_t, stop_t), response, state in self.livecc.live_cc(query, state):
+                for (start_t, stop_t), response, state in self.livecc.live_cc(
+                    query, state, response_prefix=self.response_prefix
+                ):
                     segment_count += 1
-                    # emit segment
-                    self.signal_segment.emit(float(start_t), float(stop_t), response)
+                    parsed = self.livecc._parse_visual_json(response)
+                    self.signal_segment.emit(float(start_t), float(stop_t), parsed)
 
                 # 如果影片結束或沒有新 segment，就跳出迴圈
                 if state.get("video_end", False):
@@ -107,7 +110,7 @@ class LiveCCWorker(QtCore.QObject):
                 (t1 - t0).total_seconds(),
             )
 
-            self.signal_finished.emit()
+            self.signal_finished.emit(run_id)
 
         except Exception as e:
             logging.exception("[LiveCCWorker] Error during inference")
@@ -212,7 +215,7 @@ class LiveCCCameraWorker(QtCore.QObject):
     """
 
     signal_model_loaded = QtCore.Signal()
-    signal_segment = QtCore.Signal(float, float, str)
+    signal_segment = QtCore.Signal(float, float, object)
     signal_finished = QtCore.Signal()
     signal_error = QtCore.Signal(str)
     signal_log = QtCore.Signal(str, str, str)
@@ -223,6 +226,7 @@ class LiveCCCameraWorker(QtCore.QObject):
         window_sec: float = 2.0,
         target_fps: float = 2.0,
         infer_interval: float = 2.0,
+        memory_reset_every: int = 5,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -230,9 +234,11 @@ class LiveCCCameraWorker(QtCore.QObject):
         self.window_sec = window_sec
         self.target_fps = target_fps
         self.infer_interval = infer_interval
+        self.memory_reset_every = memory_reset_every
 
         self.livecc: Optional[LiveCCInfer] = None
         self._stop_requested = False
+        self.response_prefix: str = ""
 
         self._buffer: Deque[FrameItem] = deque(maxlen=180)
         self._state: Dict[str, Any] = {}
@@ -320,7 +326,7 @@ class LiveCCCameraWorker(QtCore.QObject):
                 # 假設 infer_interval=1.0s，代表每 5 秒會重置一次記憶。
                 # 既能保留短期動作連貫性，又能斬斷無限跳針的迴圈。
                 inference_count += 1
-                if inference_count % 5 == 0:
+                if inference_count % self.memory_reset_every == 0:
                     self._state = {}
                     logging.info(f"[LiveCCCameraWorker] Memory Reset (Count={inference_count})")
 
@@ -329,8 +335,10 @@ class LiveCCCameraWorker(QtCore.QObject):
                         clip=clip,
                         query=self._query,
                         state=self._state,
+                        response_prefix=self.response_prefix,
                     ):
-                        self.signal_segment.emit(float(start_ts), float(stop_ts), text)
+                        parsed = self.livecc._parse_visual_json(text)
+                        self.signal_segment.emit(float(start_ts), float(stop_ts), parsed)
                 except Exception as e:
                     logging.exception("[LiveCCCameraWorker] Error during camera inference")
                     self.signal_error.emit(str(e))
@@ -354,5 +362,12 @@ class LiveCCCameraWorker(QtCore.QObject):
     def requestStop(self) -> None:
         """外部呼叫，結束鏡頭推論迴圈"""
         self._stop_requested = True
+
+    @QtCore.Slot()
+    def requestMemoryReset(self) -> None:
+        """P1 event triggered — reset KV cache immediately.
+        Must be called via QueuedConnection so it runs in the worker thread."""
+        self._state = {}
+        logging.info("[LiveCCCameraWorker] Memory reset triggered by P1 event")
 
 

@@ -1,15 +1,21 @@
 import logging
+import os
 import sys
 from PySide6 import QtWidgets
 
 from .gui import MainWindow
 from .core.utils.config import parse_configs
+from .core.models.openai_tts import enable_dry_run
 
 CONFIG_PATH = './configs/app.yml'
 MODEL_CONFIG_PATH = './configs/models.yml'
 
 def main():
     logging.basicConfig(filename='logs/app_error.log', level=logging.INFO)
+
+    # 設 TTS_DRY_RUN=1 啟用 log 模擬模式（不播音，驗證 interrupt 機制）
+    if os.environ.get("TTS_DRY_RUN", "0") == "1":
+        enable_dry_run(True)
     app = QtWidgets.QApplication([])
 
     # Config parsing

@@ -17,13 +17,18 @@ from typing import Optional
 warnings.filterwarnings("ignore")
 
 
-from chatterbox_streaming.src.chatterbox.tts import ChatterboxTTS
+try:
+    from chatterbox_streaming.src.chatterbox.tts import ChatterboxTTS
+except ImportError:
+    ChatterboxTTS = None
 
+from miis_broadcast.core.utils.config import load_app_config
 
 # ==========================================
 # ⚙️ 設定參數
 # ==========================================
-AUDIO_PROMPT_PATH = "/home/miislab/livecc_gui/ref_voice/announcer_ref.wav"
+_chatterbox_cfg = load_app_config().get("chatterbox_tts", {})
+AUDIO_PROMPT_PATH: str = _chatterbox_cfg.get("audio_prompt_path", "/home/miislab/livecc_gui/ref_voice/announcer_ref.wav")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ==========================================
@@ -38,9 +43,9 @@ _interrupt_event = threading.Event()
 _model_instance = None
 _tts_cfg_lock = threading.Lock()
 _tts_cfg = {
-    "temperature": 0.7,
-    "cfg_weight": 1,
-    "chunk_size": 25, # 小 Chunk 避免 OOM
+    "temperature": float(_chatterbox_cfg.get("temperature", 0.7)),
+    "cfg_weight": float(_chatterbox_cfg.get("cfg_weight", 1.0)),
+    "chunk_size": int(_chatterbox_cfg.get("chunk_size", 25)),
 }
 
 def set_local_tts_params(temperature: float, cfg_weight: float) -> None:
@@ -121,7 +126,9 @@ def _local_tts_generator_worker():
     # 1. 載入模型
     if _model_instance is None:
         try:
+            from miis_broadcast.core.utils.vram_monitor import vram_monitor
             _clean_vram()
+            vram_before = vram_monitor.get_allocated_gb(DEVICE)
             print(f"⏳ [Local TTS] 正在載入模型...")
             if ChatterboxTTS is not None:
                 _model_instance = ChatterboxTTS.from_pretrained(device=DEVICE)
@@ -140,6 +147,8 @@ def _local_tts_generator_worker():
                             )
                             for _ in warmup_gen: pass
                     print("✅ [Local TTS] 模型就緒！")
+                    vram_after = vram_monitor.get_allocated_gb(DEVICE)
+                    vram_monitor.log_diff("ChatterboxTTS", vram_before, vram_after)
                 except Exception as e:
                     print(f"⚠️ [Local TTS] Warmup 警告: {e}")
             else:
@@ -188,6 +197,9 @@ def _local_tts_generator_worker():
                                 break
                             
                             if audio_chunk is None: continue
+                            
+                            from miis_broadcast.core.utils.vram_monitor import vram_monitor
+                            vram_monitor.measure_and_evaluate("ChatterboxTTS", DEVICE)
 
                             audio_np = audio_chunk.squeeze().float().detach().cpu().numpy()
                             max_val = float(np.max(np.abs(audio_np))) if audio_np.size else 0.0
