@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MIIS Broadcast — Audience</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    /* Fixed full-viewport container; immune to flex/height:100% quirks and
+       LiveKit SDK injecting width/height attributes onto <video>. */
+    #video-container {
+      position: fixed;
+      inset: 0;
+    }
+
+    video {
+      position: absolute;
+      inset: 0;
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: contain;
+      background: #000;
+    }
+
+    /* ── Avatar ─────────────────────────────────────────────────────── */
+    #avatar-wrap {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 15;
+      display: none;          /* shown once video track is live */
+      isolation: isolate;
+    }
+
+    #avatar-container {
+      position: absolute;
+      bottom: 64px;
+      right: 56px;
+      height: 40vh;
+    }
+
+    /* Hidden video → canvas: black + neutral-bright (white) keyed to transparent */
+    #avatar-src {
+      display: none;
+    }
+
+    #avatar-canvas {
+      display: block;
+      height: 100%;
+      width: auto;
+    }
+
+    /* Open-mouth PNG overlay — stacked on top of video, alpha-composited */
+    #avatar-open {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: auto;
+      opacity: 0;             /* driven by JS per-frame via audio RMS */
+    }
+
+    /* ── Pre-live overlay ───────────────────────────────────────────── */
+    #overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      background: rgba(0,0,0,0.75);
+      z-index: 10;
+      transition: opacity 0.4s;
+    }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+
+    #logo {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: #3a86ff;
+      text-transform: uppercase;
+    }
+
+    #status {
+      font-size: 0.95rem;
+      color: #aaa;
+      min-height: 1.2em;
+    }
+
+    #start-btn {
+      padding: 14px 40px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      background: #3a86ff;
+      color: #fff;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+    #start-btn:hover  { background: #2563eb; transform: scale(1.03); }
+    #start-btn:active { transform: scale(0.98); }
+    #start-btn:disabled { background: #555; cursor: not-allowed; }
+
+    /* ── Bottom-right controls ──────────────────────────────────────── */
+    #controls {
+      position: absolute;
+      bottom: 8px;
+      right: 12px;
+      display: flex;
+      gap: 10px;
+      z-index: 20;
+    }
+
+    .ctrl-btn {
+      background: rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+      transition: background 0.2s;
+    }
+    .ctrl-btn:hover { background: rgba(255,255,255,0.15); }
+
+    #mute-btn.is-muted .mute-txt { text-decoration: line-through; }
+
+    /* ── Top-centre status bar ─────────────────────────────────────── */
+    #status-bar {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.5);
+      border-radius: 20px;
+      padding: 4px 16px;
+      font-size: 0.78rem;
+      color: #ccc;
+      z-index: 20;
+      display: none;
+    }
+    #status-bar.visible { display: block; }
+
+    .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .dot.live      { background: #22c55e; animation: pulse 1.5s infinite; }
+    .dot.reconnect { background: #f59e0b; }
+    .dot.offline   { background: #ef4444; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="video-container">
+  <video id="video" autoplay playsinline muted></video>
+
+  <!-- Avatar: hidden mp4 decoded → canvas black-key → mouth PNG overlay (volume) -->
+  <div id="avatar-wrap">
+    <div id="avatar-container">
+      <video id="avatar-src"
+             src="/assets/avatar/cat_anchor.mp4"
+             muted playsinline loop preload="auto"></video>
+      <!-- Higher internal res → cleaner chroma + less translucent scaling halos -->
+      <canvas id="avatar-canvas" width="432" height="768"></canvas>
+      <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false" />
+    </div>
+  </div>
+
+  <div id="overlay">
+    <div id="logo">MIIS Broadcast</div>
+    <div id="status">等待連線…</div>
+    <button id="start-btn">▶ 開始觀看</button>
+  </div>
+
+  <div id="status-bar">
+    <span class="dot" id="state-dot"></span>
+    <span id="state-text">直播中</span>
+  </div>
+
+  <div id="controls" style="display:none">
+    <button type="button" class="ctrl-btn" id="mute-btn" title="靜音播報">
+      <span class="mute-ico">🔊</span> <span class="mute-txt">靜音</span>
+    </button>
+    <button class="ctrl-btn" id="fs-btn">⛶ 全螢幕</button>
+    <button class="ctrl-btn" id="reconnect-btn">↺ 重連</button>
+  </div>
+</div>
+
+<script type="module">
+  import { Room, RoomEvent, Track, ConnectionState }
+    from "https://cdn.jsdelivr.net/npm/livekit-client@2/+esm";
+
+  // ── DOM refs ─────────────────────────────────────────────────────────
+  const videoEl      = document.getElementById("video");
+  const overlay      = document.getElementById("overlay");
+  const statusTxt    = document.getElementById("status");
+  const startBtn     = document.getElementById("start-btn");
+  const statusBar    = document.getElementById("status-bar");
+  const stateDot     = document.getElementById("state-dot");
+  const stateText    = document.getElementById("state-text");
+  const controls     = document.getElementById("controls");
+  const muteBtn      = document.getElementById("mute-btn");
+  const fsBtn        = document.getElementById("fs-btn");
+  const reconnBtn    = document.getElementById("reconnect-btn");
+  const avatarWrap    = document.getElementById("avatar-wrap");
+  const avatarSrc     = document.getElementById("avatar-src");
+  const avatarCanvas    = document.getElementById("avatar-canvas");
+  const avatarOpen      = document.getElementById("avatar-open");
+  const avatarCtx       = avatarCanvas.getContext("2d", { willReadFrequently: true });
+
+  // ── State ─────────────────────────────────────────────────────────────
+  let room   = null;
+  let muted  = false;
+  const audioEls = new Map();   // track name → <audio> element
+
+  // ── Avatar / audio-analysis state ─────────────────────────────────────
+  // AudioContext created on the start-button click (user gesture) so the
+  // browser does not block it under its autoplay policy.
+  let audioCtx    = null;
+  let analyser    = null;
+  let timeDomain  = null;
+  let avatarComposerRaf = null;
+  let lastAvatarPaintTs = 0;
+
+  avatarSrc.addEventListener("loadeddata", () => {
+    backdropCalibrated = false;
+    lastAvatarPaintTs = 0;
+    if (avatarWrap.style.display !== "none") renderAvatarChroma();
+  });
+
+  let speakUntil  = 0;          // performance.now() deadline for "speaking" state
+  let emaRms      = 0;
+  let wasSpeaking = false;
+
+  // Auto backdrop calibration (per mascot video src): avoids hard-coded luminance thresholds
+  // breaking when swapping to another flat-colour backdrop.
+  let backdropCalibrated              = false;
+  let backdropKeyR                   = 250;
+  let backdropKeyG                   = 250;
+  let backdropKeyB                   = 250;
+  let backdropSphereRadiusSq         = 45 * 45;
+  /** @type {{foregroundSatMin?: number, backdropRadiusBias?: number, backdropRadiusClamp?: [number, number]}} */
+  let overlayOverrides               = {};
+
+  // Tuning knobs:
+  const RMS_THRESH    = 0.018;
+  const HANGOVER_MS   = 320;
+  const EMA_ALPHA     = 0.28;
+  const AVATAR_PAINT_INTERVAL_MS = 1000 / 33;
+  /** Any pixel with saturation >= this is treated as mascot foreground (opaque). */
+  const DEFAULT_FG_SAT_MIN         = 30;
+
+  // Optional JSON tweaks: copy overlay_config.example.json → overlay_config.json
+  fetch("/assets/avatar/overlay_config.json")
+    .then((res) => (res.ok ? res.json() : null))
+    .then((cfg) => {
+      if (cfg && typeof cfg === "object") {
+        overlayOverrides = cfg;
+        backdropCalibrated = false;
+      }
+    })
+    .catch(() => {});
+
+  function fgSatThreshold() {
+    const v = overlayOverrides.foregroundSatMin ?? overlayOverrides.fgSatMinOpaque;
+    return typeof v === "number" && Number.isFinite(v) ? v : DEFAULT_FG_SAT_MIN;
+  }
+
+  function quantileSorted(sortedAsc, q) {
+    if (!sortedAsc.length) return 0;
+    const pos = Math.min(sortedAsc.length - 1, Math.max(0, Math.floor(q * (sortedAsc.length - 1))));
+    return sortedAsc[pos];
+  }
+
+  /**
+   * Sample border-band pixels after drawImage; estimate mean backdrop RGB + sphere radius so
+   * different flat keys (grey / green / beige) reuse the same maths.
+   */
+  function calibrateBackdropFromImageData(img, width, height) {
+    const d = img.data;
+    const margin = Math.max(4, Math.floor(Math.min(width, height) * 0.056));
+    const rs = []; const gs = []; const bs = []; const dists = [];
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (x >= margin && x < width - margin && y >= margin && y < height - margin)
+          continue;
+        const i = (y * width + x) * 4;
+        rs.push(d[i]); gs.push(d[i + 1]); bs.push(d[i + 2]);
+      }
+    }
+    if (!rs.length) return;
+
+    const mr = rs.reduce((a, c) => a + c, 0) / rs.length;
+    const mg = gs.reduce((a, c) => a + c, 0) / gs.length;
+    const mb = bs.reduce((a, c) => a + c, 0) / bs.length;
+
+    backdropKeyR = mr;
+    backdropKeyG = mg;
+    backdropKeyB = mb;
+
+    for (let i = 0; i < rs.length; i++) {
+      const dr = rs[i] - mr;
+      const dg = gs[i] - mg;
+      const db = bs[i] - mb;
+      dists.push(Math.sqrt(dr * dr + dg * dg + db * db));
+    }
+    dists.sort((a, b) => a - b);
+    let radius = quantileSorted(dists, 0.9) + 14;
+    const bias = overlayOverrides.backdropRadiusBias;
+    if (typeof bias === "number" && Number.isFinite(bias)) radius += bias;
+    const clamp = overlayOverrides.backdropRadiusClamp;
+    let rMin = 18;
+    let rMax = 72;
+    if (Array.isArray(clamp) && clamp.length === 2 &&
+        typeof clamp[0] === "number" && typeof clamp[1] === "number") {
+      rMin = clamp[0]; rMax = clamp[1];
+    }
+    radius = Math.min(rMax, Math.max(rMin, radius));
+    backdropSphereRadiusSq = radius * radius;
+
+    backdropCalibrated = true;
+    console.info(
+      "[AVATAR] backdrop calibrated R,G,B=(" +
+        backdropKeyR.toFixed(1) + "," +
+        backdropKeyG.toFixed(1) + "," +
+        backdropKeyB.toFixed(1) +
+        ") sphereR≈" + radius.toFixed(1),
+    );
+  }
+
+  /** Remove backdrop via sphere in RGB plus strong colour = foreground heuristic. */
+  function renderAvatarChroma() {
+    const v = avatarSrc;
+    const cw = avatarCanvas.width;
+    const ch = avatarCanvas.height;
+    const vw = v.videoWidth;
+    const vh = v.videoHeight;
+    if (!vw || !vh) return;
+
+    const scale = Math.min(cw / vw, ch / vh);
+    const dw = Math.round(vw * scale);
+    const dh = Math.round(vh * scale);
+    const ox = Math.round((cw - dw) / 2);
+    const oy = Math.round((ch - dh) / 2);
+
+    avatarCtx.clearRect(0, 0, cw, ch);
+    avatarCtx.imageSmoothingEnabled = true;
+    avatarCtx.imageSmoothingQuality = "high";
+    avatarCtx.drawImage(v, ox, oy, dw, dh);
+
+    let img;
+    try {
+      img = avatarCtx.getImageData(0, 0, cw, ch);
+    } catch (e) {
+      console.warn("[AVATAR] getImageData failed:", e);
+      return;
+    }
+
+    if (!backdropCalibrated) {
+      calibrateBackdropFromImageData(img, cw, ch);
+    }
+
+    const data = img.data;
+    const kr = backdropKeyR;
+    const kg = backdropKeyG;
+    const kb = backdropKeyB;
+    const fgSat = fgSatThreshold();
+    const r2 = backdropSphereRadiusSq;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const cMin = Math.min(r, g, b);
+      const cMax = Math.max(r, g, b);
+      const sat = cMax - cMin;
+
+      if (sat >= fgSat) {
+        data[i + 3] = 255;
+        continue;
+      }
+
+      const dr = r - kr;
+      const dg = g - kg;
+      const db = b - kb;
+      const distSq = dr * dr + dg * dg + db * db;
+
+      data[i + 3] = distSq <= r2 ? 0 : 255;
+    }
+
+    avatarCtx.putImageData(img, 0, 0);
+  }
+
+  function avatarComposerTick() {
+    avatarComposerRaf = requestAnimationFrame(avatarComposerTick);
+
+    const now = performance.now();
+    const live = avatarWrap.style.display !== "none";
+    if (live && avatarSrc.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if (now - lastAvatarPaintTs >= AVATAR_PAINT_INTERVAL_MS) {
+        lastAvatarPaintTs = now;
+        renderAvatarChroma();
+      }
+    }
+
+    // Audio → mouth + play/pause mascot video
+    if (!analyser || !timeDomain) {
+      avatarOpen.style.opacity = "0";
+      return;
+    }
+
+    analyser.getByteTimeDomainData(timeDomain);
+
+    let sumSq = 0;
+    for (let i = 0; i < timeDomain.length; i++) {
+      const s = (timeDomain[i] - 128) / 128.0;
+      sumSq += s * s;
+    }
+    const rms = Math.sqrt(sumSq / timeDomain.length);
+    emaRms = EMA_ALPHA * rms + (1 - EMA_ALPHA) * emaRms;
+
+    if (emaRms > RMS_THRESH) speakUntil = now + HANGOVER_MS;
+    const speaking = now < speakUntil;
+
+    if (speaking !== wasSpeaking) {
+      wasSpeaking = speaking;
+      if (speaking) {
+        avatarSrc.play().catch(() => {});
+      } else {
+        // Pause while silent only; resume from same timeline when speech returns
+        avatarSrc.pause();
+      }
+    }
+
+    const mouthAmt = speaking ? Math.min(1, emaRms / (RMS_THRESH * 3.5)) : 0;
+    avatarOpen.style.opacity = mouthAmt.toFixed(3);
+  }
+
+  function startAvatarComposer() {
+    if (avatarComposerRaf != null) return;
+    lastAvatarPaintTs = 0;
+    avatarComposerRaf = requestAnimationFrame(avatarComposerTick);
+  }
+
+  function stopAvatarComposer() {
+    if (avatarComposerRaf != null) {
+      cancelAnimationFrame(avatarComposerRaf);
+      avatarComposerRaf = null;
+    }
+    avatarCtx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
+  }
+
+  // ── Avatar analyser (narration RMS) ───────────────────────────────────
+
+  function initAnalyser(mediaStreamTrack) {
+    if (analyser || !audioCtx) return;
+    try {
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      const srcNode = audioCtx.createMediaStreamSource(new MediaStream([mediaStreamTrack]));
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.55;
+      srcNode.connect(analyser);
+      timeDomain = new Uint8Array(analyser.fftSize);
+      console.log("[AVATAR] analyser ready");
+    } catch (e) {
+      console.warn("[AVATAR] analyser setup failed:", e);
+    }
+  }
+
+  function teardownAnalyser() {
+    if (analyser) { analyser.disconnect(); analyser = null; }
+    if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+    timeDomain  = null;
+    emaRms      = 0;
+    wasSpeaking = false;
+    avatarSrc.pause();
+    avatarSrc.currentTime = 0;
+    avatarOpen.style.opacity = "0";
+    lastAvatarPaintTs = 0;
+    renderAvatarChroma();
+  }
+
+  // ── UI helpers ────────────────────────────────────────────────────────
+
+  function setStatus(msg) { statusTxt.textContent = msg; }
+
+  function syncMuteButton() {
+    muteBtn.classList.toggle("is-muted", muted);
+    muteBtn.title = muted ? "點擊恢復播報聲音" : "點擊靜音播報";
+    muteBtn.innerHTML = muted
+      ? '<span class="mute-ico">🔇</span> <span class="mute-txt">已靜音</span>'
+      : '<span class="mute-ico">🔊</span> <span class="mute-txt">靜音</span>';
+  }
+
+  function showLive() {
+    overlay.classList.add("hidden");
+    statusBar.classList.add("visible");
+    controls.style.display = "flex";
+    avatarWrap.style.display = "block";
+    startAvatarComposer();
+    stateDot.className = "dot live";
+    stateText.textContent = "直播中";
+  }
+
+  function showReconnecting() {
+    stateDot.className = "dot reconnect";
+    stateText.textContent = "重連中…";
+  }
+
+  function showOffline(reason) {
+    stateDot.className = "dot offline";
+    stateText.textContent = reason || "已中斷";
+    stopAvatarComposer();
+    avatarWrap.style.display = "none";
+    avatarSrc.pause();
+    avatarSrc.currentTime = 0;
+    avatarOpen.style.opacity = "0";
+  }
+
+  // ── Audio element helpers ─────────────────────────────────────────────
+
+  function removeAudioByName(name) {
+    if (!audioEls.has(name)) return;
+    const el = audioEls.get(name);
+    el.pause();
+    el.srcObject = null;
+    el.remove();
+    audioEls.delete(name);
+  }
+
+  // ── LiveKit connection ────────────────────────────────────────────────
+
+  async function connect() {
+    startBtn.disabled = true;
+    setStatus("正在取得連線資訊…");
+
+    try {
+      const res = await fetch("/api/audience/join", { method: "POST" });
+      if (!res.ok) throw new Error(`join failed: ${res.status}`);
+      const { url, token } = await res.json();
+
+      setStatus("連線中…");
+
+      room = new Room({ adaptiveStream: false, dynacast: false });
+
+      room.on(RoomEvent.TrackSubscribed, (track, _pub, _participant) => {
+        const tname = track.name || track.sid;
+
+        if (track.kind === Track.Kind.Video) {
+          track.attach(videoEl);
+          // Remove any intrinsic-size attributes the SDK may inject; CSS controls layout.
+          videoEl.removeAttribute("width");
+          videoEl.removeAttribute("height");
+          showLive();
+        }
+
+        if (track.kind === Track.Kind.Audio) {
+          removeAudioByName(tname);
+          const audioEl = track.attach();
+          audioEl.muted = muted;
+          audioEl.dataset.trackName = tname;
+          document.body.appendChild(audioEl);
+          audioEls.set(tname, audioEl);
+          audioEl.play().catch(() => {});
+          console.log("[AUDIO] subscribed:", tname, "total:", audioEls.size);
+
+          // Hook the avatar analyser onto this audio track's raw MediaStreamTrack.
+          // createMediaStreamSource creates a parallel read path that does not
+          // affect the existing <audio> playback.
+          if (track.mediaStreamTrack) {
+            initAnalyser(track.mediaStreamTrack);
+          }
+        }
+      });
+
+      room.on(RoomEvent.TrackUnsubscribed, (track) => {
+        track.detach();
+        if (track.kind === Track.Kind.Audio) {
+          removeAudioByName(track.name || track.sid);
+          // Tear down analyser; it will be re-created on the next subscription.
+          teardownAnalyser();
+          // Re-create AudioContext so it's ready for the next track subscription.
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+      });
+
+      room.on(RoomEvent.ConnectionStateChanged, (state) => {
+        if (state === ConnectionState.Reconnecting) showReconnecting();
+        if (state === ConnectionState.Connected)    showLive();
+        if (state === ConnectionState.Disconnected) showOffline("已中斷");
+      });
+
+      room.on(RoomEvent.Disconnected, () => showOffline("已中斷"));
+
+      await room.connect(url, token);
+
+    } catch (err) {
+      setStatus(`連線失敗：${err.message}`);
+      startBtn.disabled = false;
+    }
+  }
+
+  // ── Button listeners ──────────────────────────────────────────────────
+
+  startBtn.addEventListener("click", () => {
+    // Create AudioContext here (user gesture) to satisfy autoplay policy.
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    connect();
+  });
+
+  muteBtn.addEventListener("click", () => {
+    muted = !muted;
+    document.querySelectorAll("audio").forEach((a) => { a.muted = muted; });
+    syncMuteButton();
+  });
+
+  fsBtn.addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  });
+
+  reconnBtn.addEventListener("click", async () => {
+    teardownAnalyser();
+    stopAvatarComposer();
+    avatarSrc.pause();
+    avatarSrc.currentTime = 0;
+    if (room) { await room.disconnect(); room = null; }
+    audioEls.forEach((_, name) => removeAudioByName(name));
+    audioEls.clear();
+    overlay.classList.remove("hidden");
+    avatarWrap.style.display = "none";
+    startBtn.disabled = false;
+    setStatus("點擊重新連線");
+    statusBar.classList.remove("visible");
+    controls.style.display = "none";
+    // Fresh AudioContext will be created on next button click.
+    audioCtx = null;
+  });
+</script>
+</body>
+</html>

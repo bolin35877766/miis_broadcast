@@ -15,6 +15,8 @@ import os
 import time
 import types
 import logging
+import threading
+import warnings
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -78,6 +80,54 @@ class _Timer:
         return self._total / max(1, self._count)
 
 
+def _resolve_track_device(device_cfg: str) -> "torch.device":
+    """
+    Map models.yml ``device`` to ``torch.device``.
+
+    Accepts ``cpu``, ``cuda``, ``cuda:N``, ``gpu``, or a numeric string ``N`` (GPU index).
+    """
+    import torch
+
+    raw = str(device_cfg or "cpu").strip()
+    low = raw.lower()
+
+    if low == "cpu":
+        dev = torch.device("cpu")
+        print(f"[ByteTrack] 使用裝置: {dev}")
+        return dev
+
+    # GPU requested
+    if low in ("gpu", "cuda"):
+        spec = "cuda:0"
+    elif low.startswith("cuda:"):
+        spec = raw  # cuda:0, cuda:1, ...
+    elif raw.isdigit():
+        spec = f"cuda:{int(raw)}"
+    else:
+        print(f"[ByteTrack] Unknown device {device_cfg!r}; using CPU.")
+        dev = torch.device("cpu")
+        print(f"[ByteTrack] 使用裝置: {dev}")
+        return dev
+
+    if not torch.cuda.is_available():
+        print(
+            "[ByteTrack] 設定要求 GPU，但 torch.cuda.is_available() 為 False。\n"
+            f"  目前 PyTorch {torch.__version__} | torch.version.cuda={torch.version.cuda!r}\n"
+            "  Windows 請安裝含 CUDA 的 PyTorch，例如 (依你的 CUDA 版本調整 cu124/cu118)：\n"
+            "    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124\n"
+            "  已改為使用 CPU。"
+        )
+        dev = torch.device("cpu")
+        print(f"[ByteTrack] 使用裝置: {dev}")
+        return dev
+
+    dev = torch.device(spec)
+    idx = dev.index if dev.index is not None else 0
+    name = torch.cuda.get_device_name(idx)
+    print(f"[ByteTrack] 使用裝置: {dev} ({name})")
+    return dev
+
+
 # ---------------------------------------------------------------------------
 # ByteTrackWrapper
 # ---------------------------------------------------------------------------
@@ -126,6 +176,13 @@ class ByteTrackWrapper:
         logger.info(f"[ByteTrack] repo path: {repo}")
         print(f"[ByteTrack] 使用 repo: {repo}")
 
+        # Silence PyTorch UserWarning from YOLOX internals (meshgrid indexing).
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*torch\.meshgrid.*",
+            category=UserWarning,
+        )
+
         # ── 2. Import yolox after path is set ──────────────────────────────
         import torch
         from yolox.exp import get_exp
@@ -158,6 +215,7 @@ class ByteTrackWrapper:
         self.preempt_ratio = preempt_ratio
 
         # ── 4. Load YOLOX model ────────────────────────────────────────────
+<<<<<<< HEAD
         self.device = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
         print(f"[ByteTrack] 使用裝置: {self.device}")
         
@@ -165,6 +223,9 @@ class ByteTrackWrapper:
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
             vram_before = vram_monitor.get_allocated_gb(str(self.device))
+=======
+        self.device = _resolve_track_device(device)
+>>>>>>> Multi-API
 
         exp = get_exp(exp_file, None)
         model = exp.get_model().to(self.device)
@@ -211,7 +272,32 @@ class ByteTrackWrapper:
         self._total_frames: int = 0
         self._wall_start: float = time.time()
 
+        self._telemetry_lock = threading.Lock()
+        self._session_perf_snapshots: List[Tuple[float, float, int, Optional[int]]] = []
+
         print("[ByteTrack] 🚀 初始化完成，已進入追蹤待機狀態")
+
+    def consume_session_perf_average_line(self) -> Optional[str]:
+        """
+        One-line [SESSION AVG] for Infer/Wall FPS, Tracks, Subject ID (logged every 20 frames).
+        Clears stored samples after formatting.
+        """
+        with self._telemetry_lock:
+            if not self._session_perf_snapshots:
+                return None
+            snaps = list(self._session_perf_snapshots)
+            self._session_perf_snapshots.clear()
+        n = len(snaps)
+        infer_m = sum(s[0] for s in snaps) / n
+        wall_m = sum(s[1] for s in snaps) / n
+        tr_m = sum(s[2] for s in snaps) / n
+        ids = [s[3] for s in snaps if s[3] is not None]
+        subj_txt = f"{sum(ids) / len(ids):.1f}" if ids else "n/a"
+        return (
+            f"[SESSION AVG] ByteTrack (n={n})  "
+            f"Infer FPS: {infer_m:.1f} | Wall FPS: {wall_m:.1f} | "
+            f"Tracks: {tr_m:.1f} | Subject ID: {subj_txt}"
+        )
 
     # -----------------------------------------------------------------------
     # Public API
@@ -354,6 +440,18 @@ class ByteTrackWrapper:
                 f"Infer FPS: {infer_fps:.1f} | Wall FPS: {wall_fps:.1f} | "
                 f"Tracks: {len(online_tlwhs)} | Subject ID: {self._subject_tid}"
             )
+            _sid_opt = (
+                int(self._subject_tid) if self._subject_tid is not None else None
+            )
+            with self._telemetry_lock:
+                self._session_perf_snapshots.append(
+                    (
+                        float(infer_fps),
+                        float(wall_fps),
+                        int(len(online_tlwhs)),
+                        _sid_opt,
+                    )
+                )
 
         # ── Draw annotated frame ───────────────────────────────────────────
         annotated_bgr = self._plot_tracking(
@@ -375,6 +473,8 @@ class ByteTrackWrapper:
         self._total_frames = 0
         self._wall_start   = time.time()
         self._timer        = _Timer()
+        with self._telemetry_lock:
+            self._session_perf_snapshots.clear()
         print("[ByteTrack] 🔄 追蹤狀態已重置")
 
     # -----------------------------------------------------------------------

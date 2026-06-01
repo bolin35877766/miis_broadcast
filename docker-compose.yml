@@ -1,0 +1,11 @@
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    ports:
+      - "7880:7880"       # HTTP / WebSocket signaling
+      - "7881:7881"       # TCP RTC fallback
+      - "50000-50020:50000-50020/udp"  # WebRTC UDP media (narrow range for Windows)
+    volumes:
+      - ./livekit.yaml:/livekit.yaml
+    command: --config /livekit.yaml --node-ip 10.207.3.31
+    restart: unless-stopped

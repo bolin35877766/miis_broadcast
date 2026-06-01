@@ -8,21 +8,36 @@ import os
 import time
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 # from .workers.chatterbox_tts import ChatterboxTTSWorker  # [ChatterBox disabled]
 from .widgets.text_output import TextOutputWidget
+<<<<<<< HEAD
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.gemini import GeminiWorker
+=======
+>>>>>>> Multi-API
 from .workers.openai_tts import OpenAITTSWorker
 from .workers.obs_input import OBSCameraThread
-from .workers.obs_bytetrack import OBSByteTrackThread
+from .workers.camera_bytetrack import CameraByteTrackThread
+from .workers.dual_source import DualSourceCameraThread
+from .workers.free_switch import FreeSwitchCameraThread, SOURCE_WEBCAM, SOURCE_VR, SOURCE_DUAL
+from .audience.livekit_publisher import AudiencePublisher
+from .audience.token_server import AudienceTokenServer
+# LiveCCWorker / LiveCCCameraWorker are imported lazily only when not using client-only mode
+# so this process never loads the VLM on a thin client.
 from .core.prompt.prompt_manager import PromptManager
 from .core.match_tracker import match_tracker
 from .core.utils.session_logger import SessionLogger
+from .core.utils.gpu_telemetry import (
+    cuda_vram_snapshot,
+    vram_log_suffix,
+    vram_log_suffix_from_wire,
+)
+from .network.client import SocketClientRunner
 from collections import deque
 
 # ============================================================
@@ -267,11 +282,26 @@ class VideoPanel(QtWidgets.QWidget):
 
 
 class ControlPanel(QtWidgets.QWidget):
+<<<<<<< HEAD
     requestOpenVideo = QtCore.Signal()
     requestOpenCamera = QtCore.Signal()
     requestLoadContext = QtCore.Signal()
     requestStart = QtCore.Signal()
     requestFontScale = QtCore.Signal(int)
+=======
+    requestOpenVideo       = QtCore.Signal()
+    requestOpenCamera      = QtCore.Signal()
+    requestOpenCameraTrack = QtCore.Signal()   # webcam + ByteTrack
+    requestOpenOBS         = QtCore.Signal()
+    requestOpenDualSync    = QtCore.Signal()   # Webcam + VR side-by-side
+    requestOpenFreeSwitch  = QtCore.Signal()   # Free Switch (both cams always running)
+    requestSwitchSource    = QtCore.Signal(str)  # "webcam" | "vr" | "dual"
+    freeSwitchAutoCycleToggled = QtCore.Signal(bool)  # True = start 10s rotation among webcam/vr/dual
+    requestStart           = QtCore.Signal()
+    requestFontScale       = QtCore.Signal(int)
+    requestRemoteConnect   = QtCore.Signal(str, int)  # host, port
+    requestRemoteDisconnect = QtCore.Signal()
+>>>>>>> Multi-API
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -279,25 +309,104 @@ class ControlPanel(QtWidgets.QWidget):
         self.setMaximumWidth(600)
         self.setup_ui()
 
+    def apply_settings_metrics(self) -> None:
+        """Rebuild label/value column widths and combo heights from current app font.
+
+        Stylesheet fixed min-heights clash with enlarged fonts and clip combo text.
+        Call after startup and whenever UI font scale changes.
+        """
+        if not hasattr(self, "cmb_tts"):
+            return
+        fm = self.fontMetrics()
+        combo_h = max(34, fm.height() + 10)
+        self._settings_row_min_h = combo_h
+        for c in (self.cmb_tts, self.cmb_style, self.cmb_voice):
+            c.setMinimumHeight(combo_h)
+        titles = (
+            "TTS Mode:",
+            "Style:",
+            "Voice:",
+            "Speed:",
+            "Exaggeration:",
+            "CFG:",
+            "UI Scaling:",
+        )
+        lw = max(fm.horizontalAdvance(t) for t in titles) + 12
+        for lb in (
+            self.l_tts,
+            self.l_style,
+            self.l_voice,
+            self.l_speed,
+            self.l_exag,
+            self.l_cfg,
+            self.l_ui,
+        ):
+            lb.setMinimumWidth(lw)
+            lb.setMaximumWidth(lw)
+        vw = max(
+            fm.horizontalAdvance("999pt"),
+            fm.horizontalAdvance("1.55x"),
+        ) + 18
+        for v in (
+            self.lbl_speed_val,
+            self.lbl_exag_val,
+            self.lbl_cfg_val,
+            self.lbl_ui_scale_val,
+        ):
+            v.setMinimumWidth(vw)
+        for row in getattr(self, "_settings_rows", {}).values():
+            row.setMinimumHeight(combo_h)
+
+    def apply_source_metrics(self) -> None:
+        """Keep Source button heights in sync with current app font size."""
+        if not hasattr(self, "btn_offline"):
+            return
+        fm = self.fontMetrics()
+        main_h = max(42, fm.height() + 18)
+        switch_h = max(28, fm.height() + 8)
+        for btn in (self.btn_offline, self.btn_online, self.btn_open_remote):
+            btn.setMinimumHeight(main_h)
+            btn.setMaximumHeight(main_h)
+        for btn in (self.btn_sw_webcam, self.btn_sw_vr, self.btn_sw_dual, self.btn_fs_auto_cycle):
+            btn.setMinimumHeight(switch_h)
+            btn.setMaximumHeight(switch_h)
+
     def setup_ui(self) -> None:
-        layout = QtWidgets.QVBoxLayout(self)
+        # QScrollArea with both scrollbars hidden — no visible draggable bar,
+        # but layout always has enough room so widgets never overlap.
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        _scroll = QtWidgets.QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        outer_layout.addWidget(_scroll)
+
+        _inner = QtWidgets.QWidget()
+        _scroll.setWidget(_inner)
+
+        layout = QtWidgets.QVBoxLayout(_inner)
         layout.setSpacing(16)
         layout.setContentsMargins(14, 14, 14, 14)
 
         # Source
         grp_source = QtWidgets.QGroupBox("影像來源 (Source)")
+        self.grp_source = grp_source
         v_src = QtWidgets.QVBoxLayout(grp_source)
         v_src.setSpacing(10)
-        v_src.setContentsMargins(14, 18, 14, 12)
+        v_src.setContentsMargins(12, 16, 12, 10)
 
         btn_row = QtWidgets.QHBoxLayout()
-        btn_row.setSpacing(10)
+        btn_row.setSpacing(12)
 
         btn_style = """
             QPushButton {
                 background-color: #505050;
-                border-radius: 10px;
-                padding: 10px 20px;
+                border-radius: 9px;
+                padding: 3px 14px;
                 font-weight: 650;
                 text-align: center;
             }
@@ -331,59 +440,143 @@ class ControlPanel(QtWidgets.QWidget):
             }
         """
 
-        # ── 電腦 button ──────────────────────────────────────────────────
-        self.btn_computer = QtWidgets.QPushButton("💻  電腦  ▾")
-        self.btn_computer.setStyleSheet(btn_style)
+        # ── Button 1: Offline video input ────────────────────────────────
+        self.btn_offline = QtWidgets.QPushButton("Offline")
+        self.btn_offline.setStyleSheet(btn_style)
+        self.btn_offline.clicked.connect(lambda: self.requestOpenVideo.emit())
 
-        menu_computer = QtWidgets.QMenu(self.btn_computer)
-        menu_computer.setStyleSheet(menu_style)
-        menu_computer.addAction("🎬  影片上傳",    lambda: self.requestOpenVideo.emit())
+        # ── Button 2: Online live input (dropdown with 3 sub-modes) ──────
+        self.btn_online = QtWidgets.QPushButton("Online  ▾")
+        self.btn_online.setStyleSheet(btn_style)
 
-        submenu_webcam = menu_computer.addMenu("📷  Webcam")
-        submenu_webcam.setStyleSheet(menu_style)
-        submenu_webcam.addAction("⬜  Plain Stream",       lambda: self.requestOpenCamera.emit())
-        submenu_webcam.addAction("🎯  Stream + Track",  lambda: self.requestOpenCameraTrack.emit())
+        menu_online = QtWidgets.QMenu(self.btn_online)
+        menu_online.setStyleSheet(menu_style)
 
-        self.btn_computer.setMenu(menu_computer)
+        # Mode 1: Webcam without tracking
+        menu_online.addAction("📷  Webcam",             lambda: self.requestOpenCamera.emit())
+        # Mode 2: Webcam with ByteTrack subject tracking
+        menu_online.addAction("🎯  Webcam + Tracking",  lambda: self.requestOpenCameraTrack.emit())
 
-        # ── OBS button ───────────────────────────────────────────────────
-        self.btn_obs_main = QtWidgets.QPushButton("🎙  OBS  ▾")
-        self.btn_obs_main.setStyleSheet(btn_style)
+        menu_online.addSeparator()
 
-        menu_obs = QtWidgets.QMenu(self.btn_obs_main)
-        menu_obs.setStyleSheet(menu_style)
+        # Mode 3: VR via OBS Virtual Camera (no tracking needed)
+        menu_online.addAction("🥽  VR (OBS Virtual Camera)", lambda: self.requestOpenOBS.emit())
 
-        # OBS camera stream (direct physical camera connection, bypasses OBS Virtual Camera)
-        submenu_camstream = menu_obs.addMenu("📡  Direct Camera")
-        submenu_camstream.setStyleSheet(menu_style)
-        submenu_camstream.addAction("⬜  Plain Stream",       lambda: self.requestOpenCamera.emit())
-        submenu_camstream.addAction("🎯  Stream + Track",  lambda: self.requestOpenCameraTrack.emit())
+        # Mode 4: Dual source sync — Webcam (idx 0) + VR/OBS (idx 5), side-by-side
+        menu_online.addAction("🎮  VR & Webcam (Sync)",      lambda: self.requestOpenDualSync.emit())
 
-        menu_obs.addSeparator()
+        menu_online.addSeparator()
 
-        # OBS Virtual Camera
-        submenu_virtual = menu_obs.addMenu("🖥  Virtual Camera")
-        submenu_virtual.setStyleSheet(menu_style)
-        submenu_virtual.addAction("⬜  Plain OBS",       lambda: self.requestOpenOBS.emit())
-        submenu_virtual.addAction("🎯  OBS + Track",   lambda: self.requestOpenOBSTrack.emit())
+        # Mode 5: Free Switch — both cameras always running, switch without reconnect
+        menu_online.addAction("🔀  Free Switch",             lambda: self.requestOpenFreeSwitch.emit())
 
-        menu_obs.addSeparator()
+        self.btn_online.setMenu(menu_online)
 
-        # VR (Meta Quest via OBS Virtual Camera)
-        submenu_vr = menu_obs.addMenu("🥽  VR")
-        submenu_vr.setStyleSheet(menu_style)
-        submenu_vr.addAction("⬜  Plain VR",       lambda: self.requestOpenOBS.emit())
-        submenu_vr.addAction("🎯  VR + Track",     lambda: self.requestOpenOBSTrack.emit())
+        btn_row.addWidget(self.btn_offline)
+        btn_row.addWidget(self.btn_online)
 
-        self.btn_obs_main.setMenu(menu_obs)
+        v_src.addLayout(btn_row)
 
-        btn_row.addWidget(self.btn_computer)
-        btn_row.addWidget(self.btn_obs_main)
+        # Remote: entry button in Source; host/port/enable live in a dialog
+        self.btn_open_remote = QtWidgets.QPushButton("連線遠端伺服器")
+        self.btn_open_remote.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: 700;
+                border-radius: 9px;
+                padding: 3px 14px;
+            }
+            QPushButton:hover { background-color: #388e3c; }
+            QPushButton:disabled { background-color: #555; color: #999; }
+        """)
+        v_src.addWidget(self.btn_open_remote)
 
-        self.lbl_status = QtWidgets.QLabel("Status: Not Loaded")
-        self.lbl_status.setStyleSheet("color: #b5b5b5;")
-        self.lbl_status.setWordWrap(True)
+        self.lbl_source_sub = QtWidgets.QLabel("Status: —")
+        self.lbl_source_sub.setStyleSheet("color: #b5b5b5; font-size: 11px;")
+        self.lbl_source_sub.setWordWrap(True)
+        v_src.addWidget(self.lbl_source_sub)
 
+        self.lbl_remote_badge = QtWidgets.QLabel("● 未連線")
+        self.lbl_remote_badge.setStyleSheet("color: #888; font-size: 11px;")
+        v_src.addWidget(self.lbl_remote_badge)
+
+        # ── Free Switch: single row — equal-width buttons (no extra label row → no scroll)
+        self.free_switch_bar = QtWidgets.QWidget()
+        _bar_row = QtWidgets.QHBoxLayout(self.free_switch_bar)
+        _bar_row.setContentsMargins(0, 2, 0, 0)
+        _bar_row.setSpacing(5)
+
+        _sw_style = """
+            QPushButton {
+                border-radius: 7px;
+                padding: 5px 6px;
+                font-weight: 600;
+                font-size: 11px;
+                background-color: #434343;
+                color: #eaeaea;
+            }
+            QPushButton:hover { background-color: #555; }
+            QPushButton:checked {
+                background-color: #2962ff;
+                color: white;
+            }
+            QPushButton:disabled {
+                background-color: #2d2d2d;
+                color: #666;
+            }
+            QPushButton:checked:disabled {
+                background-color: #1a3f9e;
+                color: #aac0ff;
+            }
+        """
+        _exp = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+
+        self.btn_sw_webcam = QtWidgets.QPushButton("鏡頭")
+        self.btn_sw_vr     = QtWidgets.QPushButton("VR")
+        self.btn_sw_dual   = QtWidgets.QPushButton("拼接")
+        for _btn, _tip in (
+            (self.btn_sw_webcam, "實體鏡頭 (Webcam)，與伺服器送出之畫面一致"),
+            (self.btn_sw_vr, "OBS 虛擬鏡頭 (VR／遊戲畫面)"),
+            (self.btn_sw_dual, "左右並列：Webcam + VR（1280×480）"),
+        ):
+            _btn.setCheckable(True)
+            _btn.setToolTip(_tip)
+            _btn.setStyleSheet(_sw_style)
+            _btn.setSizePolicy(_exp)
+            _btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+
+        self.btn_sw_webcam.clicked.connect(lambda: self.requestSwitchSource.emit("webcam"))
+        self.btn_sw_vr.clicked.connect(    lambda: self.requestSwitchSource.emit("vr"))
+        self.btn_sw_dual.clicked.connect(  lambda: self.requestSwitchSource.emit("dual"))
+
+        self.btn_fs_auto_cycle = QtWidgets.QPushButton("10s輪播")
+        self.btn_fs_auto_cycle.setCheckable(True)
+        self.btn_fs_auto_cycle.setToolTip(
+            "每 10 秒自動依序切換：鏡頭 → VR → 拼接。啟動後立刻切到下一個；再按一次關閉輪播。"
+        )
+        self.btn_fs_auto_cycle.setStyleSheet(_sw_style + """
+            QPushButton:checked {
+                background-color: #e65100;
+                color: white;
+            }
+        """)
+        self.btn_fs_auto_cycle.setSizePolicy(_exp)
+        self.btn_fs_auto_cycle.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.btn_fs_auto_cycle.toggled.connect(self._forward_free_switch_auto_cycle_toggled)
+
+        _bar_row.addWidget(self.btn_sw_webcam, 1)
+        _bar_row.addWidget(self.btn_sw_vr, 1)
+        _bar_row.addWidget(self.btn_sw_dual, 1)
+        _bar_row.addWidget(self.btn_fs_auto_cycle, 1)
+
+        self.free_switch_bar.setVisible(False)
+        v_src.addWidget(self.free_switch_bar)
+
+<<<<<<< HEAD
         v_src.addLayout(btn_row)
         v_src.addWidget(self.lbl_status)
 
@@ -401,25 +594,88 @@ class ControlPanel(QtWidgets.QWidget):
         ctx_row.addWidget(self.lbl_context, stretch=1)
         v_src.addLayout(ctx_row)
 
+=======
+>>>>>>> Multi-API
         layout.addWidget(grp_source)
+        self.apply_source_metrics()
 
-        # Settings
+        # Settings — one row widget per logical row (QHBoxLayout inside QVBoxLayout).
+        # QGridLayout + addWidget(..., alignment=...) can mis-bind on some bindings and pile widgets up.
         grp_settings = QtWidgets.QGroupBox("推論設定 (Settings)")
-        form = QtWidgets.QFormLayout(grp_settings)
-        form.setLabelAlignment(QtCore.Qt.AlignRight)
-        form.setFormAlignment(QtCore.Qt.AlignTop)
-        form.setSpacing(12)
-        form.setContentsMargins(14, 18, 14, 12)
+        v_settings = QtWidgets.QVBoxLayout(grp_settings)
+        v_settings.setContentsMargins(14, 22, 14, 12)
+        v_settings.setSpacing(8)
 
-        # [CSS]
+        self._settings_rows: dict[str, QtWidgets.QWidget] = {}
+
+        def _settings_row_slider(
+            row_key: str,
+            lbl_w: QtWidgets.QWidget,
+            slider_w: QtWidgets.QWidget,
+            val_lbl: QtWidgets.QWidget,
+        ) -> None:
+            row = QtWidgets.QWidget()
+            h = QtWidgets.QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(12)
+            lbl_w.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            h.addWidget(lbl_w, stretch=0)
+            h.addWidget(slider_w, stretch=1)
+            h.addWidget(val_lbl, stretch=0)
+            _rh = max(
+                getattr(self, "_settings_row_min_h", 44),
+                int(slider_w.sizeHint().height()),
+            )
+            row.setMinimumHeight(_rh)
+            self._settings_rows[row_key] = row
+            v_settings.addWidget(row)
+
+        def _settings_row_combo(
+            row_key: str,
+            lbl_w: QtWidgets.QWidget,
+            combo_w: QtWidgets.QWidget,
+        ) -> None:
+            row = QtWidgets.QWidget()
+            h = QtWidgets.QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(12)
+            lbl_w.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            combo_w.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+            h.addWidget(lbl_w, stretch=0)
+            h.addWidget(combo_w, stretch=1)
+            row.setMinimumHeight(getattr(self, "_settings_row_min_h", 44))
+            self._settings_rows[row_key] = row
+            v_settings.addWidget(row)
+
+        lbl_style = "QLabel { color: #dedede; }"
+        lbl_val_style = """
+            QLabel { color: #c8c8c8; padding-left: 8px; }
+        """
+
+        def _make_lbl(text: str) -> QtWidgets.QLabel:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(lbl_style)
+            return lbl
+
+        def _apply_val_label(lbl: QtWidgets.QLabel) -> None:
+            lbl.setStyleSheet(lbl_val_style)
+            lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
         combo_style = """
             QComboBox {
-                padding: 6px 10px;
-                border-radius: 8px;
-                background-color: #333;
-                min-height: 30px;
+                padding: 3px 10px;
+                border-radius: 6px;
+                background-color: #303030;
+                border: 1px solid #484848;
             }
-            QComboBox::drop-down { border: 0px; }
+            QComboBox:hover { border-color: #5a5a5a; }
+            QComboBox::drop-down {
+                width: 20px;
+                border: 0px;
+            }
             QComboBox QAbstractItemView { 
                 background-color: #333; 
                 color: #fff;
@@ -428,7 +684,7 @@ class ControlPanel(QtWidgets.QWidget):
                 outline: 0px;
             }
         """
-        
+
         # [FIX] WSL 下拉選單修復 helper
         def _fix_combo_behavior(combo: QtWidgets.QComboBox):
             combo.setItemDelegate(QtWidgets.QStyledItemDelegate())
@@ -439,9 +695,9 @@ class ControlPanel(QtWidgets.QWidget):
             ))
 
         # --- TTS Mode ---
+        self.l_tts = _make_lbl("TTS Mode:")
         self.cmb_tts = QtWidgets.QComboBox()
-        _fix_combo_behavior(self.cmb_tts) # [Apply Fix]
-        
+        _fix_combo_behavior(self.cmb_tts)
         self.cmb_tts.addItem("不啟用 (Mute)", userData="none")
         self.cmb_tts.addItem("OpenAI TTS", userData="openai")
         self.cmb_tts.addItem("Gemini TTS", userData="gemini")
@@ -450,107 +706,73 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_tts.setStyleSheet(combo_style)
 
         # --- LiveCC style ---
+        self.l_style = _make_lbl("Style:")
         self.cmb_style = QtWidgets.QComboBox()
-        _fix_combo_behavior(self.cmb_style) # [Apply Fix]
+        _fix_combo_behavior(self.cmb_style)
         self.cmb_style.setStyleSheet(combo_style)
 
         # --- OpenAI: Voice ---
+        self.l_voice = _make_lbl("Voice:")
         self.cmb_voice = QtWidgets.QComboBox()
-        _fix_combo_behavior(self.cmb_voice) # [Apply Fix]
+        _fix_combo_behavior(self.cmb_voice)
         self.cmb_voice.setStyleSheet(combo_style)
         for v in ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]:
             self.cmb_voice.addItem(v, userData=v)
         self.cmb_voice.setCurrentText("coral")
 
         # --- OpenAI: Speed slider ---
+        self.l_speed = _make_lbl("Speed:")
         self.slider_speed = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_speed.setRange(25, 150)  # 0.25x ~ 1.5x
-        self.slider_speed.setValue(100)      # 預設 1.0x
-
+        self.slider_speed.setValue(100)
         self.lbl_speed_val = QtWidgets.QLabel("1.0x")
-        self.lbl_speed_val.setMinimumWidth(55)
-        self.lbl_speed_val.setAlignment(QtCore.Qt.AlignCenter)
-
-        speed_row = QtWidgets.QHBoxLayout()
-        speed_row.setSpacing(10)
-        speed_row.addWidget(self.slider_speed, stretch=1)
-        speed_row.addWidget(self.lbl_speed_val, stretch=0)
-
-        self._speed_row_widget = QtWidgets.QWidget()
-        self._speed_row_widget.setLayout(speed_row)
+        _apply_val_label(self.lbl_speed_val)
 
         # --- Local: Exaggeration slider (0.2~1.2) ---
+        self.l_exag = _make_lbl("Exaggeration:")
         self.slider_exag = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_exag.setRange(20, 120)
         self.slider_exag.setValue(80)
-
         self.lbl_exag_val = QtWidgets.QLabel("0.8")
-        self.lbl_exag_val.setMinimumWidth(55)
-        self.lbl_exag_val.setAlignment(QtCore.Qt.AlignCenter)
-
-        exag_row = QtWidgets.QHBoxLayout()
-        exag_row.setSpacing(10)
-        exag_row.addWidget(self.slider_exag, stretch=1)
-        exag_row.addWidget(self.lbl_exag_val, stretch=0)
-
-        self._exag_row_widget = QtWidgets.QWidget()
-        self._exag_row_widget.setLayout(exag_row)
+        _apply_val_label(self.lbl_exag_val)
 
         # --- Local: CFG slider (0.2~1.2) ---
+        self.l_cfg = _make_lbl("CFG:")
         self.slider_cfg = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_cfg.setRange(20, 120)
         self.slider_cfg.setValue(70)
-
         self.lbl_cfg_val = QtWidgets.QLabel("0.7")
-        self.lbl_cfg_val.setMinimumWidth(55)
-        self.lbl_cfg_val.setAlignment(QtCore.Qt.AlignCenter)
-
-        cfg_row = QtWidgets.QHBoxLayout()
-        cfg_row.setSpacing(10)
-        cfg_row.addWidget(self.slider_cfg, stretch=1)
-        cfg_row.addWidget(self.lbl_cfg_val, stretch=0)
-
-        self._cfg_row_widget = QtWidgets.QWidget()
-        self._cfg_row_widget.setLayout(cfg_row)
+        _apply_val_label(self.lbl_cfg_val)
 
         # --- UI scale slider ---
+        self.l_ui = _make_lbl("UI Scaling:")
         self.slider_ui_scale = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_ui_scale.setRange(10, 26)
         self.slider_ui_scale.setValue(14)
-
         self.lbl_ui_scale_val = QtWidgets.QLabel("14pt")
-        self.lbl_ui_scale_val.setMinimumWidth(55)
-        self.lbl_ui_scale_val.setAlignment(QtCore.Qt.AlignCenter)
+        _apply_val_label(self.lbl_ui_scale_val)
 
-        font_row = QtWidgets.QHBoxLayout()
-        font_row.setSpacing(10)
-        font_row.addWidget(self.slider_ui_scale, stretch=1)
-        font_row.addWidget(self.lbl_ui_scale_val, stretch=0)
+        _sp_exp = QtWidgets.QSizePolicy.Policy.Expanding
+        _sp_fix = QtWidgets.QSizePolicy.Policy.Fixed
+        for _s in (
+            self.slider_speed,
+            self.slider_exag,
+            self.slider_cfg,
+            self.slider_ui_scale,
+        ):
+            _s.setSizePolicy(_sp_exp, _sp_fix)
 
-        self._font_row_widget = QtWidgets.QWidget()
-        self._font_row_widget.setLayout(font_row)
-
-        lbl_style = "QLabel { color: #dedede; }"
-        self.l_tts = QtWidgets.QLabel("TTS Mode:")
-        self.l_style = QtWidgets.QLabel("Style:")
-        self.l_voice = QtWidgets.QLabel("Voice:")
-        self.l_speed = QtWidgets.QLabel("Speed:")
-        self.l_exag = QtWidgets.QLabel("Exaggeration:")
-        self.l_cfg = QtWidgets.QLabel("CFG:")
-        self.l_ui = QtWidgets.QLabel("UI Scaling:")
-
-        for x in (self.l_tts, self.l_style, self.l_voice, self.l_speed, self.l_exag, self.l_cfg, self.l_ui):
-            x.setStyleSheet(lbl_style)
-
-        form.addRow(self.l_tts, self.cmb_tts)
-        form.addRow(self.l_style, self.cmb_style)
-        form.addRow(self.l_voice, self.cmb_voice)
-        form.addRow(self.l_speed, self._speed_row_widget)
-        form.addRow(self.l_exag, self._exag_row_widget)
-        form.addRow(self.l_cfg, self._cfg_row_widget)
-        form.addRow(self.l_ui, self._font_row_widget)
+        _settings_row_combo("tts", self.l_tts, self.cmb_tts)
+        _settings_row_combo("style", self.l_style, self.cmb_style)
+        _settings_row_combo("voice", self.l_voice, self.cmb_voice)
+        _settings_row_slider("speed", self.l_speed, self.slider_speed, self.lbl_speed_val)
+        _settings_row_slider("exag", self.l_exag, self.slider_exag, self.lbl_exag_val)
+        _settings_row_slider("cfg", self.l_cfg, self.slider_cfg, self.lbl_cfg_val)
+        _settings_row_slider("ui", self.l_ui, self.slider_ui_scale, self.lbl_ui_scale_val)
 
         layout.addWidget(grp_settings)
+
+        self.apply_settings_metrics()
 
         # Action
         grp_action = QtWidgets.QGroupBox("操作 (Action)")
@@ -574,7 +796,9 @@ class ControlPanel(QtWidgets.QWidget):
         v_act.addWidget(self.btn_start)
         layout.addWidget(grp_action)
 
+        self._init_remote_server_dialog()
         layout.addStretch(1)
+        # End of inner scroll container
 
         # Signals
         self.btn_context.clicked.connect(self.requestLoadContext.emit)
@@ -589,23 +813,186 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_tts.currentIndexChanged.connect(self._refresh_tts_controls_visibility)
         self._refresh_tts_controls_visibility()
 
+        self.btn_open_remote.clicked.connect(self._show_remote_dialog)
+
+    def _init_remote_server_dialog(self) -> None:
+        # Host/port/enable/connection controls (no spin arrows on port)
+        self._remote_dialog = QtWidgets.QDialog(self)
+        self._remote_dialog.setWindowTitle("遠端伺服器 (Remote server)")
+        self._remote_dialog.setWindowModality(QtCore.Qt.NonModal)
+        # Minimize/close in title bar so the panel can be tucked away without blocking the main view
+        _flags = (
+            QtCore.Qt.Window
+            | QtCore.Qt.WindowMinimizeButtonHint
+            | QtCore.Qt.WindowCloseButtonHint
+        )
+        _flags &= ~QtCore.Qt.WindowContextHelpButtonHint
+        self._remote_dialog.setWindowFlags(_flags)
+        self._remote_dialog.setMinimumWidth(380)
+
+        dlay = QtWidgets.QVBoxLayout(self._remote_dialog)
+        dlay.setContentsMargins(16, 16, 16, 16)
+        dlay.setSpacing(10)
+
+        self.chk_remote = QtWidgets.QCheckBox("啟用遠端推論 (Use Remote Inference)")
+        self.chk_remote.setStyleSheet("color: #dedede;")
+        dlay.addWidget(self.chk_remote)
+
+        self._remote_settings_widget = QtWidgets.QWidget()
+        remote_form = QtWidgets.QFormLayout(self._remote_settings_widget)
+        remote_form.setSpacing(8)
+        remote_form.setContentsMargins(0, 0, 0, 0)
+        remote_form.setLabelAlignment(QtCore.Qt.AlignRight)
+
+        lbl_host_style = "QLabel { color: #dedede; }"
+
+        self.edit_remote_host = QtWidgets.QLineEdit("127.0.0.1")
+        self.edit_remote_host.setStyleSheet(
+            "QLineEdit { background:#333; border-radius:6px; padding:4px 8px; }"
+        )
+        lbl_host = QtWidgets.QLabel("Host:")
+        lbl_host.setStyleSheet(lbl_host_style)
+        remote_form.addRow(lbl_host, self.edit_remote_host)
+
+        self.edit_remote_port = QtWidgets.QLineEdit("9000")
+        self.edit_remote_port.setValidator(QtGui.QIntValidator(1, 65535, self))
+        self.edit_remote_port.setStyleSheet(
+            "QLineEdit { background:#333; border-radius:6px; padding:4px 8px; }"
+        )
+        lbl_port = QtWidgets.QLabel("Port:")
+        lbl_port.setStyleSheet(lbl_host_style)
+        remote_form.addRow(lbl_port, self.edit_remote_port)
+
+        dlay.addWidget(self._remote_settings_widget)
+
+        self.btn_remote_connect = QtWidgets.QPushButton("連線 (Connect)")
+        self.btn_remote_connect.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: 700;
+                border-radius: 8px;
+                padding: 8px 10px;
+            }
+            QPushButton:hover { background-color: #388e3c; }
+            QPushButton:disabled { background-color: #555; color: #999; }
+            QPushButton[connected="true"] {
+                background-color: #b71c1c;
+            }
+            QPushButton[connected="true"]:hover { background-color: #c62828; }
+        """)
+        dlay.addWidget(self.btn_remote_connect)
+
+        self.lbl_remote_status = QtWidgets.QLabel("● 未連線")
+        self.lbl_remote_status.setStyleSheet("color: #888; font-size: 11px;")
+        dlay.addWidget(self.lbl_remote_status)
+
+        self._remote_settings_widget.setVisible(False)
+        self.btn_remote_connect.setVisible(False)
+        self.lbl_remote_status.setVisible(False)
+
+        self.chk_remote.toggled.connect(self._on_remote_toggle)
+        self.btn_remote_connect.clicked.connect(self._on_remote_connect_clicked)
+
+    @QtCore.Slot()
+    def _show_remote_dialog(self) -> None:
+        if self._remote_dialog is not None:
+            self._remote_dialog.show()
+            self._remote_dialog.raise_()
+            self._remote_dialog.activateWindow()
+
     # ---------------- ControlPanel Helpers ----------------
+
+    def _on_remote_toggle(self, checked: bool) -> None:
+        self._remote_settings_widget.setVisible(checked)
+        self.btn_remote_connect.setVisible(checked)
+        self.lbl_remote_status.setVisible(checked)
+        if not checked:
+            self.requestRemoteDisconnect.emit()
+
+    def _on_remote_connect_clicked(self) -> None:
+        connected = self.btn_remote_connect.property("connected") == True
+        if connected:
+            self.requestRemoteDisconnect.emit()
+        else:
+            host = self.edit_remote_host.text().strip() or "127.0.0.1"
+            port = self.get_remote_port()
+            self.requestRemoteConnect.emit(host, port)
+
+    def set_remote_connected(self, connected: bool, status_text: str = "") -> None:
+        if connected:
+            self.btn_remote_connect.setText("中斷連線 (Disconnect)")
+            self.btn_remote_connect.setProperty("connected", True)
+            self.lbl_remote_status.setText(f"● {status_text or '已連線'}")
+            self.lbl_remote_status.setStyleSheet("color: #66bb6a; font-size: 11px;")
+            st = f"{self.get_remote_host()}:{self.get_remote_port()}"
+            self.lbl_remote_badge.setText(f"● 已連線  {st}")
+            self.lbl_remote_badge.setStyleSheet("color: #66bb6a; font-size: 12px;")
+        else:
+            self.btn_remote_connect.setText("連線 (Connect)")
+            self.btn_remote_connect.setProperty("connected", False)
+            self.lbl_remote_status.setText(f"● {status_text or '未連線'}")
+            self.lbl_remote_status.setStyleSheet("color: #888; font-size: 11px;")
+            t = status_text or "未連線"
+            self.lbl_remote_badge.setText(f"● {t}")
+            self.lbl_remote_badge.setStyleSheet("color: #888; font-size: 12px;")
+        self.btn_remote_connect.style().unpolish(self.btn_remote_connect)
+        self.btn_remote_connect.style().polish(self.btn_remote_connect)
+
+    def set_remote_connecting(self) -> None:
+        self.lbl_remote_status.setText("● 連線中…")
+        self.lbl_remote_status.setStyleSheet("color: #ffa726; font-size: 11px;")
+        self.lbl_remote_badge.setText("● 連線中…")
+        self.lbl_remote_badge.setStyleSheet("color: #ffa726; font-size: 12px;")
+
+    def is_remote_mode(self) -> bool:
+        return self.chk_remote.isChecked()
+
+    def get_remote_host(self) -> str:
+        return self.edit_remote_host.text().strip() or "127.0.0.1"
+
+    def get_remote_port(self) -> int:
+        try:
+            t = (self.edit_remote_port.text() or "9000").strip()
+            v = int(t)
+        except ValueError:
+            v = 9000
+        return max(1, min(65535, v))
 
     def _refresh_tts_controls_visibility(self) -> None:
         mode = self.get_tts_mode()
 
         show_openai = (mode == "openai")
-        self.l_voice.setVisible(show_openai)
-        self.cmb_voice.setVisible(show_openai)
-        self.l_speed.setVisible(show_openai)
-        self._speed_row_widget.setVisible(show_openai)
-
         show_local = (mode == "local")
+<<<<<<< HEAD
         self.l_exag.setVisible(show_local)
         self._exag_row_widget.setVisible(show_local)
         self.l_cfg.setVisible(show_local)
         self._cfg_row_widget.setVisible(show_local)
         # Gemini TTS: no extra UI controls needed (voice set in app.yml)
+=======
+
+        rows = getattr(self, "_settings_rows", {})
+        if rows:
+            rows["voice"].setVisible(show_openai)
+            rows["speed"].setVisible(show_openai)
+            rows["exag"].setVisible(show_local)
+            rows["cfg"].setVisible(show_local)
+            return
+
+        # Fallback for partially initialized panels.
+        for w in (self.l_voice, self.cmb_voice, self.l_speed, self.slider_speed, self.lbl_speed_val):
+            w.setVisible(show_openai)
+        for w in (
+            self.l_exag,
+            self.slider_exag,
+            self.lbl_exag_val,
+            self.l_cfg,
+            self.slider_cfg,
+            self.lbl_cfg_val,
+        ):
+            w.setVisible(show_local)
+>>>>>>> Multi-API
 
     def set_tts_controls_enabled(self, enabled: bool) -> None:
         # Lock during inference to prevent state corruption
@@ -645,7 +1032,26 @@ class ControlPanel(QtWidgets.QWidget):
         return float(self.slider_cfg.value()) / 100.0
 
     def set_status(self, text: str) -> None:
-        self.lbl_status.setText(f"Status: {text}")
+        self.lbl_source_sub.setText(f"Status: {text}")
+
+    def set_free_switch_bar_visible(self, visible: bool, active_source: str = "webcam") -> None:
+        """Show or hide the Free Switch source bar, and highlight the active button."""
+        self.free_switch_bar.setVisible(visible)
+        self.apply_source_metrics()
+        if visible:
+            self.highlight_switch_source(active_source)
+
+    def highlight_switch_source(self, source: str) -> None:
+        """Update which switch button appears active (checked/highlighted)."""
+        self.btn_sw_webcam.setChecked(source == "webcam")
+        self.btn_sw_vr.setChecked(    source == "vr")
+        self.btn_sw_dual.setChecked(  source == "dual")
+
+    @QtCore.Slot(bool)
+    def _forward_free_switch_auto_cycle_toggled(self, checked: bool) -> None:
+        # QPushButton.toggled -> Signal Forward: wire directly to another Signal() often fails
+        # to invoke MainWindow slots in PySide6; emit explicitly.
+        self.freeSwitchAutoCycleToggled.emit(checked)
 
     def set_start_button_state(self, running: bool) -> None:
         if running:
@@ -656,9 +1062,11 @@ class ControlPanel(QtWidgets.QWidget):
             self.btn_start.setProperty("active", False)
         self.btn_start.style().unpolish(self.btn_start)
         self.btn_start.style().polish(self.btn_start)
-        # Disable source buttons during inference to prevent switching mid-session
-        self.btn_computer.setEnabled(not running)
-        self.btn_obs_main.setEnabled(not running)
+        # Disable source buttons during inference to prevent switching mid-session.
+        # free_switch_bar buttons remain enabled so the user can switch sources live.
+        self.btn_offline.setEnabled(not running)
+        self.btn_online.setEnabled(not running)
+        self.btn_open_remote.setEnabled(not running)
 
 
 # ============================================================
@@ -713,7 +1121,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_thread: Optional[VideoThread] = None
         self.camera_thread: Optional[CameraThread] = None
         self.obs_thread: Optional[OBSCameraThread] = None
-        self.obs_bytetrack_thread: Optional[OBSByteTrackThread] = None
+        self.obs_bytetrack_thread: Optional[CameraByteTrackThread] = None
+        self.dual_sync_thread: Optional[DualSourceCameraThread] = None
+        self.free_switch_thread: Optional[FreeSwitchCameraThread] = None
         self.video_fps: float = 30.0
         self.tts_mode: str = "none"
         self._use_gemini: bool = False
@@ -724,6 +1134,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tts_protect_until: float = 0.0   # wall-clock deadline: block lower-priority below this time
         self._post_p1_pending: bool = False     # True while waiting for 1.0s post-P1 silence
 
+        # Audience second-screen services (Free Switch mode only)
+        self._audience_publisher: Optional[AudiencePublisher] = None
+        self._audience_token_server: Optional[AudienceTokenServer] = None
+
         self.font_family = "Sans Serif"
         self.font_size = 14
 
@@ -732,13 +1146,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bytetrack_wrapper = None          # pre-loaded ByteTrackWrapper (set by background thread)
         self._bytetrack_preload_thread = None   # QThread that loads it
 
+<<<<<<< HEAD
 
         self._load_livecc_model()
+=======
+        # Remote inference state — use _socket_runner is not None to check active connection
+        self._socket_runner: Optional[SocketClientRunner] = None
+        # Periodic thin-client RAM + JPEG queue (all remote inference modes)
+        self._remote_client_ram_timer: Optional[QtCore.QTimer] = None
+        # Local copies of CLIENT_DIAG samples for session-average summary on STOP
+        self._local_client_diag_samples: list = []
+        self._busy_stopping_inference: bool = False
+
+        # client_only: only controls whether local LiveCC/ByteTrack are loaded at startup.
+        # All GUI behavior is identical once connected; default = True (don't load 7B locally).
+        remote_cfg = configs.get("remote", {})
+        self._client_only = bool(remote_cfg.get("client_only", True))
+        if self._client_only:
+            print("[Main] client_only: local VLM not loaded; connect to remote server.")
+        else:
+            self._load_livecc_model()
+>>>>>>> Multi-API
 
         self._init_fonts()
         self._initUI()
         self._initTTSWorker()
+<<<<<<< HEAD
         self._initGeminiWorker()
+=======
+
+        # Pre-fill remote panel host/port from config
+        host = str(remote_cfg.get("host", "127.0.0.1"))
+        port = int(remote_cfg.get("port", 9000))
+        self.control_panel.chk_remote.setChecked(True)
+        self.control_panel.edit_remote_host.setText(host)
+        self.control_panel.edit_remote_port.setText(str(port))
+        if self._client_only:
+            self.control_panel.chk_remote.setEnabled(False)
+
+        # Pre-load ByteTrack whenever the config section is present (runs locally
+        # regardless of client_only — tracking is now always done on the local machine).
+        if self.configs.get("bytetrack"):
+            QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
+>>>>>>> Multi-API
 
         self._playback_sec: float = 0.0
         self._pending_segments = deque()  # items: (start_t, stop_t, text)
@@ -747,6 +1197,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._subtitle_timer.setInterval(50)  # 20 FPS 更新足夠
         self._subtitle_timer.timeout.connect(self._tick_subtitle_scheduler)
         self._subtitle_timer.start()
+
+        # Free Switch: cycle webcam → VR → dual on a fixed interval (UI toggle)
+        self._fs_auto_cycle_interval_ms = 10_000
+        self._fs_auto_cycle_timer = QtCore.QTimer(self)
+        self._fs_auto_cycle_timer.setInterval(self._fs_auto_cycle_interval_ms)
+        self._fs_auto_cycle_timer.timeout.connect(self._on_free_switch_auto_cycle_tick)
+        self._fs_cycle_order = ("webcam", "vr", "dual")
+        self._fs_cycle_idx = 0
 
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
 
@@ -846,8 +1304,8 @@ class MainWindow(QtWidgets.QMainWindow):
         switching to OBS+Track is instant."""
         bt_cfg = self.configs.get("bytetrack", {})
         repo_path = bt_cfg.get("bytetrack_repo") or None
-        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_x_mix_det.py")
-        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_x_mot17.pth.tar")
+        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_s_mix_det.py")
+        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_s_mot17.pth.tar")
 
         import os
         if repo_path and not os.path.isabs(exp_file):
@@ -955,10 +1413,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
         self.statusBar().showMessage("Initializing system...")
 
+        # Settings rows use font metrics; refresh after panel is under MainWindow (correct font chain)
+        self.control_panel.apply_source_metrics()
+        self.control_panel.apply_settings_metrics()
+
         # Signals
         self.control_panel.requestOpenVideo.connect(self.on_open_video_clicked)
         self.control_panel.requestOpenCamera.connect(self.on_open_camera_clicked)
+<<<<<<< HEAD
         self.control_panel.requestLoadContext.connect(self.on_load_context_clicked)
+=======
+        self.control_panel.requestOpenCameraTrack.connect(self.on_open_camera_track_clicked)
+        self.control_panel.requestOpenOBS.connect(self.on_open_obs_clicked)
+        self.control_panel.requestOpenDualSync.connect(self.on_open_dual_sync_clicked)
+        self.control_panel.requestOpenFreeSwitch.connect(self.on_open_free_switch_clicked)
+        self.control_panel.requestSwitchSource.connect(self.on_switch_source)
+        self.control_panel.freeSwitchAutoCycleToggled.connect(
+            self._on_free_switch_auto_cycle_toggled
+        )
+>>>>>>> Multi-API
         self.control_panel.requestStart.connect(self.on_start_clicked)
         self.control_panel.requestFontScale.connect(self.on_font_scale_request)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
@@ -966,11 +1439,21 @@ class MainWindow(QtWidgets.QMainWindow):
         # 載入 prompts.yml 並填入下拉式選單
         self._init_prompt_manager_and_fill_styles()
 
-        self._initLiveCCWorker()
-        self._initCameraWorker()
-
         if self.livecc_model is not None:
+            self._initLiveCCWorker()
+            self._initCameraWorker()
             self.livecc_worker.signal_model_loaded.emit()
+        else:
+            self.statusBar().showMessage("請連線遠端伺服器後開始播報", 0)
+            self.control_panel.set_status("請點「連線遠端伺服器」按鈕設定 Host/Port 並連線")
+
+        # Remote control panel signals
+        self.control_panel.requestRemoteConnect.connect(self.on_remote_connect_clicked)
+        self.control_panel.requestRemoteDisconnect.connect(self.on_remote_disconnect_clicked)
+
+        # Audience viewer page (HTTP) — start early so http://localhost:8080/audience works
+        # before entering Free Switch. LiveKit publisher still starts with Free Switch only.
+        self._ensure_audience_token_server()
 
     def _init_prompt_manager_and_fill_styles(self) -> None:
         try:
@@ -1038,6 +1521,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # ---------------- Workers ----------------
 
     def _initLiveCCWorker(self) -> None:
+        from .workers.livecc import LiveCCWorker
         self.livecc_thread = QtCore.QThread(self)
         self.livecc_worker = LiveCCWorker()
         self.livecc_worker.livecc = self.livecc_model
@@ -1051,6 +1535,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.livecc_thread.start()
 
     def _initCameraWorker(self) -> None:
+        from .workers.livecc import LiveCCCameraWorker
         self.cam_worker_thread = QtCore.QThread(self)
         camera_cfg = self.configs.get("model", {}).get("classifier", {}).get("camera", {})
         self.cam_worker = LiveCCCameraWorker(
@@ -1072,6 +1557,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.cam_worker_thread.start()
 
+<<<<<<< HEAD
     def _initGeminiWorker(self) -> None:
 
         # --- Existing GeminiWorker (kept for file-mode / legacy) ---
@@ -1220,6 +1706,227 @@ class MainWindow(QtWidgets.QMainWindow):
             description = raw.strip()
             if description:
                 self.signal_livecc_context.emit(description)
+=======
+    # ---------------- Remote Socket ----------------
+
+    def _stop_remote_client_ram_monitor(self) -> None:
+        if self._remote_client_ram_timer is not None:
+            self._remote_client_ram_timer.stop()
+            self._remote_client_ram_timer.deleteLater()
+            self._remote_client_ram_timer = None
+
+    def _start_remote_client_ram_monitor(self) -> None:
+        """Every ~2s: send CLIENT_DIAG so the server prints [Client] (no duplicate GUI stdout)."""
+        self._stop_remote_client_ram_monitor()
+        timer = QtCore.QTimer(self)
+        timer.setInterval(2000)
+        timer.timeout.connect(self._log_remote_client_ram_tick)
+        self._remote_client_ram_timer = timer
+        timer.start()
+        self._log_remote_client_ram_tick()
+
+    @QtCore.Slot()
+    def _log_remote_client_ram_tick(self) -> None:
+        if not self.is_inference_running or self._socket_runner is None:
+            self._stop_remote_client_ram_monitor()
+            return
+        try:
+            import psutil
+
+            rss_mb = psutil.Process().memory_info().rss / (1024.0**2)
+            sys_pct = psutil.virtual_memory().percent
+            q_used, q_max = self._socket_runner.get_frame_send_queue_levels()
+            gpu_snap = cuda_vram_snapshot(0)
+            gpu_suffix = vram_log_suffix(gpu_snap)
+            msg = (
+                f"[Client] RSS={rss_mb:.1f} MiB | JPEG send_queue={q_used}/{q_max} | "
+                f"system_RAM_used={sys_pct:.0f}%{gpu_suffix}"
+            )
+            if hasattr(self, "session_logger") and self.session_logger.current_log_file:
+                self.session_logger.log_system("Memory", "INFO", msg)
+            gu = gt = None
+            if gpu_snap is not None:
+                gu = gpu_snap.used_mib
+                gt = gpu_snap.total_mib
+                g_torch = gpu_snap.torch_alloc_mib
+            else:
+                g_torch = None
+            self._local_client_diag_samples.append(
+                {
+                    "rss_mib": float(rss_mb),
+                    "jpeg_q_used": int(q_used),
+                    "jpeg_q_max": int(q_max),
+                    "sys_ram_pct": float(sys_pct),
+                    "gpu_vram_used_mib": gu,
+                    "gpu_vram_total_mib": gt,
+                    "gpu_torch_alloc_mib": g_torch,
+                }
+            )
+            self._socket_runner.send_client_diagnostic(
+                rss_mb,
+                q_used,
+                q_max,
+                sys_ram_pct=sys_pct,
+                gpu_vram_used_mib=gu,
+                gpu_vram_total_mib=gt,
+                gpu_torch_alloc_mib=g_torch,
+            )
+        except Exception as e:
+            print(f"[Remote] telemetry send failed: {e}")
+
+    def _join_worker_thread_smooth(
+        self,
+        worker: Optional[QtCore.QThread],
+        *,
+        timeout_ms: int = 6000,
+        terminate_grace_ms: int = 1200,
+        slice_ms: int = 75,
+    ) -> None:
+        """Wait for worker to finish while pumping Qt events (keeps UI repainting).
+
+        Camera workers often block inside OpenCV capture or GPU inference until the next loop
+        tick observes requestStop(); a single blocking wait(...) would freeze MainWindow."""
+        if worker is None or not worker.isRunning():
+            return
+        app = QtWidgets.QApplication.instance()
+        elapsed = QtCore.QElapsedTimer()
+        elapsed.start()
+        while worker.isRunning() and int(elapsed.elapsed()) < timeout_ms:
+            remaining = timeout_ms - int(elapsed.elapsed())
+            chunk = max(1, min(slice_ms, remaining))
+            worker.wait(chunk)
+            if app is not None:
+                app.processEvents(
+                    QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+                )
+        if worker.isRunning():
+            worker.terminate()
+            worker.wait(terminate_grace_ms)
+
+    def _clear_local_inference_telemetry_for_new_session(self) -> None:
+        """Reset per-broadcast samples (CLIENT_DIAG copies + audience stats)."""
+        self._local_client_diag_samples.clear()
+        pub = self._audience_publisher
+        if pub is not None:
+            pub.reset_session_telemetry()
+
+    def _flush_local_inference_telemetry_summary(
+        self,
+        obs_tracker_opt: Optional[Any] = None,
+    ) -> None:
+        """Print mean telemetry for this broadcast on this machine (thin-client + extras)."""
+        def _avg(nums: list) -> Optional[float]:
+            return sum(nums) / len(nums) if nums else None
+
+        xs = self._local_client_diag_samples
+        if xs:
+            rss_m = _avg([float(r["rss_mib"]) for r in xs])
+            q_u_m = _avg([float(r["jpeg_q_used"]) for r in xs])
+            q_max = int(xs[-1].get("jpeg_q_max", 0))
+            sysp_m = _avg([float(r["sys_ram_pct"]) for r in xs])
+            gpu_used_nums = [
+                float(r["gpu_vram_used_mib"])
+                for r in xs
+                if r.get("gpu_vram_used_mib") is not None
+            ]
+            gu_m = _avg(gpu_used_nums)
+            gt_ref: Optional[float] = None
+            for row in reversed(xs):
+                t = row.get("gpu_vram_total_mib")
+                if t is not None:
+                    gt_ref = float(t)
+                    break
+            torch_nums = [
+                float(r["gpu_torch_alloc_mib"])
+                for r in xs
+                if r.get("gpu_torch_alloc_mib") is not None
+            ]
+            ga_m = _avg(torch_nums) if torch_nums else None
+            sfx = vram_log_suffix_from_wire(gu_m, gt_ref, ga_m)
+            print(
+                f"[SESSION AVG] Client-local (n={len(xs)})  RSS={rss_m:.1f} MiB | "
+                f"JPEG send_queue={q_u_m:.2f}/{q_max} | "
+                f"system_RAM_used={sysp_m:.0f}%{sfx}"
+            )
+
+        pub = self._audience_publisher
+        if pub is not None:
+            for ln in pub.consume_session_telemetry_average_lines():
+                print(ln)
+
+        if obs_tracker_opt is not None:
+            ln = obs_tracker_opt.consume_session_perf_average_line()
+            if ln:
+                print(ln)
+
+        self._local_client_diag_samples.clear()
+
+    @QtCore.Slot(str, int)
+    def on_remote_connect_clicked(self, host: str, port: int) -> None:
+        self._stop_remote_client_ram_monitor()
+        if self._socket_runner is not None:
+            self._socket_runner.disconnect_and_quit()
+            self._socket_runner = None
+
+        self.append_text(f"[Remote] 正在連線至 {host}:{port}…")
+        self.control_panel.set_remote_connecting()
+
+        runner = SocketClientRunner(host, port, parent=self)
+        runner.signal_connected.connect(self.on_remote_connected)
+        runner.signal_disconnected.connect(self.on_remote_disconnected)
+        runner.signal_connect_error.connect(self.on_remote_connect_error)
+        runner.signal_segment.connect(self.on_segment)
+        runner.signal_status.connect(self.on_remote_status)
+        runner.signal_error.connect(self.on_remote_server_error)
+        self._socket_runner = runner
+        runner.start()
+
+    @QtCore.Slot()
+    def on_remote_disconnect_clicked(self) -> None:
+        self._stop_remote_client_ram_monitor()
+        if self._socket_runner is not None:
+            self.append_text("[Remote] 中斷連線")
+            self._socket_runner.disconnect_and_quit()
+            self._socket_runner = None
+        self.model_ready = (self.livecc_model is not None)
+        self.control_panel.set_remote_connected(False, "未連線")
+        self._update_start_button_state()
+
+    @QtCore.Slot()
+    def on_remote_connected(self) -> None:
+        self.append_text(f"[Remote] 已連線至 {self.control_panel.get_remote_host()}:{self.control_panel.get_remote_port()}")
+        self.control_panel.set_remote_connected(True, "已連線")
+        self.model_ready = True
+        self._update_start_button_state()
+
+    @QtCore.Slot(str)
+    def on_remote_disconnected(self, reason: str) -> None:
+        self.append_text(f"[Remote] 連線中斷: {reason}")
+        self.control_panel.set_remote_connected(False, "連線中斷")
+        self._socket_runner = None
+        self.model_ready = (self.livecc_model is not None)
+        if self.is_inference_running:
+            self.stop_inference()
+        self._update_start_button_state()
+
+    @QtCore.Slot(str)
+    def on_remote_connect_error(self, msg: str) -> None:
+        self.append_text(f"[Remote] 連線失敗: {msg}")
+        self.control_panel.set_remote_connected(False, "連線失敗")
+        self._socket_runner = None
+        self.model_ready = (self.livecc_model is not None)
+        self._update_start_button_state()
+
+    @QtCore.Slot(str)
+    def on_remote_status(self, msg: str) -> None:
+        self.statusBar().showMessage(f"[Remote] {msg}", 3000)
+
+    @QtCore.Slot(str)
+    def on_remote_server_error(self, msg: str) -> None:
+        self.append_text(f"[Remote Error] {msg}")
+        if self.is_inference_running:
+            self.stop_inference()
+>>>>>>> Multi-API
 
     def _initTTSWorker(self) -> None:
             """Initialize all TTS Workers (OpenAI + Local Chatterbox)"""
@@ -1333,6 +2040,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_font_scale_request(self, size_pt: int) -> None:
         self.font_size = int(size_pt)
         self._apply_styles(self.font_size)
+        self.control_panel.apply_source_metrics()
+        self.control_panel.apply_settings_metrics()
         self.statusBar().showMessage(f"Font size adjusted to: {self.font_size}pt", 2000)
         QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
 
@@ -1392,6 +2101,70 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(True)
         self._update_start_button_state()
 
+<<<<<<< HEAD
+=======
+    def _stop_all_source_threads(self) -> None:
+        """Stop and clean up all live-source threads before switching sources.
+        Explicitly disconnect signals to prevent residual frame emissions after stop."""
+        if self.video_thread:
+            self.video_thread.requestStop()
+            try:
+                self.video_thread.signal_frame.disconnect()
+            except RuntimeError:
+                pass
+            self.video_thread.wait()
+            self.video_thread = None
+        if self.camera_thread:
+            self.camera_thread.requestStop()
+            try:
+                self.camera_thread.signal_frame.disconnect()
+            except RuntimeError:
+                pass
+            self.camera_thread.wait()
+            self.camera_thread = None
+        if self.obs_thread:
+            self.obs_thread.requestStop()
+            try:
+                self.obs_thread.signal_frame.disconnect()
+            except RuntimeError:
+                pass
+            self._join_worker_thread_smooth(self.obs_thread)
+            self.obs_thread = None
+        if self.obs_bytetrack_thread:
+            self.obs_bytetrack_thread.requestStop()  # also releases DirectShow capture
+            try:
+                self.obs_bytetrack_thread.signal_frame.disconnect()
+                self.obs_bytetrack_thread.signal_subject_frame.disconnect()
+            except RuntimeError:
+                pass
+            self._join_worker_thread_smooth(self.obs_bytetrack_thread)
+            self.obs_bytetrack_thread = None
+        if self.dual_sync_thread:
+            self.dual_sync_thread.requestStop()
+            try:
+                self.dual_sync_thread.signal_frame.disconnect()
+            except RuntimeError:
+                pass
+            self._join_worker_thread_smooth(self.dual_sync_thread)
+            self.dual_sync_thread = None
+        if self.free_switch_thread:
+            # Must run before thread is nulled so signal_vr_frame disconnect works
+            self._stop_audience_publisher_only()
+            self.free_switch_thread.requestStop()
+            try:
+                self.free_switch_thread.signal_frame.disconnect()
+                self.free_switch_thread.signal_source_changed.disconnect()
+                self.free_switch_thread.signal_vr_frame.disconnect(
+                    self._deliver_audience_vr_frame
+                )
+            except RuntimeError:
+                pass
+            self._join_worker_thread_smooth(self.free_switch_thread)
+            self.free_switch_thread = None
+        self._stop_free_switch_auto_cycle()
+        self.control_panel.set_free_switch_bar_visible(False)
+
+>>>>>>> Multi-API
     @QtCore.Slot()
     def on_open_camera_clicked(self) -> None:
         self.stop_inference()
@@ -1458,19 +2231,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def on_open_camera_track_clicked(self) -> None:
-        """Switch to physical webcam + ByteTrack subject-tracking mode."""
+        """Webcam + tracking: ByteTrack always runs locally; only the subject crop
+        is forwarded to the remote server for LiveCC inference."""
         self.stop_inference()
         self.mode = "obs_track"
-        self.current_video_path = "Camera + ByteTrack"
-        self.control_panel.set_status("Mode: Camera + ByteTrack")
-        self.append_text("Switched to Camera + ByteTrack tracking modeyteTrack 追蹤")
-        self.append_text("已切換至鏡頭 + ByteTrack 追蹤模式")
+        self.current_video_path = "Camera + ByteTrack (local)"
+        self.control_panel.set_status("Mode: Webcam + Tracking (local ByteTrack)")
+        self.append_text("Switched to Webcam + Tracking (ByteTrack runs locally)")
+        self.append_text("已切換至「鏡頭 + 追蹤」；ByteTrack 在本機執行，僅 subject crop 送至遠端")
         self._stop_all_source_threads()
 
         bt_cfg = self.configs.get("bytetrack", {})
         repo_path = bt_cfg.get("bytetrack_repo") or None
-        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_x_mix_det.py")
-        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_x_mot17.pth.tar")
+        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_s_mix_det.py")
+        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_s_mot17.pth.tar")
 
         import os
         if repo_path and not os.path.isabs(exp_file):
@@ -1485,7 +2259,7 @@ class MainWindow(QtWidgets.QMainWindow):
         print(f"[CameraTrack] 使用實體攝影機 index {cam_idx}")
 
         self.camera_start_time = time.time()
-        self.obs_bytetrack_thread = OBSByteTrackThread(
+        self.obs_bytetrack_thread = CameraByteTrackThread(
             ckpt_path              = ckpt_path,
             exp_file               = exp_file,
             bytetrack_repo         = repo_path,
@@ -1512,59 +2286,255 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
 
-    def on_open_obs_track_clicked(self) -> None:
-        """Switch to OBS Virtual Camera + ByteTrack subject-tracking mode."""
+    @QtCore.Slot()
+    def on_open_dual_sync_clicked(self) -> None:
+        """Switch to synchronized dual-source mode: Webcam (idx 0) + VR/OBS (idx 5)."""
         self.stop_inference()
-        self.mode = "obs_track"
-        self.current_video_path = "OBS Mode: OBS + ByteTrack"
-        self.append_text("Switched to OBS + ByteTrack tracking mode - ensure OBS Virtual Camera is active")
-        self.append_text("已切換至 OBS + ByteTrack 追蹤模式 — 請確認 OBS 已啟動虛擬攝影機")
+        self.mode = "dual_sync"
+        self.current_video_path = "Dual Source: Webcam + VR"
+        self.control_panel.set_status("Mode: VR & Webcam (Sync)")
+        self.append_text("Switched to Dual Source Sync mode (Webcam + VR side-by-side)")
+        self.append_text("已切換至雙路同步模式 (Webcam + VR 左右拼接)")
         self._stop_all_source_threads()
 
-        # Read bytetrack config from configs dict
-        bt_cfg = self.configs.get("bytetrack", {})
-
-        # Resolve repo path: config value takes priority, env var is fallback
-        # (ByteTrackWrapper itself also does the same resolution internally)
-        repo_path = bt_cfg.get("bytetrack_repo") or None
-        exp_file  = bt_cfg.get("exp_file",  "exps/example/mot/yolox_x_mix_det.py")
-        ckpt_path = bt_cfg.get("ckpt_path", "pretrained/bytetrack_x_mot17.pth.tar")
-
-        # If paths are relative, resolve them against the ByteTrack_repo dir
-        import os
-        if repo_path and not os.path.isabs(exp_file):
-            exp_file  = os.path.join(repo_path, exp_file)
-        if repo_path and not os.path.isabs(ckpt_path):
-            ckpt_path = os.path.join(repo_path, ckpt_path)
-
         self.camera_start_time = time.time()
-        self.obs_bytetrack_thread = OBSByteTrackThread(
-            ckpt_path              = ckpt_path,
-            exp_file               = exp_file,
-            bytetrack_repo         = repo_path,
-            device                 = bt_cfg.get("device", "cuda"),
-            fp16                   = bool(bt_cfg.get("fp16", True)),
-            fuse                   = bool(bt_cfg.get("fuse", True)),
-            track_thresh           = float(bt_cfg.get("track_thresh", 0.5)),
-            match_thresh           = float(bt_cfg.get("match_thresh", 0.8)),
-            track_buffer           = int(bt_cfg.get("track_buffer", 30)),
-            aspect_ratio_thresh    = float(bt_cfg.get("aspect_ratio_thresh", 1.6)),
-            min_box_area           = float(bt_cfg.get("min_box_area", 10)),
-            subject_only           = bool(bt_cfg.get("subject_only", True)),
-            subject_pad            = float(bt_cfg.get("subject_pad", 0.15)),
-            min_subject_area_ratio = float(bt_cfg.get("min_subject_area_ratio", 0.03)),
-            preempt_ratio          = float(bt_cfg.get("preempt_ratio", 4.0)),
-            preloaded_tracker      = self._bytetrack_wrapper,
-        )
-        # Annotated BGR preview → GUI video panel
-        self.obs_bytetrack_thread.signal_frame.connect(self.on_obs_track_frame)
-        # Subject crop RGB → LiveCC inference
-        self.obs_bytetrack_thread.signal_subject_frame.connect(self.on_obs_track_subject_frame)
-        self.obs_bytetrack_thread.signal_error.connect(self.on_error)
-        self.obs_bytetrack_thread.start()
+        self.dual_sync_thread = DualSourceCameraThread(cam_idx=0, vr_idx=5)
+        self.dual_sync_thread.signal_frame.connect(self.on_camera_frame)
+        self.dual_sync_thread.signal_error.connect(self.on_error)
+        self.dual_sync_thread.start()
 
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
+
+    @QtCore.Slot()
+    def on_open_free_switch_clicked(self) -> None:
+        """Show source-selection dialog, then start FreeSwitchCameraThread."""
+        # ── Initial source dialog ─────────────────────────────────────────────
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Free Switch — 選擇初始輸入源")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(360)
+        _dlg_layout = QtWidgets.QVBoxLayout(dlg)
+        _dlg_layout.setSpacing(14)
+        _dlg_layout.setContentsMargins(20, 20, 20, 20)
+
+        _lbl = QtWidgets.QLabel("請問您初始的輸入源是？")
+        _lbl.setStyleSheet("font-size: 14px; font-weight: 600;")
+        _dlg_layout.addWidget(_lbl)
+
+        _sub = QtWidgets.QLabel("啟動後可隨時點擊切換按鈕，攝影機不須重新連線。")
+        _sub.setStyleSheet("color: #aaa; font-size: 12px;")
+        _sub.setWordWrap(True)
+        _dlg_layout.addWidget(_sub)
+
+        _btn_row = QtWidgets.QHBoxLayout()
+        _btn_row.setSpacing(10)
+        chosen = [None]
+
+        _dlg_btn_style = """
+            QPushButton {
+                background-color: #505050;
+                border-radius: 10px;
+                padding: 10px 14px;
+                font-weight: 650;
+            }
+            QPushButton:hover { background-color: #3a86ff; color: white; }
+        """
+        for _label, _key in [
+            ("📷  Webcam",      SOURCE_WEBCAM),
+            ("🥽  VR",          SOURCE_VR),
+            ("🔀  Webcam + VR", SOURCE_DUAL),
+        ]:
+            _b = QtWidgets.QPushButton(_label)
+            _b.setStyleSheet(_dlg_btn_style)
+            _b.clicked.connect(lambda _, k=_key: (chosen.__setitem__(0, k), dlg.accept()))
+            _btn_row.addWidget(_b)
+
+        _dlg_layout.addLayout(_btn_row)
+        dlg.exec()
+
+        if chosen[0] is None:
+            return  # User closed dialog without choosing
+
+        initial_source: str = chosen[0]
+
+        # ── Start Free Switch mode ─────────────────────────────────────────────
+        self.stop_inference()
+        self.mode = "free_switch"
+        self.current_video_path = f"FreeSwitch:{initial_source}"
+        self.control_panel.set_status(f"Mode: Free Switch  ({initial_source})")
+        self.append_text(f"[FreeSwitch] 初始來源：{initial_source}  (兩組攝影機同時開啟)")
+        self._stop_all_source_threads()
+
+        self.camera_start_time = time.time()
+        self.free_switch_thread = FreeSwitchCameraThread(
+            initial_source=initial_source,
+            cam_idx=0,
+            vr_idx=5,
+        )
+        self.free_switch_thread.signal_frame.connect(self.on_camera_frame)
+        self.free_switch_thread.signal_error.connect(self.on_error)
+        self.free_switch_thread.signal_source_changed.connect(self._on_free_switch_source_changed)
+        self.free_switch_thread.start()
+
+        self.control_panel.set_free_switch_bar_visible(True, initial_source)
+        self.video_panel.slider.setEnabled(False)
+        self._update_start_button_state()
+
+        # Start audience second-screen services
+        self._start_audience_services()
+
+    def _ensure_audience_token_server(self) -> None:
+        """HTTP server for /audience + /api/audience/join — runs for app lifetime when enabled."""
+        audience_cfg = self.configs.get("audience", {})
+        if not audience_cfg.get("enabled", False):
+            return
+        if self._audience_token_server is not None:
+            return
+        lk_url = audience_cfg.get("livekit_url", "ws://localhost:7880")
+        api_key = audience_cfg.get("api_key", "devkey")
+        api_secret = audience_cfg.get("api_secret", "")
+        room_name = audience_cfg.get("room", "broadcast-room")
+        port = int(audience_cfg.get("port", 8080))
+        self._audience_token_server = AudienceTokenServer(
+            lk_url, api_key, api_secret, room_name, port=port
+        )
+        self._audience_token_server.start()
+
+    def _stop_audience_token_server(self) -> None:
+        if self._audience_token_server is not None:
+            self._audience_token_server.stop()
+            self._audience_token_server = None
+
+    @QtCore.Slot(np.ndarray)
+    def _deliver_audience_vr_frame(self, frame_rgb: np.ndarray) -> None:
+        """Forward VR frames to LiveKit publisher.
+
+        Use this stable MainWindow slot instead of connecting worker signals directly to
+        AudiencePublisher.push_video_frame — bound publisher methods + QueuedConnection
+        can invoke the slot with a broken ``self`` (method-wrapper), raising AttributeError.
+        """
+        pub = self._audience_publisher
+        if pub is not None:
+            pub.push_video_frame(frame_rgb)
+
+    def _stop_audience_publisher_only(self) -> None:
+        """Tear down LiveKit publisher + TTS sink; keep HTTP token server running."""
+        from .core.models import openai_tts as _tts_mod
+        _tts_mod.register_pcm_sink(None, mute_local=False)
+        if self._audience_publisher is not None:
+            try:
+                if self.free_switch_thread is not None:
+                    self.free_switch_thread.signal_vr_frame.disconnect(
+                        self._deliver_audience_vr_frame
+                    )
+            except (RuntimeError, AttributeError, TypeError):
+                pass
+            self._audience_publisher.stop()
+            self._audience_publisher = None
+
+    def _start_audience_services(self) -> None:
+        """Free Switch: LiveKit publisher + TTS PCM sink (HTTP server already up)."""
+        audience_cfg = self.configs.get("audience", {})
+        if not audience_cfg.get("enabled", False):
+            return
+
+        self._ensure_audience_token_server()
+        self._stop_audience_publisher_only()
+
+        lk_url = audience_cfg.get("livekit_url", "ws://localhost:7880")
+        api_key = audience_cfg.get("api_key", "devkey")
+        api_secret = audience_cfg.get("api_secret", "devsecret")
+        room_name = audience_cfg.get("room", "broadcast-room")
+
+        from .core.models import openai_tts as _tts_mod
+
+        self._audience_publisher = AudiencePublisher(
+            lk_url, api_key, api_secret, room_name
+        )
+        self._audience_publisher.reset_session_telemetry()
+        self._audience_publisher.start()
+
+        if self.free_switch_thread is not None:
+            self.free_switch_thread.signal_vr_frame.connect(
+                self._deliver_audience_vr_frame,
+                QtCore.Qt.QueuedConnection,
+            )
+
+        _tts_mod.register_pcm_sink(
+            self._audience_publisher.push_audio_chunk,
+            mute_local=True,
+            flush_callback=self._audience_publisher.flush_pending_audio,
+        )
+
+    def _stop_audience_services(self) -> None:
+        """Tear down publisher only (HTTP /audience stays up for the app lifetime)."""
+        self._stop_audience_publisher_only()
+
+    @QtCore.Slot(str)
+    def on_switch_source(self, source: str) -> None:
+        """Instantly switch the active camera source inside FreeSwitchCameraThread."""
+        if self.free_switch_thread is not None:
+            self.free_switch_thread.set_active_source(source)
+        # Highlight button immediately (don't wait for signal_source_changed round-trip)
+        self.control_panel.highlight_switch_source(source)
+        if self._fs_auto_cycle_timer.isActive():
+            try:
+                self._fs_cycle_idx = self._fs_cycle_order.index(source)
+            except ValueError:
+                pass
+
+    def _stop_free_switch_auto_cycle(self) -> None:
+        """Stop the 10s source rotation and clear the toggle (no signal loop)."""
+        self._fs_auto_cycle_timer.stop()
+        self._set_free_switch_manual_buttons_enabled(True)
+        b = self.control_panel.btn_fs_auto_cycle
+        if b.isChecked():
+            b.blockSignals(True)
+            b.setChecked(False)
+            b.blockSignals(False)
+
+    def _set_free_switch_manual_buttons_enabled(self, enabled: bool) -> None:
+        """While 10s auto-rotate runs, disable webcam/vr/dual to avoid fighting the timer."""
+        p = self.control_panel
+        p.btn_sw_webcam.setEnabled(enabled)
+        p.btn_sw_vr.setEnabled(enabled)
+        p.btn_sw_dual.setEnabled(enabled)
+
+    @QtCore.Slot(bool)
+    def _on_free_switch_auto_cycle_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self._fs_auto_cycle_timer.stop()
+            self._set_free_switch_manual_buttons_enabled(True)
+            return
+        if self.mode != "free_switch" or self.free_switch_thread is None:
+            self.append_text("[FreeSwitch] 10s 輪播需在 Free Switch 模式且攝影機已啟動時使用")
+            self._stop_free_switch_auto_cycle()
+            return
+        cur = self.free_switch_thread.active_source  # @property, not a method call
+        try:
+            self._fs_cycle_idx = self._fs_cycle_order.index(cur)
+        except ValueError:
+            self._fs_cycle_idx = 0
+        self._set_free_switch_manual_buttons_enabled(False)
+        # Advance to next source immediately, then let the timer fire every 10s.
+        self._on_free_switch_auto_cycle_tick()
+        self._fs_auto_cycle_timer.start()
+
+    @QtCore.Slot()
+    def _on_free_switch_auto_cycle_tick(self) -> None:
+        if self.mode != "free_switch" or self.free_switch_thread is None:
+            self._stop_free_switch_auto_cycle()
+            return
+        order = self._fs_cycle_order
+        self._fs_cycle_idx = (self._fs_cycle_idx + 1) % len(order)
+        self.on_switch_source(order[self._fs_cycle_idx])
+
+    @QtCore.Slot(str)
+    def _on_free_switch_source_changed(self, source: str) -> None:
+        """Called when FreeSwitchCameraThread confirms the new source."""
+        self.control_panel.highlight_switch_source(source)
+        self.append_text(f"[FreeSwitch] 已切換至：{source}")
 
     def _apply_tts_settings_before_start(self) -> None:
         """根據目前模式套用對應設定，並更新 GeminiBackgroundWorker 的 TTS 參考。"""
@@ -1597,12 +2567,22 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         if not self.model_ready:
-            self.append_text("Model not ready yet")
+            self.append_text("請先連線遠端伺服器，或等待本機模型載入完成")
             return
 
-        # Start new log session before inference
-        log_path = self.session_logger.start_new_session(self.mode)
+        # Session file: same layout for every input mode; header records where LiveCC runs
+        if self._socket_runner is not None:
+            inference_backend = "remote"
+        elif getattr(self, "livecc_model", None) is not None:
+            inference_backend = "local"
+        else:
+            inference_backend = "unknown"
+        log_path = self.session_logger.start_new_session(
+            self.mode, inference_backend=inference_backend
+        )
         print(f"[Main] Session log started: {log_path}")
+
+        self._clear_local_inference_telemetry_for_new_session()
 
         style_key = self.control_panel.get_selected_style_key()
         style_label = self.control_panel.get_selected_style_label()
@@ -1633,10 +2613,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtCore.Qt.QueuedConnection,
             )
         self.text_output.setText("")
-        self._obs_drop_logged = False  # reset drop-log flag so it fires again if needed
 
         self.append_text(f"Starting inference (Style: {style_label}, TTS: {self.tts_mode})")
         self.append_text(f"開始推論 (Style: {style_label}, TTS: {self.tts_mode})")
+        if self.tts_mode == "none":
+            self.append_text(
+                "提示：TTS 為「不啟用 (Mute)」— 不會播出語音。需要朗讀請選 OpenAI TTS。"
+            )
+            self.statusBar().showMessage("TTS: 靜音（不播語音）", 5000)
 
         if self.mode == "file":
             if hasattr(self, "_pending_segments"):
@@ -1654,15 +2638,47 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.signal_video_ended.connect(self.on_finished)
             self.video_thread.signal_invalid_video.connect(self.on_error)
             self.video_thread.start()
+<<<<<<< HEAD
             self._livecc_run_id += 1
             self.signal_start_livecc.emit(self.current_video_path, prompt, self._livecc_run_id)
+=======
+>>>>>>> Multi-API
 
-        elif self.mode in ("camera", "obs", "obs_track"):
-            self.signal_start_camera_livecc.emit(prompt)
+            if self._socket_runner is not None:
+                # Remote: frames are streamed via on_video_frame → send_frame
+                self._socket_runner.start_inference(self.mode, prompt)
+                self._start_remote_client_ram_monitor()
+            elif self.livecc_model is not None:
+                # Local: pass file path directly to local LiveCC worker
+                self.signal_start_livecc.emit(self.current_video_path, prompt)
+            else:
+                self.append_text(
+                    "未連線遠端且本機無 LiveCC 模型，無法開始。請先連線遠端或安裝本機模型。"
+                )
+                self.is_inference_running = False
+                self.control_panel.set_start_button_state(False)
+                self.control_panel.set_tts_controls_enabled(True)
+                return
+
+        elif self.mode in ("camera", "obs", "obs_track", "dual_sync", "free_switch"):
+            if self._socket_runner is not None:
+                # ByteTrack runs only on the client; the server decodes JPEG + LiveCC. Report real
+                # mode so server logs match the GUI (MSG_START "mode" is informational only).
+                self._socket_runner.start_inference(self.mode, prompt)
+                self._start_remote_client_ram_monitor()
+            elif self.livecc_model is not None:
+                self.signal_start_camera_livecc.emit(prompt)
+            else:
+                self.append_text("未連線遠端，無法開始。請先按「連線遠端伺服器」。")
+                self.is_inference_running = False
+                self.control_panel.set_start_button_state(False)
+                self.control_panel.set_tts_controls_enabled(True)
+                return
 
     def stop_inference(self) -> None:
         if not self.is_inference_running:
             return
+<<<<<<< HEAD
 
         self.append_text("停止推論")
         self._tts_last_priority = 5
@@ -1690,30 +2706,65 @@ class MainWindow(QtWidgets.QMainWindow):
             self.livecc_worker.requestStop()
         if hasattr(self, "cam_worker"):
             self.cam_worker.requestStop()
+=======
+        if self._busy_stopping_inference:
+            return
+        obs_tracker_for_avg = None
+        self._busy_stopping_inference = True
+        try:
+            self.append_text("Stopping inference")
+            # First: unblock subject_frame → remote and mute live SEGMENT/TTS ASAP.
+            self.is_inference_running = False
+            self._stop_remote_client_ram_monitor()
+            if hasattr(self, "_pending_segments"):
+                self._pending_segments.clear()
+            if self.tts_mode == "openai":
+                try:
+                    self.signal_tts_interrupt.emit()
+                except Exception:
+                    pass
+>>>>>>> Multi-API
 
-        if self.mode == "file" and self.video_thread:
-            self.video_thread.requestStop()
-            self.video_thread.wait()
-            self.video_thread = None
+            # Remote: tell server to stop
+            if self._socket_runner is not None:
+                try:
+                    self._socket_runner.stop_inference()
+                except Exception:
+                    pass
 
-        if self.mode == "obs" and self.obs_thread is not None:
-            self.obs_thread.requestStop()
-            if not self.obs_thread.wait(3000):
-                self.obs_thread.terminate()
-                self.obs_thread.wait(1000)
-            self.obs_thread = None
+            if hasattr(self, "livecc_worker") and self.livecc_worker is not None:
+                self.livecc_worker.requestStop()
+            if hasattr(self, "cam_worker") and self.cam_worker is not None:
+                self.cam_worker.requestStop()
 
-        if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:
-            self.obs_bytetrack_thread.requestStop()
-            if not self.obs_bytetrack_thread.wait(3000):
-                self.obs_bytetrack_thread.terminate()
-                self.obs_bytetrack_thread.wait(1000)
-            self.obs_bytetrack_thread = None
+            if self.mode == "file" and self.video_thread:
+                self.video_thread.requestStop()
+                self.video_thread.wait()
+                self.video_thread = None
 
-        self.is_inference_running = False
-        self.control_panel.set_start_button_state(False)
-        self.control_panel.set_tts_controls_enabled(True)  # Unlock after stop
-        self.control_panel.set_tts_controls_enabled(True)  # ✅ 解鎖：停止後可改
+            if self.mode == "obs" and self.obs_thread is not None:
+                self.obs_thread.requestStop()
+                self._join_worker_thread_smooth(self.obs_thread)
+                self.obs_thread = None
+
+            # Webcam+ByteTrack stays alive here: inference ended above; preview keeps updating.
+            if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:
+                obs_tracker_for_avg = getattr(
+                    self.obs_bytetrack_thread, "_active_tracker", None
+                )
+
+            if self.mode == "dual_sync" and self.dual_sync_thread is not None:
+                self.dual_sync_thread.requestStop()
+                self._join_worker_thread_smooth(self.dual_sync_thread)
+                self.dual_sync_thread = None
+
+            self._flush_local_inference_telemetry_summary(obs_tracker_for_avg)
+
+            self._last_track_preview_mono = 0.0
+            self.control_panel.set_start_button_state(False)
+            self.control_panel.set_tts_controls_enabled(True)  # Unlock after stop
+        finally:
+            self._busy_stopping_inference = False
 
     # ---------------- Frame handlers ----------------
 
@@ -1725,12 +2776,27 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.mode == "file" and fps and fps > 0:
             self._playback_sec = float(frame_idx) / float(fps)
 
+        # Stream video frames to remote server for file-mode inference
+        if self.mode == "file" and self.is_inference_running and self._socket_runner is not None:
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            self._socket_runner.send_frame(frame_bgr, self._playback_sec)
+
     @QtCore.Slot(np.ndarray)
     def on_camera_frame(self, frame_rgb: np.ndarray) -> None:
+        # obs_track no longer uses this slot — CameraByteTrackThread emits to
+        # on_obs_track_frame (preview) and on_obs_track_subject_frame (remote send).
         self.video_panel.update_frame(frame_rgb)
-        if self.is_inference_running and self.mode in ("camera", "obs"):
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-            t_relative = time.time() - self.camera_start_time
+        if not self.is_inference_running:
+            return
+        if self.mode not in ("camera", "obs", "dual_sync", "free_switch"):
+            return
+
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        t_relative = time.time() - self.camera_start_time
+
+        if self._socket_runner is not None:
+            self._socket_runner.send_frame(frame_bgr, t_relative)
+        elif hasattr(self, "cam_worker") and self.cam_worker is not None:
             self.cam_worker.push_frame(frame_bgr, t_relative)
 
     @QtCore.Slot(np.ndarray)
@@ -1740,21 +2806,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(np.ndarray)
     def on_obs_track_subject_frame(self, subject_crop_rgb: np.ndarray) -> None:
-        """Forward the padded subject crop (RGB) from ByteTrack to LiveCC cam_worker."""
-        if self.is_inference_running and self.mode == "obs_track":
-            # Resize to fixed size so np.stack in build_clip_from_buffer never fails
-            # with variable-sized crops from ByteTrack.
-            fixed = cv2.resize(subject_crop_rgb, (640, 480))
-            # cam_worker.push_frame expects BGR
-            subject_bgr = cv2.cvtColor(fixed, cv2.COLOR_RGB2BGR)
-            t_relative = time.time() - self.camera_start_time
+        """Forward the padded subject crop (RGB) to LiveCC inference (local or remote)."""
+        if self.mode != "obs_track":
+            return
+        # Before Start: thread still emits subject crops — expected; do not warn.
+        if not self.is_inference_running:
+            return
+
+        fixed = cv2.resize(subject_crop_rgb, (640, 480))
+        subject_bgr = cv2.cvtColor(fixed, cv2.COLOR_RGB2BGR)
+        t_relative = time.time() - self.camera_start_time
+
+        if self._socket_runner is not None:
+            self._socket_runner.send_frame(subject_bgr, t_relative)
+        elif hasattr(self, "cam_worker") and self.cam_worker is not None:
             self.cam_worker.push_frame(subject_bgr, t_relative)
-        else:
-            # Diagnostic: print why frames are being dropped
-            if not hasattr(self, '_obs_drop_logged'):
-                self._obs_drop_logged = True
-                print(f"[GUI] ⚠️  on_obs_track_subject_frame dropped: "
-                      f"is_inference_running={self.is_inference_running}, mode='{self.mode}'")
 
     @QtCore.Slot(str, str, str)
     def on_backend_log(self, source: str, level: str, msg: str) -> None:
@@ -1879,8 +2945,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Camera mode：沒有播放器時間軸可排程，所以直接顯示/唸
         if self.mode != "file":
+<<<<<<< HEAD
             line = f"[{self._fmt_time(start_t)}] {display_text}"
             self._append_ui(line)
+=======
+            if not self.is_inference_running:
+                return
+            line = f"[{self._fmt_time(start_t)}] {text}"
+            self.text_output.appendText(line)
+>>>>>>> Multi-API
 
             if not tts_text.strip():
                 return
@@ -1909,6 +2982,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not tts_text.strip():
             return
+<<<<<<< HEAD
         if self._is_duplicate_tts(tts_text):
             return
         now = time.time()
@@ -1950,6 +3024,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtCore.Qt.QueuedConnection,
             )
             logging.info("[P1 Silence] 1.0s elapsed, Gemini background resumed")
+=======
+
+        # TTS: only when _tick_subtitle_scheduler displays the line (stays in sync with video time).
+        # Do not speak here, or OpenAI TTS will fire early / replace queue and desync from on-screen text.
+>>>>>>> Multi-API
 
     @QtCore.Slot()
     def on_finished(self) -> None:
@@ -1980,7 +3059,9 @@ class MainWindow(QtWidgets.QMainWindow):
         cap.release()
 
     def _update_start_button_state(self) -> None:
-        can_start = self.model_ready and (self.current_video_path is not None)
+        # Allow start when: remote connected OR local model ready, and a source is selected
+        ready = self._socket_runner is not None or self.model_ready
+        can_start = ready and (self.current_video_path is not None)
         self.control_panel.btn_start.setEnabled(bool(can_start))
 
     def _ensure_log_dir(self) -> None:
@@ -2129,7 +3210,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         """Stop inference before closing"""
-        # ✅ 先停推論
+        # Stop remote socket first
+        if self._socket_runner is not None:
+            try:
+                self._socket_runner.stop_inference()
+            except Exception:
+                pass
+            self._socket_runner.disconnect_and_quit()
+            self._socket_runner = None
+
+        # 先停推論
         self.stop_inference()
 
         # ✅ 停 camera thread
@@ -2147,11 +3237,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tts_thread.quit()
             self.tts_thread.wait(2000)
 
-        # ✅ 停 LiveCC worker threads
+        # Stop local LiveCC worker threads (only exist when model was loaded locally)
         if hasattr(self, "cam_worker_thread") and self.cam_worker_thread:
             self.cam_worker_thread.quit()
             self.cam_worker_thread.wait(2000)
-
         if hasattr(self, "livecc_thread") and self.livecc_thread:
             self.livecc_thread.quit()
             self.livecc_thread.wait(2000)
@@ -2169,11 +3258,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.local_tts_thread.quit()
             self.local_tts_thread.wait(2000)
 
+<<<<<<< HEAD
         try:
             self.signal_gemini_tts_stop.emit()
         except: pass
         if hasattr(self, "gemini_tts_thread") and self.gemini_tts_thread:
             self.gemini_tts_thread.quit()
             self.gemini_tts_thread.wait(2000)
+=======
+        self._stop_audience_publisher_only()
+        self._stop_audience_token_server()
+>>>>>>> Multi-API
 
         super().closeEvent(event)

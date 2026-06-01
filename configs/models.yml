@@ -1,5 +1,6 @@
 classifiers:
   livecc_7b:
+<<<<<<< HEAD
     desc: LiveCC (streaming video captioner)
     model_path: chenjoya/LiveCC-7B-Instruct
     device_id: 0
@@ -22,3 +23,48 @@ classifiers:
       target_fps: 2.0
       infer_interval: 1.0
       memory_reset_every: 5
+=======
+    desc: LiveCC (streaming video captioner; config not used)
+    model_path: livecc
+    frame_size: 0
+    n_frames: 0
+
+# ---------------------------------------------------------------------------
+# ByteTrack — YOLOX + BYTETracker subject-tracking configuration
+#
+# bytetrack_repo : absolute path to ByteTrack_repo (can also be set via
+#                  BYTETRACK_REPO environment variable)
+# exp_file       : YOLOX experiment config (.py) relative to repo root,
+#                  or an absolute path
+# ckpt_path      : path to the .pth checkpoint file
+# model_size     : informational (tiny / nano / s / m / l / x)
+# Light checkpoints (download from ByteTrack README "Model zoo" if missing):
+#   S   — yolox_s_mix_det.py  + pretrained/bytetrack_s_mot17.pth.tar  (accuracy/speed balance)
+#   Tiny — yolox_tiny_mix_det.py + pretrained/bytetrack_tiny_mot17.pth.tar (fastest, weaker)
+# device         : "cuda", "cuda:0", "gpu", or "cpu" (if CUDA requested but PyTorch
+#                  has no GPU build, console prints install hint and falls back to CPU)
+# fp16           : half-precision inference (requires CUDA)
+# fuse           : fuse Conv+BN layers for speed
+# ---------------------------------------------------------------------------
+bytetrack:
+  bytetrack_repo: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo"
+  exp_file: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/exps/example/mot/yolox_s_mix_det.py"
+  ckpt_path: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/pretrained/bytetrack_s_mot17.pth.tar"
+  model_size: "s"
+  device: "cuda"
+  fp16: true
+  fuse: true
+  # BYTETracker hyper-parameters
+  track_thresh: 0.5
+  match_thresh: 0.8
+  track_buffer: 60   # frames to keep tentative tracks alive (helps through short occlusions)
+  aspect_ratio_thresh: 1.6
+  min_box_area: 10
+  mot20: false
+  # Subject-mode
+  subject_only: true
+  subject_pad: 0.15
+  # Subject quality gates
+  min_subject_area_ratio: 0.03   # ignore tracks smaller than 3% of frame area
+  preempt_ratio: 4.0             # switch subject if new track area is 4x larger
+>>>>>>> Multi-API

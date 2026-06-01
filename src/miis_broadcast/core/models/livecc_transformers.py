@@ -2,7 +2,8 @@ import functools
 import json
 import re
 import time
-from typing import Dict, Any, Tuple, Generator, List
+from typing import Dict, Any, Tuple, Generator, List, Optional
+import logging
 import torch
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from dataclasses import dataclass
@@ -13,9 +14,15 @@ from livecc_utils import (
     get_smart_resized_clip,
     get_smart_resized_video_reader,
 )
+<<<<<<< HEAD
 from miis_broadcast.core.models.openai_tts import (
     print_tts_stats,
 )
+=======
+from miis_broadcast.core.models.openai_tts import print_tts_stats
+
+_log = logging.getLogger(__name__)
+>>>>>>> Multi-API
 
 # ==========================================
 # 📊 Performance Monitoring: Track LiveCC text generation time only
@@ -81,6 +88,65 @@ def _slice_tensor_on_matching_dim(x: torch.Tensor, past_len: int, keep: int) -> 
     return x
 
 
+def _slice_cache_tensor(x: torch.Tensor, past_len: int, keep: int) -> torch.Tensor:
+    """
+    Qwen2-style attention cache is typically [batch, num_heads, seq, dim].
+    If we return x unchanged, past_ids and past_key_values can diverge and cause CUDA assert.
+    """
+    if not torch.is_tensor(x) or keep <= 0 or past_len <= 0:
+        return x
+    # Prefer the standard 4D layout (common for Qwen / Llama KV)
+    if x.dim() == 4 and int(x.size(2)) == past_len:
+        return x[:, :, past_len - keep : past_len, :]
+    return _slice_tensor_on_matching_dim(x, past_len, keep)
+
+
+def get_cache_seq_len(past_key_values: Any) -> Optional[int]:
+    """Best-effort sequence length of the KV cache (legacy tuple or Cache-like)."""
+    if past_key_values is None:
+        return None
+    g = getattr(past_key_values, "get_seq_length", None)
+    if callable(g):
+        try:
+            return int(g())
+        except Exception:
+            pass
+    if isinstance(past_key_values, (tuple, list)) and past_key_values:
+        layer0 = past_key_values[0]
+        if isinstance(layer0, (tuple, list)) and layer0 and torch.is_tensor(layer0[0]):
+            t = layer0[0]
+            if t.dim() == 4:
+                return int(t.size(2))
+            if t.dim() == 3:
+                return int(t.size(1))
+    return None
+
+
+def _sync_past_ids_and_cache(state: Dict[str, Any]) -> None:
+    """
+    If past_key_values and past_ids disagree on length, clear both.
+    Prevents device-side assert in forward when reusing a truncated cache.
+    """
+    pids = state.get("past_ids", None)
+    pkv = state.get("past_key_values", None)
+    if pids is None and pkv is None:
+        return
+    if pids is None or pkv is None:
+        state.pop("past_ids", None)
+        state.pop("past_key_values", None)
+        return
+    pl = int(pids.shape[1])
+    cl = get_cache_seq_len(pkv)
+    if cl is not None and cl != pl:
+        _log.warning(
+            "Clearing inconsistent KV cache: past_ids_len=%d cache_seq_len=%d",
+            pl,
+            cl,
+        )
+        state.pop("past_ids", None)
+        state.pop("past_key_values", None)
+
+
 def _find_boundary_start(
     ids_1d: List[int],
     *,
@@ -143,6 +209,17 @@ def truncate_state_by_budget(
     if past_len <= allow_past:
         return
 
+    # Non-legacy cache objects: cannot slice safely; drop and continue without KV reuse.
+    if past_kv is not None and not isinstance(past_kv, (tuple, list)):
+        _log.warning(
+            "Dropping non-tuple past_key_values during budget trim (type=%s); "
+            "inference continues without cross-turn KV (prevents cache/id mismatch).",
+            type(past_kv).__name__,
+        )
+        state.pop("past_key_values", None)
+        state.pop("past_ids", None)
+        return
+
     keep = allow_past
     min_start = past_len - keep
 
@@ -159,22 +236,36 @@ def truncate_state_by_budget(
         state.pop("past_key_values", None)
         return
 
-    state["past_ids"] = past_ids[:, -keep2:]
+    new_pids = past_ids[:, -keep2:]
 
     if past_kv is not None:
-        new_pkv = []
+        new_pkv: List[Any] = []
         for layer in past_kv:
             if isinstance(layer, (tuple, list)):
                 new_layer = []
                 for x in layer:
                     if torch.is_tensor(x):
-                        new_layer.append(_slice_tensor_on_matching_dim(x, past_len, keep2))
+                        sli = _slice_cache_tensor(x, past_len, keep2)
+                        if sli is x:
+                            # Failed to find seq dim: drop entire cache to stay consistent
+                            _log.warning(
+                                "Could not align KV tensor shape %s with past_len=%d; "
+                                "clearing past cache.",
+                                tuple(x.shape),
+                                past_len,
+                            )
+                            state.pop("past_ids", None)
+                            state.pop("past_key_values", None)
+                            return
+                        new_layer.append(sli)
                     else:
                         new_layer.append(x)
                 new_pkv.append(tuple(new_layer))
             else:
                 new_pkv.append(layer)
         state["past_key_values"] = tuple(new_pkv)
+
+    state["past_ids"] = new_pids
 
 
 @dataclass
@@ -261,6 +352,21 @@ class LiveCCInfer:
         self.carry_text_max_chars = int(carry_text_max_chars)
         self.carry_recent_k = int(carry_recent_k)
 
+<<<<<<< HEAD
+=======
+    def _pad_token_id_for_generate(self) -> int:
+        """Avoid pad_token_id=None, which can destabilize HF generate on some Qwen2 builds."""
+        cfg = self.model.config
+        tok = self.processor.tokenizer
+        for cand in (getattr(cfg, "eos_token_id", None), tok.eos_token_id, tok.pad_token_id):
+            if isinstance(cand, int) and cand >= 0:
+                return cand
+        # Fallback: any valid id; last resort
+        if hasattr(tok, "eod_id") and isinstance(getattr(tok, "eod_id", None), int):
+            return int(tok.eod_id)
+        return 0
+
+>>>>>>> Multi-API
     def init_state(self, video_path: str) -> Dict[str, Any]:
         return {
             "video_path": video_path,
@@ -435,6 +541,22 @@ class LiveCCInfer:
             content.append({"type": "text", "text": query})
             state["query"] = query
 
+        # Reduce copy-paste commentary when recent_texts / KV keep prior wording
+        recent = state.get("recent_texts", [])
+        if isinstance(recent, list) and any(
+            isinstance(t, str) and t.strip() for t in recent
+        ):
+            content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "Diversity: do not restate the previous sentence. "
+                        "Vary phrasing. If the scene is unchanged, note one new micro-detail; "
+                        "avoid repeating the same opening clause as last time."
+                    ),
+                }
+            )
+
         return {"role": "user", "content": content}
 
     # ------------------------------
@@ -563,6 +685,8 @@ class LiveCCInfer:
                 boundary_patterns=self._boundary_patterns,
             )
 
+            _sync_past_ids_and_cache(state)
+
             past_ids = state.get("past_ids", None)
             if past_ids is not None:
                 # Extend attention_mask to cover the prepended past tokens
@@ -577,6 +701,7 @@ class LiveCCInfer:
             # [Key] Record inference start time
             t_gen_start = time.time()
 
+<<<<<<< HEAD
             outputs = self.model.generate(
                 **inputs,
                 past_key_values=state.get("past_key_values", None),
@@ -590,6 +715,21 @@ class LiveCCInfer:
                 no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
                 max_new_tokens=self.max_new_tokens,
             )
+=======
+            with torch.inference_mode():
+                outputs = self.model.generate(
+                    **inputs,
+                    past_key_values=state.get("past_key_values", None),
+                    return_dict_in_generate=True,
+                    pad_token_id=self._pad_token_id_for_generate(),
+                    do_sample=True,
+                    temperature=0.9,
+                    top_p=0.9,
+                    top_k=30,
+                    repetition_penalty=1.22,
+                    max_new_tokens=self.max_new_tokens,
+                )
+>>>>>>> Multi-API
 
             t_gen_end = time.time()
             log_gen_time(t_gen_end - t_gen_start)
@@ -629,20 +769,22 @@ class LiveCCInfer:
         # ✅ Option A: Keep only recent N seconds of multimodal memory (reset if exceeded)
         self._apply_mm_window_policy(state, start_ts=start_timestamp, stop_ts=stop_timestamp)
 
-        message = self._build_message_content(
-            start_ts=start_timestamp,
-            stop_ts=stop_timestamp,
-            clip_obj=clip.frames,
-            query=query,
-            state=state,
-        )
+        for kv_attempt in range(2):
+            message = self._build_message_content(
+                start_ts=start_timestamp,
+                stop_ts=stop_timestamp,
+                clip_obj=clip.frames,
+                query=query,
+                state=state,
+            )
 
-        texts = self.processor.apply_chat_template(
-            [message],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+            texts = self.processor.apply_chat_template(
+                [message],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
 
+<<<<<<< HEAD
         past_ids = state.get("past_ids", None)
         if past_ids is not None:
             if not hasattr(self, "system_prompt_offset"):
@@ -677,16 +819,41 @@ class LiveCCInfer:
             headroom=self.headroom,
             boundary_patterns=self._boundary_patterns,
         )
+=======
+            past_ids = state.get("past_ids", None)
+            if past_ids is not None:
+                if not hasattr(self, "system_prompt_offset"):
+                    temp_msg = {"role": "user", "content": [{"type": "text", "text": "livecc"}]}
+                    temp_text = self.processor.apply_chat_template([temp_msg], tokenize=False)
+                    self.system_prompt_offset = temp_text.index("<|im_start|>user")
+                texts = "<|im_end|>\n" + texts[self.system_prompt_offset :]
+>>>>>>> Multi-API
 
-        past_ids = state.get("past_ids", None)
-        if past_ids is not None:
-            # Extend attention_mask to cover the prepended past tokens
-            past_mask = torch.ones(
-                (1, past_ids.shape[1]), dtype=torch.long, device=self.device
+            inputs = self.processor(
+                text=texts,
+                images=None,
+                videos=[clip.frames],
+                return_tensors="pt",
+                return_attention_mask=True,
             )
-            inputs["attention_mask"] = torch.cat(
-                [past_mask, inputs["attention_mask"]], dim=1
+            inputs = inputs.to(self.device)
+
+            if "pixel_values_videos" in inputs:
+                pv = inputs["pixel_values_videos"]
+                if pv.dtype == torch.float32 and self.model.dtype == torch.bfloat16:
+                    inputs["pixel_values_videos"] = pv.to(torch.bfloat16)
+
+            # ✅ token budget truncation (align boundaries, sync KV)
+            new_len = int(inputs.input_ids.shape[1])
+            truncate_state_by_budget(
+                state,
+                new_len,
+                ctx_max=self.ctx_max,
+                max_new_tokens=self.max_new_tokens,
+                headroom=self.headroom,
+                boundary_patterns=self._boundary_patterns,
             )
+<<<<<<< HEAD
             inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
         # [Key] Record inference start time
@@ -704,19 +871,84 @@ class LiveCCInfer:
             no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
             max_new_tokens=self.max_new_tokens,
         )
+=======
+>>>>>>> Multi-API
 
-        t_gen_end = time.time()
-        log_gen_time(t_gen_end - t_gen_start)
+            _sync_past_ids_and_cache(state)
 
-        state["past_key_values"] = outputs.past_key_values
-        state["past_ids"] = outputs.sequences[:, :-1]
+            past_ids = state.get("past_ids", None)
+            if past_ids is not None:
+                # Extend attention_mask to cover the prepended past tokens
+                past_mask = torch.ones(
+                    (1, past_ids.shape[1]), dtype=torch.long, device=self.device
+                )
+                inputs["attention_mask"] = torch.cat(
+                    [past_mask, inputs["attention_mask"]], dim=1
+                )
+                inputs["input_ids"] = torch.cat([past_ids, inputs.input_ids], dim=1)
 
+            vs = getattr(self.model.config, "vocab_size", None)
+            if isinstance(vs, int) and vs > 0:
+                ids_chk = inputs["input_ids"]
+                mx = int(ids_chk.max().item())
+                mn = int(ids_chk.min().item())
+                if mn < 0 or mx >= vs:
+                    if kv_attempt == 0:
+                        _log.warning(
+                            "input_ids OOB [%d,%d] vs vocab_size=%d; clearing multimodal KV and retry",
+                            mn,
+                            mx,
+                            vs,
+                        )
+                        state.pop("past_ids", None)
+                        state.pop("past_key_values", None)
+                        continue
+                    raise ValueError(
+                        "input_ids out of vocab range after KV reset [%d,%d] vs %d"
+                        % (mn, mx, vs)
+                    )
+
+            # [Key] Record inference start time
+            t_gen_start = time.time()
+
+<<<<<<< HEAD
         response = response_prefix + self.processor.decode(
             outputs.sequences[0, inputs.input_ids.size(1) :],
             skip_special_tokens=True,
         )
+=======
+            # inference_mode reduces autograd overhead vs no_grad; helps a bit under GPU memory pressure
+            with torch.inference_mode():
+                outputs = self.model.generate(
+                    **inputs,
+                    past_key_values=state.get("past_key_values", None),
+                    return_dict_in_generate=True,
+                    pad_token_id=self._pad_token_id_for_generate(),
+                    do_sample=True,
+                    temperature=0.9,
+                    top_p=0.9,
+                    repetition_penalty=1.22,
+                    max_new_tokens=self.max_new_tokens,
+                )
+>>>>>>> Multi-API
 
-        # ✅ Option A: Update recent commentaries
-        self._update_recent_texts(state, response)
+            t_gen_end = time.time()
+            log_gen_time(t_gen_end - t_gen_start)
 
+            state["past_key_values"] = outputs.past_key_values
+            state["past_ids"] = outputs.sequences[:, :-1]
+
+            response = self.processor.decode(
+                outputs.sequences[0, inputs.input_ids.size(1) :],
+                skip_special_tokens=True,
+            )
+
+<<<<<<< HEAD
         yield (start_timestamp, stop_timestamp), response, state
+=======
+            # ✅ Option A: Update recent commentaries
+            self._update_recent_texts(state, response)
+
+            yield (start_timestamp, stop_timestamp), response, state
+            break
+>>>>>>> Multi-API

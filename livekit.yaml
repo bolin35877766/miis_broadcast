@@ -1,0 +1,14 @@
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50020
+  use_external_ip: false
+
+# Development credentials — change before production
+keys:
+  devkey: miis_broadcast_local_dev_secret_key_01
+
+logging:
+  pion_level: error

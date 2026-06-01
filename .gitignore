@@ -5,6 +5,21 @@ examples/
 # Environment variables
 .env
 
+<<<<<<< HEAD
 .pyc
 
 .log
+=======
+# Logs
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Package build artifacts
+*.egg-info/
+
+# Virtual environment
+.venv/
+>>>>>>> Multi-API

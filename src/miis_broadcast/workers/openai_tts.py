@@ -78,6 +78,7 @@ class OpenAITTSWorker(QtCore.QObject):
             set_natural_completion_callback(self._on_core_tts_complete)
             self._started = True
 
+<<<<<<< HEAD
     @QtCore.Slot(str, int, float, float)
     def speak(self, text: str, priority: int = 5, ref_ts: float = 0.0, start_t: float = 0.0) -> None:
         self._interrupted = False
@@ -88,6 +89,12 @@ class OpenAITTSWorker(QtCore.QObject):
             self._queue_remaining_sec = est
         self._speak_start_wall = time.time()
         enqueue_tts_text(text, ref_ts=ref_ts, drop_outdated=True, priority=priority, start_t=start_t)
+=======
+    @QtCore.Slot(str)
+    def speak(self, text: str) -> None:
+        # Preserve order vs rapid SEGMENT bursts; see openai_tts realtime worker FIFO path.
+        enqueue_tts_text(text, drop_outdated=False)
+>>>>>>> Multi-API
 
     @QtCore.Slot()
     def interrupt(self) -> None:
