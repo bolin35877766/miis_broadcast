@@ -1054,6 +1054,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ✅ 用 signal 把設定丟到 tts thread，避免你直接 call slot 其實跑在主執行緒
     signal_tts_apply_settings = QtCore.Signal(str, float)
+    signal_tts_warmup = QtCore.Signal()
     signal_tts_stop = QtCore.Signal()
 
     signal_tts_speak = QtCore.Signal(str, int, float, float)  # (text, priority, ref_ts, start_t)
@@ -1892,6 +1893,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
             # Connect OpenAI dedicated signals
             self.signal_tts_apply_settings.connect(self.tts_worker.apply_settings, QtCore.Qt.QueuedConnection)
+            self.signal_tts_warmup.connect(self.tts_worker.warmup_connect, QtCore.Qt.QueuedConnection)
             self.signal_tts_stop.connect(self.tts_worker.stop, QtCore.Qt.QueuedConnection)
             self.signal_tts_speak.connect(self.tts_worker.speak, QtCore.Qt.QueuedConnection)
             self.signal_tts_interrupt.connect(self.tts_worker.interrupt, QtCore.Qt.QueuedConnection)
@@ -2543,8 +2545,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cam_worker.response_prefix = ""
         self._use_gemini = True
 
-        # Apply TTS settings before start
+        # Apply TTS settings before start, then pre-connect OpenAI Realtime (warmup).
         self._apply_tts_settings_before_start()
+        if self.tts_mode == "openai":
+            self.signal_tts_warmup.emit()
 
         self.is_inference_running = True
         self.control_panel.set_start_button_state(True)

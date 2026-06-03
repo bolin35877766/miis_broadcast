@@ -7,6 +7,7 @@ from PySide6 import QtCore
 from ..core.models.openai_tts import (
     start_tts_system,
     stop_tts_system,
+    warmup_tts_connection,
     enqueue_tts_text,
     print_tts_stats,
     set_tts_voice,
@@ -77,6 +78,13 @@ class OpenAITTSWorker(QtCore.QObject):
             start_tts_system()
             set_natural_completion_callback(self._on_core_tts_complete)
             self._started = True
+
+    @QtCore.Slot()
+    def warmup_connect(self) -> None:
+        """Called when inference starts — opens WebSocket before first segment."""
+        if not self._started:
+            self.start()
+        warmup_tts_connection()
 
     @QtCore.Slot(str, int, float, float)
     def speak(self, text: str, priority: int = 5, ref_ts: float = 0.0, start_t: float = 0.0) -> None:

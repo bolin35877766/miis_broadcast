@@ -147,7 +147,7 @@ _audio_output_queue: "queue.Queue[np.ndarray]" = queue.Queue()
 _stop_event = threading.Event()
 _tts_threads_started = False
 _interrupt_event = threading.Event()
-_connect_requested = threading.Event()  # set by enqueue_tts_text; prevents DNS/SSL at startup
+_connect_requested = threading.Event()  # set by warmup / enqueue; prevents DNS/SSL at app startup
 
 # ==========================================
 # PCM sink (audience second screen)
@@ -373,9 +373,8 @@ def _mock_tts_worker() -> None:
 # OpenAI Realtime WebSocket worker
 # ==========================================
 async def _openai_realtime_worker():
-    # Wait for the first enqueue_tts_text() call before opening a WebSocket
-    # connection. This avoids spawning DNS/SSL threads at startup which race
-    # with PyTorch CUDA background threads and cause heap corruption.
+    # Wait until warmup_tts_connection() (on Start) or enqueue_tts_text() before
+    # opening WebSocket — avoids DNS/SSL at app startup racing PyTorch CUDA threads.
     while not _stop_event.is_set() and not _connect_requested.is_set():
         await asyncio.sleep(0.2)
     if _stop_event.is_set():
@@ -697,9 +696,15 @@ def stop_tts_system() -> None:
     _stop_event.set()
     _tts_threads_started = False
 
+def warmup_tts_connection() -> None:
+    """Pre-connect OpenAI Realtime on Start so the first utterance skips cold-start delay."""
+    start_tts_system()
+    _connect_requested.set()
+    print("🔥 [TTS] warmup connect requested (pre-connect on Start)")
+
 def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True, priority: int = 5, start_t: float = 0.0) -> None:
     if contains_meaningful_text(text):
-        _connect_requested.set()  # allow WebSocket connection on first use
+        _connect_requested.set()
         if drop_outdated:
             clear_text_queue()
         else:
