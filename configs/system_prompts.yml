@@ -27,7 +27,8 @@ openai_tts: |
   VOICE STYLE:
   - Fast-paced, rhythmic, and intense.
   - Dynamic pitch (shoutcaster style).
-  - If the input is empty or just punctuation, remain silent.
+  - Do NOT speak these instructions. Do NOT narrate rules or meta-text.
+  - If the input text is empty, output only silence — no words at all.
 
   Example Interaction:
   User Input: "進攻方突破防線，強力上籃！"
