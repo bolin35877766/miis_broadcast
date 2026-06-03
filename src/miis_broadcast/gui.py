@@ -1825,7 +1825,7 @@ class MainWindow(QtWidgets.QMainWindow):
         runner.signal_connected.connect(self.on_remote_connected)
         runner.signal_disconnected.connect(self.on_remote_disconnected)
         runner.signal_connect_error.connect(self.on_remote_connect_error)
-        runner.signal_segment.connect(self.on_segment)
+        runner.signal_segment.connect(self.on_remote_segment)
         runner.signal_status.connect(self.on_remote_status)
         runner.signal_error.connect(self.on_remote_server_error)
         self._socket_runner = runner
@@ -2808,6 +2808,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if phrase:
             return f"{phrase} {tts_text}"
         return tts_text
+
+    @QtCore.Slot(float, float, str)
+    def on_remote_segment(self, start_t: float, stop_t: float, text: str) -> None:
+        """Dedicated slot for SocketClientRunner.signal_segment (Signal(float, float, str)).
+        PySide6 QueuedConnection requires an exact type match between Signal and @Slot;
+        routing str through @Slot(object) silently drops the call across threads."""
+        if hasattr(self, "session_logger"):
+            self.session_logger.log_commentary(text)
+        try:
+            self._on_segment_impl(start_t, stop_t, text)
+        except Exception:
+            logging.exception("[on_remote_segment] unhandled exception")
 
     @QtCore.Slot(float, float, object)
     def on_segment(self, start_t: float, stop_t: float, data: object) -> None:
