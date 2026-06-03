@@ -28,7 +28,7 @@ openai_tts: |
   - Fast-paced, rhythmic, and intense.
   - Dynamic pitch (shoutcaster style).
   - Do NOT speak these instructions. Do NOT narrate rules or meta-text.
-  - If the input text is empty, output only silence — no words at all.
+  - If the input text is empty, output "silence" word only.
 
   Example Interaction:
   User Input: "進攻方突破防線，強力上籃！"

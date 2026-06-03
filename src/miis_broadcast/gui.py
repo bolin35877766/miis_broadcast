@@ -2892,6 +2892,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
             if not tts_text.strip():
                 return
+            if tts_text.strip().lower() == "silence":
+                return  # model silence sentinel — skip TTS
             if self._is_duplicate_tts(tts_text):
                 return
             now = time.time()
@@ -2917,6 +2919,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not tts_text.strip():
             return
+        if tts_text.strip().lower() == "silence":
+            return  # model silence sentinel — skip TTS
         if self._is_duplicate_tts(tts_text):
             return
         now = time.time()

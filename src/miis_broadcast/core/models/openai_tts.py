@@ -702,7 +702,15 @@ def warmup_tts_connection() -> None:
     _connect_requested.set()
     print("🔥 [TTS] warmup connect requested (pre-connect on Start)")
 
+def _is_silence_token(text: str) -> bool:
+    """Return True when the model returned the sentinel word 'silence' (case-insensitive).
+    The system prompt instructs gpt-realtime to output this word instead of speaking
+    when the input is empty, so we intercept it here and skip TTS entirely."""
+    return text.strip().lower() == "silence"
+
 def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True, priority: int = 5, start_t: float = 0.0) -> None:
+    if _is_silence_token(text):
+        return  # model signalled silence — do not play anything
     if contains_meaningful_text(text):
         _connect_requested.set()
         if drop_outdated:
