@@ -64,6 +64,7 @@ def _log_openai_tts_rejection_once(source: str, msg: str) -> None:
 TTS_MODEL_URL: str = _app_cfg.get("model_url", "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview")
 TTS_HEADERS = {
     "Authorization": f"Bearer {MY_API_KEY}",
+    "OpenAI-Beta": "realtime=v1",
 }
 SYSTEM_INSTRUCTIONS: str = _prompts_cfg.get("openai_tts", "")
 
