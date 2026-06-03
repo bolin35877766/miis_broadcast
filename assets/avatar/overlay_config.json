@@ -1,0 +1,5 @@
+{
+  "foregroundSatMin": 25,
+  "backdropRadiusBias": 40,
+  "backdropRadiusClamp": [20, 100]
+}

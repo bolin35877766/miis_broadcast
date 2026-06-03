@@ -184,8 +184,9 @@
   <!-- Avatar: hidden mp4 decoded → canvas black-key → mouth PNG overlay (volume) -->
   <div id="avatar-wrap">
     <div id="avatar-container">
-      <!-- src is set by JS only after a HEAD check confirms the file exists -->
-      <video id="avatar-src" muted playsinline loop preload="none"></video>
+      <!-- src set by JS; preload="auto" mirrors multi-api behaviour so the browser
+           decodes the first real frame before backdrop calibration runs. -->
+      <video id="avatar-src" muted playsinline loop preload="auto"></video>
       <!-- Higher internal res → cleaner chroma + less translucent scaling halos -->
       <canvas id="avatar-canvas" width="432" height="768"></canvas>
       <img id="avatar-open" alt="" draggable="false" />
