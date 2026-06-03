@@ -89,10 +89,23 @@ class AudienceTokenServer:
         if assets_dir.exists():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
+        # Check avatar assets once at startup; inject result into HTML so the
+        # browser never makes a speculative request for files that don't exist.
+        _avatar_video = assets_dir / "avatar" / "cat_anchor.mp4"
+        _avatar_img   = assets_dir / "avatar" / "cat_mouth_opened.png"
+        _avatar_enabled = _avatar_video.exists()
+        _avatar_img_enabled = _avatar_img.exists()
+        _avatar_inject = (
+            f"<script>window._AVATAR_ENABLED={str(_avatar_enabled).lower()};"
+            f"window._AVATAR_IMG_ENABLED={str(_avatar_img_enabled).lower()};</script>"
+        )
+
         @app.get("/audience", response_class=HTMLResponse)
         async def audience_page():
             html_path = static_dir / "index.html"
-            return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+            content = html_path.read_text(encoding="utf-8")
+            content = content.replace("</head>", _avatar_inject + "\n</head>", 1)
+            return HTMLResponse(content=content)
 
         @app.post("/api/audience/join")
         async def join():

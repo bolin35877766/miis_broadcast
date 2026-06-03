@@ -247,20 +247,19 @@
     if (avatarWrap.style.display !== "none") renderAvatarChroma();
   });
 
-  // Check avatar assets via HEAD requests; only set src if files actually exist.
-  // This prevents the browser from firing "fail to load source" media errors.
-  Promise.all([
-    fetch("/assets/avatar/cat_anchor.mp4",      { method: "HEAD" }),
-    fetch("/assets/avatar/cat_mouth_opened.png", { method: "HEAD" }),
-  ]).then(([videoRes, imgRes]) => {
-    if (!videoRes.ok) throw new Error("avatar video missing");
+  // window._AVATAR_ENABLED is injected by token_server.py at serve time;
+  // it reflects whether the avatar video file actually exists on disk.
+  // This avoids any speculative network requests for missing files.
+  if (window._AVATAR_ENABLED) {
     avatarSrc.src = "/assets/avatar/cat_anchor.mp4";
     avatarSrc.load();
-    if (imgRes.ok) avatarOpen.src = "/assets/avatar/cat_mouth_opened.png";
-  }).catch(() => {
+    if (window._AVATAR_IMG_ENABLED) {
+      avatarOpen.src = "/assets/avatar/cat_mouth_opened.png";
+    }
+  } else {
     avatarDisabled = true;
     avatarWrap.style.setProperty("display", "none", "important");
-  });
+  }
 
   let speakUntil  = 0;          // performance.now() deadline for "speaking" state
   let emaRms      = 0;
