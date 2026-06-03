@@ -178,10 +178,12 @@
     <div id="avatar-container">
       <video id="avatar-src"
              src="/assets/avatar/cat_anchor.mp4"
-             muted playsinline loop preload="auto"></video>
+             muted playsinline loop preload="auto"
+             onerror="document.getElementById('avatar-wrap').style.setProperty('display','none','important');"></video>
       <!-- Higher internal res → cleaner chroma + less translucent scaling halos -->
       <canvas id="avatar-canvas" width="432" height="768"></canvas>
-      <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false" />
+      <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false"
+           onerror="this.style.display='none';" />
     </div>
   </div>
 
@@ -240,11 +242,19 @@
   let timeDomain  = null;
   let avatarComposerRaf = null;
   let lastAvatarPaintTs = 0;
+  let avatarDisabled = false; // set true when video asset is missing (404)
 
   avatarSrc.addEventListener("loadeddata", () => {
     backdropCalibrated = false;
     lastAvatarPaintTs = 0;
     if (avatarWrap.style.display !== "none") renderAvatarChroma();
+  });
+
+  // Graceful fallback: hide entire avatar layer if the video file is missing (404)
+  avatarSrc.addEventListener("error", () => {
+    avatarDisabled = true;
+    avatarWrap.style.setProperty("display", "none", "important");
+    stopAvatarComposer();
   });
 
   let speakUntil  = 0;          // performance.now() deadline for "speaking" state
@@ -517,8 +527,10 @@
     overlay.classList.add("hidden");
     statusBar.classList.add("visible");
     controls.style.display = "flex";
-    avatarWrap.style.display = "block";
-    startAvatarComposer();
+    if (!avatarDisabled) {
+      avatarWrap.style.display = "block";
+      startAvatarComposer();
+    }
     stateDot.className = "dot live";
     stateText.textContent = "直播中";
   }
