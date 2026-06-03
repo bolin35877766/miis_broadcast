@@ -2520,8 +2520,10 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             prompt = "Describe only what you see on screen right now in one objective sentence."
 
-        self.livecc_worker.response_prefix = ""
-        self.cam_worker.response_prefix = ""
+        if hasattr(self, "livecc_worker") and self.livecc_worker is not None:
+            self.livecc_worker.response_prefix = ""
+        if hasattr(self, "cam_worker") and self.cam_worker is not None:
+            self.cam_worker.response_prefix = ""
         self._use_gemini = True
 
         # Apply TTS settings before start
