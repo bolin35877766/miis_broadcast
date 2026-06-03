@@ -227,8 +227,8 @@ def _build_session_payload(cfg: dict, *, full: bool = True) -> dict:
     The legacy beta shape (top-level `modalities` / `voice` / `speed` /
     `input_audio_format`) was disabled by OpenAI on 2026-05-12 and now returns
     `beta_api_shape_disabled`. GA requires `type: "realtime"`, `output_modalities`,
-    and the nested `audio.output` block. `speed` is clamped to the GA range
-    [0.25, 1.5] and `temperature` to [0.6, 1.2]."""
+    and the nested `audio.output` block. `speed` is clamped to the GA range [0.25, 1.5].
+    Note: GA Realtime rejects top-level `session.temperature` (use instructions only)."""
     speed = max(0.25, min(1.5, float(cfg.get("speed", 1.0))))
     session: dict = {
         "type": "realtime",
@@ -244,8 +244,6 @@ def _build_session_payload(cfg: dict, *, full: bool = True) -> dict:
     if full:
         # Audio-only output; transcript is delivered alongside automatically.
         session["output_modalities"] = ["audio"]
-        temp = max(0.6, min(1.2, float(_app_cfg.get("temperature", 0.8))))
-        session["temperature"] = temp
     return session
 
 def contains_meaningful_text(text: Optional[str]) -> bool:
