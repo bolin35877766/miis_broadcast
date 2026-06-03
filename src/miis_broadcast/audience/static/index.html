@@ -176,14 +176,11 @@
   <!-- Avatar: hidden mp4 decoded → canvas black-key → mouth PNG overlay (volume) -->
   <div id="avatar-wrap">
     <div id="avatar-container">
-      <video id="avatar-src"
-             src="/assets/avatar/cat_anchor.mp4"
-             muted playsinline loop preload="auto"
-             onerror="document.getElementById('avatar-wrap').style.setProperty('display','none','important');"></video>
+      <!-- src is set by JS only after a HEAD check confirms the file exists -->
+      <video id="avatar-src" muted playsinline loop preload="none"></video>
       <!-- Higher internal res → cleaner chroma + less translucent scaling halos -->
       <canvas id="avatar-canvas" width="432" height="768"></canvas>
-      <img id="avatar-open" src="/assets/avatar/cat_mouth_opened.png" alt="" draggable="false"
-           onerror="this.style.display='none';" />
+      <img id="avatar-open" alt="" draggable="false" />
     </div>
   </div>
 
@@ -250,11 +247,19 @@
     if (avatarWrap.style.display !== "none") renderAvatarChroma();
   });
 
-  // Graceful fallback: hide entire avatar layer if the video file is missing (404)
-  avatarSrc.addEventListener("error", () => {
+  // Check avatar assets via HEAD requests; only set src if files actually exist.
+  // This prevents the browser from firing "fail to load source" media errors.
+  Promise.all([
+    fetch("/assets/avatar/cat_anchor.mp4",      { method: "HEAD" }),
+    fetch("/assets/avatar/cat_mouth_opened.png", { method: "HEAD" }),
+  ]).then(([videoRes, imgRes]) => {
+    if (!videoRes.ok) throw new Error("avatar video missing");
+    avatarSrc.src = "/assets/avatar/cat_anchor.mp4";
+    avatarSrc.load();
+    if (imgRes.ok) avatarOpen.src = "/assets/avatar/cat_mouth_opened.png";
+  }).catch(() => {
     avatarDisabled = true;
     avatarWrap.style.setProperty("display", "none", "important");
-    stopAvatarComposer();
   });
 
   let speakUntil  = 0;          // performance.now() deadline for "speaking" state
