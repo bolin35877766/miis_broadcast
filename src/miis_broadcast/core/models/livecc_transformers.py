@@ -18,6 +18,31 @@ from miis_broadcast.core.models.openai_tts import print_tts_stats
 
 _log = logging.getLogger(__name__)
 
+
+def _resolve_attn_implementation(preferred: Optional[str] = None) -> str:
+    """
+    Pick attention backend for Qwen2VL load.
+
+    ``auto`` (default): flash_attention_2 when flash_attn is installed, else sdpa.
+    Server hosts without flash_attn can run without extra packages.
+    """
+    choice = (preferred or "auto").strip().lower()
+    if choice not in ("auto", "flash_attention_2", "sdpa", "eager"):
+        _log.warning("Unknown attn_implementation=%r; using auto", preferred)
+        choice = "auto"
+    if choice != "auto":
+        return choice
+    try:
+        import flash_attn  # noqa: F401
+        return "flash_attention_2"
+    except ImportError:
+        print(
+            "[LiveCC] flash_attn not installed; using sdpa "
+            "(install flash-attn for FlashAttention-2 on the server)"
+        )
+        return "sdpa"
+
+
 # ==========================================
 # 📊 Performance Monitoring: Track LiveCC text generation time only
 # ==========================================
@@ -307,11 +332,14 @@ class LiveCCInfer:
         
         torch.cuda.empty_cache()
 
+        attn_impl = _resolve_attn_implementation(cfg.get("attn_implementation"))
+        print(f"[LiveCC] attn_implementation={attn_impl}")
+
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_path,
             dtype=torch.bfloat16,
             device_map=self.device,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_impl,
         )
         self.processor = AutoProcessor.from_pretrained(model_path, use_fast=False)
 

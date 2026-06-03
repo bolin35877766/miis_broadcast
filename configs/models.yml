@@ -2,6 +2,8 @@ classifiers:
   livecc_7b:
     desc: LiveCC (streaming video captioner)
     model_path: chenjoya/LiveCC-7B-Instruct
+    # auto | flash_attention_2 | sdpa | eager — auto uses flash_attn when installed
+    attn_implementation: auto
     device_id: 0
     fps: 4.0
     initial_fps_frames: 6

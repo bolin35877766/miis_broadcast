@@ -216,6 +216,10 @@ class ByteTrackWrapper:
 
         # ── 4. Load YOLOX model ────────────────────────────────────────────
         self.device = _resolve_track_device(device)
+        vram_before = 0.0
+        if self.device.type == "cuda":
+            from ..utils.vram_monitor import vram_monitor
+            vram_before = vram_monitor.get_allocated_gb(str(self.device))
 
         exp = get_exp(exp_file, None)
         model = exp.get_model().to(self.device)
