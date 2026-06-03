@@ -64,7 +64,6 @@ def _log_openai_tts_rejection_once(source: str, msg: str) -> None:
 TTS_MODEL_URL: str = _app_cfg.get("model_url", "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview")
 TTS_HEADERS = {
     "Authorization": f"Bearer {MY_API_KEY}",
-    "OpenAI-Beta": "realtime=v1",
 }
 SYSTEM_INSTRUCTIONS: str = _prompts_cfg.get("openai_tts", "")
 
@@ -222,6 +221,33 @@ def _get_tts_cfg_snapshot() -> dict:
 def _build_instructions(speed: float) -> str:
     return SYSTEM_INSTRUCTIONS + f"\n\n[系統參數] 語速倍率：{speed:.1f}x（請盡量遵守）\n"
 
+def _build_session_payload(cfg: dict, *, full: bool = True) -> dict:
+    """Build a GA-shape Realtime `session` object.
+
+    The legacy beta shape (top-level `modalities` / `voice` / `speed` /
+    `input_audio_format`) was disabled by OpenAI on 2026-05-12 and now returns
+    `beta_api_shape_disabled`. GA requires `type: "realtime"`, `output_modalities`,
+    and the nested `audio.output` block. `speed` is clamped to the GA range
+    [0.25, 1.5] and `temperature` to [0.6, 1.2]."""
+    speed = max(0.25, min(1.5, float(cfg.get("speed", 1.0))))
+    session: dict = {
+        "type": "realtime",
+        "instructions": _build_instructions(speed),
+        "audio": {
+            "output": {
+                "voice": cfg.get("voice", "coral"),
+                "speed": speed,
+                "format": {"type": "audio/pcm", "rate": 24000},
+            }
+        },
+    }
+    if full:
+        # Audio-only output; transcript is delivered alongside automatically.
+        session["output_modalities"] = ["audio"]
+        temp = max(0.6, min(1.2, float(_app_cfg.get("temperature", 0.8))))
+        session["temperature"] = temp
+    return session
+
 def contains_meaningful_text(text: Optional[str]) -> bool:
     if not text: return False
     return bool(re.search(r"[\w\u4e00-\u9fa5]", text))
@@ -372,20 +398,12 @@ async def _openai_realtime_worker():
                     print("✅ [TTS Worker] connected")
                 cfg = _get_tts_cfg_snapshot()
 
-                # 1. Session Update
+                # 1. Session Update (GA shape — see _build_session_payload)
                 # warmed_up becomes True when OpenAI echoes back "session.updated"
                 # (typically <300 ms) — no audio warmup round-trip needed.
                 await websocket.send(json.dumps({
                     "type": "session.update",
-                    "session": {
-                        "modalities": ["text", "audio"],
-                        "instructions": _build_instructions(cfg["speed"]),
-                        "voice": cfg["voice"],
-                        "speed": cfg["speed"],
-                        "input_audio_format": "pcm16",
-                        "output_audio_format": "pcm16",
-                        "temperature": float(_app_cfg.get("temperature", 0.7)),
-                    },
+                    "session": _build_session_payload(cfg, full=True),
                 }))
 
                 # Main loop: send config / text, recv deltas and lifecycle events
@@ -401,7 +419,7 @@ async def _openai_realtime_worker():
                         cfg2 = _get_tts_cfg_snapshot()
                         await websocket.send(json.dumps({
                             "type": "session.update",
-                            "session": {"instructions": _build_instructions(cfg2["speed"]), "speed": cfg2["speed"], "voice": cfg2["voice"]},
+                            "session": _build_session_payload(cfg2, full=False),
                         }))
                         _cfg_update_event.clear()
 
@@ -462,7 +480,9 @@ async def _openai_realtime_worker():
                                 warmed_up = True
                                 print("✅ [TTS Worker] session.updated — ready for text")
 
-                        elif etype == "response.audio.delta":
+                        # GA renamed response.audio.delta → response.output_audio.delta.
+                        # Accept both so a future endpoint change can't silently mute us.
+                        elif etype in ("response.output_audio.delta", "response.audio.delta"):
                             if warmed_up:
                                 audio_bytes = base64.b64decode(event["delta"])
                                 _audio_output_queue.put(np.frombuffer(audio_bytes, dtype=np.int16))
