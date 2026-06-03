@@ -2098,6 +2098,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_video_path = "Live Camera"
         self.control_panel.set_status("模式: 即時鏡頭")
         self.append_text("已切換至鏡頭模式")
+        self._stop_all_source_threads()
+
+        # Auto-detect physical camera index (skip OBS Virtual Camera if present)
+        from .core.io.obs_input import find_physical_camera_index
+        cam_idx = find_physical_camera_index()
+        print(f"[Camera] Using physical camera index {cam_idx}")
+
+        self.camera_start_time = time.time()
+        self.camera_thread = CameraThread(camera_index=cam_idx)
+        self.camera_thread.signal_frame.connect(self.on_camera_frame)
+        self.camera_thread.signal_error.connect(self.on_error)
+        self.camera_thread.start()
+
+        self.video_panel.slider.setEnabled(False)
+        if hasattr(self.control_panel, "set_free_switch_bar_visible"):
+            self.control_panel.set_free_switch_bar_visible(False)
+        self._update_start_button_state()
 
     @QtCore.Slot()
     def on_load_context_clicked(self) -> None:
@@ -2566,8 +2583,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.video_thread.signal_video_ended.connect(self.on_finished)
             self.video_thread.signal_invalid_video.connect(self.on_error)
             self.video_thread.start()
-            self._livecc_run_id += 1
-            self.signal_start_livecc.emit(self.current_video_path, prompt, self._livecc_run_id)
 
             if self._socket_runner is not None:
                 # Remote: frames are streamed via on_video_frame → send_frame
@@ -2575,7 +2590,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._start_remote_client_ram_monitor()
             elif self.livecc_model is not None:
                 # Local: pass file path directly to local LiveCC worker
-                self.signal_start_livecc.emit(self.current_video_path, prompt)
+                self._livecc_run_id += 1
+                self.signal_start_livecc.emit(self.current_video_path, prompt, self._livecc_run_id)
             else:
                 self.append_text(
                     "未連線遠端且本機無 LiveCC 模型，無法開始。請先連線遠端或安裝本機模型。"
