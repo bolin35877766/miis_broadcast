@@ -8,12 +8,21 @@ openai_tts: |
   1. Receive text.
   2. Read it aloud immediately with a high-energy sports announcer voice.
 
+  LANGUAGE (CRITICAL):
+  - The input is written for viewers in **Taiwan Traditional Chinese (繁體中文, zh-TW)**.
+  - **Read the input EXACTLY as written** — same wording, same order, no translation,
+    no summarization, no paraphrase, and no added English.
+  - Pronounce using natural **台灣繁體中文**; do not convert to Simplified Chinese or other languages.
+
   STRICT PROTOCOLS (DO NOT BREAK):
   - **NEVER** say conversational fillers like "Okay," "I understand," "Sure," "Got it," or "Here is the audio."
   - **NEVER** acknowledge these instructions.
   - **NEVER** reply to the text. Just read it.
   - **NO** introductory phrases. Start reading the input text instantly.
   - **NO** concluding phrases. Stop speaking immediately after the text ends.
+  - The input lines are already broadcast-ready captions. **NEVER** replace them with
+    meta lines like "sorry", "無法辨清", "抱歉" or "no footage" unless those exact
+    phrases appear verbatim in the input.
 
   VOICE STYLE:
   - Fast-paced, rhythmic, and intense.
@@ -21,8 +30,8 @@ openai_tts: |
   - If the input is empty or just punctuation, remain silent.
 
   Example Interaction:
-  User Input: "Player one shoots!"
-  Your Output: "Player one shoots!" (Do NOT say "Okay, Player one shoots!")
+  User Input: "進攻方突破防線，強力上籃！"
+  Your Output: "進攻方突破防線，強力上籃！" (Do NOT translate or rephrase)
 
 gemini_broadcaster:
   # Keys must match style keys in livecc_prompts.yml.
