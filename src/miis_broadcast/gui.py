@@ -29,6 +29,7 @@ from .audience.token_server import AudienceTokenServer
 from .core.prompt.prompt_manager import PromptManager
 from .core.match_tracker import match_tracker
 from .core.utils.session_logger import SessionLogger
+from .core.utils.audio_recorder import AudioRecorder
 from .core.utils.gpu_telemetry import (
     cuda_vram_snapshot,
     vram_log_suffix,
@@ -289,7 +290,6 @@ class ControlPanel(QtWidgets.QWidget):
     freeSwitchAutoCycleToggled = QtCore.Signal(bool)
     requestLoadContext     = QtCore.Signal()
     requestStart           = QtCore.Signal()
-    requestFontScale       = QtCore.Signal(int)
     requestRemoteConnect   = QtCore.Signal(str, int)
     requestRemoteDisconnect = QtCore.Signal()
 
@@ -319,7 +319,6 @@ class ControlPanel(QtWidgets.QWidget):
             "Speed:",
             "Exaggeration:",
             "CFG:",
-            "UI Scaling:",
         )
         lw = max(fm.horizontalAdvance(t) for t in titles) + 12
         for lb in (
@@ -329,19 +328,14 @@ class ControlPanel(QtWidgets.QWidget):
             self.l_speed,
             self.l_exag,
             self.l_cfg,
-            self.l_ui,
         ):
             lb.setMinimumWidth(lw)
             lb.setMaximumWidth(lw)
-        vw = max(
-            fm.horizontalAdvance("999pt"),
-            fm.horizontalAdvance("1.55x"),
-        ) + 18
+        vw = fm.horizontalAdvance("1.55x") + 18
         for v in (
             self.lbl_speed_val,
             self.lbl_exag_val,
             self.lbl_cfg_val,
-            self.lbl_ui_scale_val,
         ):
             v.setMinimumWidth(vw)
         for row in getattr(self, "_settings_rows", {}).values():
@@ -687,7 +681,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_tts.addItem("OpenAI TTS", userData="openai")
         self.cmb_tts.addItem("Gemini TTS", userData="gemini")
         self.cmb_tts.addItem("Local TTS", userData="local")
-        self.cmb_tts.setCurrentIndex(1)
+        self.cmb_tts.setCurrentIndex(2)
         self.cmb_tts.setStyleSheet(combo_style)
 
         # --- LiveCC style ---
@@ -729,21 +723,12 @@ class ControlPanel(QtWidgets.QWidget):
         self.lbl_cfg_val = QtWidgets.QLabel("0.7")
         _apply_val_label(self.lbl_cfg_val)
 
-        # --- UI scale slider ---
-        self.l_ui = _make_lbl("UI Scaling:")
-        self.slider_ui_scale = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider_ui_scale.setRange(10, 26)
-        self.slider_ui_scale.setValue(14)
-        self.lbl_ui_scale_val = QtWidgets.QLabel("14pt")
-        _apply_val_label(self.lbl_ui_scale_val)
-
         _sp_exp = QtWidgets.QSizePolicy.Policy.Expanding
         _sp_fix = QtWidgets.QSizePolicy.Policy.Fixed
         for _s in (
             self.slider_speed,
             self.slider_exag,
             self.slider_cfg,
-            self.slider_ui_scale,
         ):
             _s.setSizePolicy(_sp_exp, _sp_fix)
 
@@ -753,7 +738,6 @@ class ControlPanel(QtWidgets.QWidget):
         _settings_row_slider("speed", self.l_speed, self.slider_speed, self.lbl_speed_val)
         _settings_row_slider("exag", self.l_exag, self.slider_exag, self.lbl_exag_val)
         _settings_row_slider("cfg", self.l_cfg, self.slider_cfg, self.lbl_cfg_val)
-        _settings_row_slider("ui", self.l_ui, self.slider_ui_scale, self.lbl_ui_scale_val)
 
         layout.addWidget(grp_settings)
 
@@ -779,6 +763,12 @@ class ControlPanel(QtWidgets.QWidget):
             QPushButton[active="true"] { background-color: #ef233c; border: 2px solid #ff9999; }
         """)
         v_act.addWidget(self.btn_start)
+
+        self.chk_record = QtWidgets.QCheckBox("錄音 (Record Audio)")
+        self.chk_record.setChecked(False)
+        self.chk_record.setStyleSheet("color: #c0c0c0; padding-top: 4px;")
+        v_act.addWidget(self.chk_record)
+
         layout.addWidget(grp_action)
 
         self._init_remote_server_dialog()
@@ -792,7 +782,6 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_speed.valueChanged.connect(lambda v: self.lbl_speed_val.setText(f"{v/100:.1f}x"))
         self.slider_exag.valueChanged.connect(lambda v: self.lbl_exag_val.setText(f"{v/100:.1f}"))
         self.slider_cfg.valueChanged.connect(lambda v: self.lbl_cfg_val.setText(f"{v/100:.1f}"))
-        self.slider_ui_scale.valueChanged.connect(self.on_font_scale_changed)
 
         # 模式切換顯示/隱藏
         self.cmb_tts.currentIndexChanged.connect(self._refresh_tts_controls_visibility)
@@ -980,10 +969,6 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_exag.setEnabled(enabled)
         self.slider_cfg.setEnabled(enabled)
 
-    def on_font_scale_changed(self, value: int) -> None:
-        self.lbl_ui_scale_val.setText(f"{value}pt")
-        self.requestFontScale.emit(value)
-
     def get_tts_mode(self) -> str:
         return self.cmb_tts.currentData()
 
@@ -1088,6 +1073,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.parseConfigs()
 
         self.session_logger = SessionLogger()
+        self._audio_recorder = AudioRecorder()
         self.current_video_path: Optional[str] = None
         self.model_ready: bool = False
         self.mode = "file"
@@ -1390,7 +1376,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_free_switch_auto_cycle_toggled
         )
         self.control_panel.requestStart.connect(self.on_start_clicked)
-        self.control_panel.requestFontScale.connect(self.on_font_scale_request)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
 
         # 載入 prompts.yml 並填入下拉式選單
@@ -1920,12 +1905,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # 🔥 [修改點 1] 註解掉或刪除原本的直接啟動，改為 Lazy Load
             # self.local_tts_thread.start() 
 
-            # 🔥 [修改點 2] 監聽下拉選單變化
-            self.control_panel.cmb_tts.currentIndexChanged.connect(self._on_tts_mode_changed)
-
-            # 如果預設選項剛好就是 Local (雖然通常預設是 OpenAI)，初始化時檢查一次
-            self._on_tts_mode_changed()
-
             # ==========================================
             # 3. Gemini TTS Worker  [lazy-started like Chatterbox]
             # ==========================================
@@ -1942,6 +1921,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.signal_gemini_tts_interrupt.connect(self.gemini_tts_worker.interrupt, QtCore.Qt.QueuedConnection)
             self.signal_gemini_tts_stop.connect(self.gemini_tts_worker.stop, QtCore.Qt.QueuedConnection)
             # gemini_tts_thread.start() is called lazily in _on_tts_mode_changed()
+
+            # 🔥 監聽下拉選單變化（需在所有 worker 建立完後再 connect）
+            self.control_panel.cmb_tts.currentIndexChanged.connect(self._on_tts_mode_changed)
+
+            # 初始化時根據預設模式啟動對應 worker（例如 Gemini 為預設時立即啟動）
+            self._on_tts_mode_changed()
 
     # ---------------- Slots ----------------
 
@@ -1986,15 +1971,6 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = self.control_panel.get_tts_mode() if hasattr(self, "control_panel") else None
         if mode == "gemini" and not self.gemini_tts_thread.isRunning():
             self.gemini_tts_thread.start()
-
-    @QtCore.Slot(int)
-    def on_font_scale_request(self, size_pt: int) -> None:
-        self.font_size = int(size_pt)
-        self._apply_styles(self.font_size)
-        self.control_panel.apply_source_metrics()
-        self.control_panel.apply_settings_metrics()
-        self.statusBar().showMessage(f"Font size adjusted to: {self.font_size}pt", 2000)
-        QtCore.QTimer.singleShot(0, self._apply_initial_geometry)
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
@@ -2551,6 +2527,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self.signal_tts_warmup.emit()
 
         self.is_inference_running = True
+
+        # Start audio recording only when user has opted in via checkbox
+        if hasattr(self.control_panel, "chk_record") and self.control_panel.chk_record.isChecked():
+            rec_path = self._audio_recorder.start(self.mode)
+            print(f"[Main] Audio recording started: {rec_path}")
+            if self.tts_mode == "openai":
+                from .core.models import openai_tts as _oai_tts_mod
+                _oai_tts_mod.register_recording_sink(self._audio_recorder.write_chunk)
+            elif self.tts_mode == "gemini":
+                from .core.models import gemini_tts as _gem_tts_mod
+                _gem_tts_mod.register_recording_sink(self._audio_recorder.write_chunk)
+
         self.control_panel.set_start_button_state(True)
         self.control_panel.set_tts_controls_enabled(False)  # Lock during inference
 
@@ -2687,6 +2675,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.dual_sync_thread = None
 
             self._flush_local_inference_telemetry_summary(obs_tracker_for_avg)
+
+            # Stop audio recording and clear recording sinks
+            from .core.models import openai_tts as _oai_tts_mod
+            from .core.models import gemini_tts as _gem_tts_mod
+            _oai_tts_mod.clear_recording_sink()
+            _gem_tts_mod.clear_recording_sink()
+            if self._audio_recorder.is_recording:
+                rec_path = self._audio_recorder.stop()
+                if rec_path:
+                    self.append_text(f"錄音已儲存: {rec_path}")
 
             self._last_track_preview_mono = 0.0
             self.control_panel.set_start_button_state(False)

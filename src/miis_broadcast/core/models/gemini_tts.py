@@ -98,6 +98,23 @@ def _fire_natural_completion() -> None:
             pass
 
 # ==========================================
+# Recording sink — receives raw PCM bytes for WAV capture
+# ==========================================
+_recording_sink: Optional[callable] = None
+
+
+def register_recording_sink(callback: Optional[callable]) -> None:
+    """Register a callback(bytes) to capture TTS audio for recording."""
+    global _recording_sink
+    _recording_sink = callback
+
+
+def clear_recording_sink() -> None:
+    global _recording_sink
+    _recording_sink = None
+
+
+# ==========================================
 # ffplay subprocess (interruptible playback)
 # ==========================================
 _current_proc: Optional[subprocess.Popen] = None
@@ -106,6 +123,13 @@ _current_proc_lock = threading.Lock()
 def _play_pcm(data: bytes, sample_rate: int = 24000) -> bool:
     """Play raw PCM16 audio via ffplay. Returns True if interrupted."""
     global _current_proc
+
+    # Forward to recording sink if active
+    if _recording_sink is not None and data:
+        try:
+            _recording_sink(data)
+        except Exception:
+            pass
 
     if not shutil.which("ffplay"):
         # No ffplay: simulate duration and check interrupt

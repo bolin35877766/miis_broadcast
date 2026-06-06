@@ -159,6 +159,21 @@ _pcm_sink: Optional[callable] = None
 _pcm_sink_mute_local: bool = False
 _pcm_sink_flush: Optional[callable] = None  # e.g. flush LiveKit audio queue on interrupt
 
+# Recording sink — receives each int16 numpy chunk for WAV capture
+_recording_sink: Optional[callable] = None
+
+
+def register_recording_sink(callback: Optional[callable]) -> None:
+    """Register a callback(np.ndarray int16) to capture TTS audio for recording."""
+    global _recording_sink
+    _recording_sink = callback
+
+
+def clear_recording_sink() -> None:
+    global _recording_sink
+    _recording_sink = None
+
+
 def register_pcm_sink(
     callback: Optional[callable],
     mute_local: bool = True,
@@ -553,7 +568,7 @@ def _audio_player_worker_sounddevice() -> None:
         samplerate=24000,
         channels=1,
         dtype="int16",
-        latency="low",
+        latency=0.2,
     )
     stream.start()
     print("🔊 [TTS] playing via sounddevice (default output device)")
@@ -569,6 +584,13 @@ def _audio_player_worker_sounddevice() -> None:
         if _pcm_sink is not None and audio_chunk is not None:
             try:
                 _pcm_sink(np.ascontiguousarray(audio_chunk, dtype=np.int16))
+            except Exception:
+                pass
+
+        # Forward to recording sink if active
+        if _recording_sink is not None and audio_chunk is not None:
+            try:
+                _recording_sink(np.ascontiguousarray(audio_chunk, dtype=np.int16))
             except Exception:
                 pass
 
@@ -613,6 +635,13 @@ def _audio_player_worker_ffplay() -> None:
         if _pcm_sink is not None and audio_chunk is not None:
             try:
                 _pcm_sink(np.ascontiguousarray(audio_chunk, dtype=np.int16))
+            except Exception:
+                pass
+
+        # Forward to recording sink if active
+        if _recording_sink is not None and audio_chunk is not None:
+            try:
+                _recording_sink(np.ascontiguousarray(audio_chunk, dtype=np.int16))
             except Exception:
                 pass
 
