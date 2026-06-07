@@ -523,10 +523,11 @@ class LiveCCInfer:
         if any(phrase in lower for phrase in self._HALLUCINATION_PHRASES):
             return True
 
-        # First-person pronoun dominant (>18% of words are I/me/my/we/us)
-        first_person = {"i", "me", "my", "we", "us", "our", "i'm", "i've", "i'll", "i'd"}
-        fp_count = sum(1 for w in words if w.lower().rstrip("'s") in first_person)
-        if fp_count / len(words) > 0.18:
+        # First/second-person pronoun dominant → YouTuber/coaching voice hallucination
+        person_words = {"i", "me", "my", "we", "us", "our", "i'm", "i've", "i'll", "i'd",
+                        "you", "your", "you're", "you've", "you'll"}
+        fp_count = sum(1 for w in words if w.lower().rstrip("'s") in person_words)
+        if fp_count / len(words) > 0.15:
             return True
 
         # Excessive conjunctions/vague language ("and", "or", "the", "a") > 35% suggests incoherence

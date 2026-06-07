@@ -137,6 +137,8 @@ class LiveCCWorker(QtCore.QObject):
                     query, state, response_prefix=self.response_prefix
                 ):
                     segment_count += 1
+                    if self.livecc._is_degenerate(response, query):
+                        continue
                     parsed = self.livecc._parse_visual_json(response)
                     self.signal_segment.emit(float(start_t), float(stop_t), parsed)
 
@@ -391,6 +393,8 @@ class LiveCCCameraWorker(QtCore.QObject):
                         state=self._state,
                         response_prefix=self.response_prefix,
                     ):
+                        if self.livecc._is_degenerate(text, self._query):
+                            continue
                         parsed = self.livecc._parse_visual_json(text)
                         self.signal_segment.emit(float(start_ts), float(stop_ts), parsed)
                 except Exception as e:

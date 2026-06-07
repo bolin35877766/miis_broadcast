@@ -57,6 +57,16 @@ def get_local_tts_cfg() -> dict:
     with _tts_cfg_lock:
         return dict(_tts_cfg)
 
+_recording_sink = None
+
+def register_recording_sink(callback) -> None:
+    global _recording_sink
+    _recording_sink = callback
+
+def clear_recording_sink() -> None:
+    global _recording_sink
+    _recording_sink = None
+
 def clear_queues() -> None:
     while not _text_queue.empty():
         try: _text_queue.get_nowait()
@@ -242,6 +252,8 @@ def _local_audio_player_worker():
             try:
                 audio_chunk = _audio_output_queue.get(timeout=0.1)
                 process.stdin.write(audio_chunk.tobytes())
+                if _recording_sink is not None:
+                    _recording_sink(audio_chunk)
             except IOError: process = None
             except queue.Empty: continue
             except Exception: process = None

@@ -12,7 +12,7 @@ CHANNELS = 1
 SAMPLE_WIDTH = 2  # int16
 
 # Maximum silence to pad in one shot (avoid huge gaps if recorder was idle)
-_MAX_SILENCE_SEC = 5.0
+_MAX_SILENCE_SEC = 300.0
 
 
 class AudioRecorder:

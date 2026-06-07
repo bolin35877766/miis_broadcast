@@ -157,14 +157,16 @@ class GeminiWorker(QtCore.QObject):
                     return
 
                 if not priority_emitted and ev.priority is not None:
+                    ev.should_speak = True  # always speak: every LiveCC segment gets voiced
                     self.signal_priority.emit(
-                        start_t, stop_t, ev.priority, bool(ev.should_speak)
+                        start_t, stop_t, ev.priority, True
                     )
                     priority_emitted = True
 
                 if not broadcast_emitted and ev.broadcast_text is not None:
                     result = ev.to_dict()
-                    result["_enqueue_ts"] = enqueue_ts  # pass through for E2E latency
+                    result["should_speak"] = True  # override: direct LiveCC feed always speaks
+                    result["_enqueue_ts"] = enqueue_ts
                     self.signal_broadcast.emit(start_t, stop_t, result)
                     broadcast_emitted = True
 
@@ -201,16 +203,21 @@ class GeminiBackgroundWorker(QtCore.QObject):
 
     WATERMARK_SEC = 1.0       # trigger next call when TTS remaining < this
     POLL_INTERVAL_MS = 200    # polling interval while watermark not reached
-    INTER_SENTENCE_MS = 300   # silence injected between consecutive sentences
+    INTER_SENTENCE_MS = 500   # silence injected between consecutive sentences
+    MIN_FIRE_INTERVAL_SEC = 4.0  # hard floor between consecutive Gemini API calls
 
-    def __init__(self, tts_worker_ref, parent=None) -> None:
+    def __init__(self, get_remaining_sec_fn, parent=None) -> None:
         super().__init__(parent)
-        self._tts_worker = tts_worker_ref
+        # Callable resolving the *currently active* TTS engine's remaining queue
+        # time — the active engine can change at runtime (tts_mode dropdown), so
+        # a fixed worker reference would watch the wrong queue and mis-pace firing.
+        self._get_remaining_sec = get_remaining_sec_fn
         self._stop_requested: bool = False
         self._abort_current: bool = False
         self._paused: bool = False
         self._initialized: bool = False
         self._context_pool: deque = deque(maxlen=3)
+        self._last_fire_t: float = 0.0
 
     @QtCore.Slot()
     def initialize(self) -> None:
@@ -232,7 +239,13 @@ class GeminiBackgroundWorker(QtCore.QObject):
                 QtCore.QThread.msleep(self.POLL_INTERVAL_MS)
                 continue
 
-            remaining = self._tts_worker.get_queue_remaining_sec()
+            # Hard floor: prevent rapid re-firing due to async QueuedConnection lag
+            now = time.time()
+            if now - self._last_fire_t < self.MIN_FIRE_INTERVAL_SEC:
+                QtCore.QThread.msleep(self.POLL_INTERVAL_MS)
+                continue
+
+            remaining = self._get_remaining_sec()
             if remaining > self.WATERMARK_SEC:
                 QtCore.QThread.msleep(self.POLL_INTERVAL_MS)
                 continue
@@ -240,7 +253,9 @@ class GeminiBackgroundWorker(QtCore.QObject):
             self._abort_current = False
             context = self._build_context()
             t_now = time.time()
+            self._last_fire_t = t_now
 
+            final_ev = None
             try:
                 from ..core.models.gemini_broadcaster import stream_gemini
                 for ev in stream_gemini(context):
@@ -248,9 +263,13 @@ class GeminiBackgroundWorker(QtCore.QObject):
                         logging.info("[GeminiBackgroundWorker] Stream aborted mid-way")
                         break
                     if ev.broadcast_text:
-                        result = ev.to_dict()
-                        result["_enqueue_ts"] = t_now
-                        self.signal_broadcast.emit(t_now, t_now, result)
+                        final_ev = ev
+                if final_ev and not self._abort_current and not self._stop_requested:
+                    result = final_ev.to_dict()
+                    result["_enqueue_ts"] = t_now
+                    result["should_speak"] = True
+                    result["_background"] = True  # wall-clock timestamp, not video-relative
+                    self.signal_broadcast.emit(t_now, t_now, result)
             except Exception as e:
                 logging.exception("[GeminiBackgroundWorker] stream_gemini error")
                 self.signal_error.emit(str(e))

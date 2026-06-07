@@ -64,8 +64,20 @@ _stop_event = threading.Event()
 _interrupt_event = threading.Event()
 _tts_threads_started = False
 
+# Bounded depth for routine commentary (drop_outdated=False): keeps speech
+# continuous (always something queued up next) without unbounded backlog drift.
+_MAX_QUEUE_DEPTH = 2
+
 def clear_text_queue() -> None:
     while not _text_queue.empty():
+        try:
+            _text_queue.get_nowait()
+        except queue.Empty:
+            break
+
+def _trim_text_queue(max_depth: int) -> None:
+    """Drop oldest pending items until queue has room for one more (depth-bounded FIFO)."""
+    while _text_queue.qsize() >= max_depth:
         try:
             _text_queue.get_nowait()
         except queue.Empty:
@@ -279,6 +291,10 @@ def enqueue_tts_text(
         return
     if drop_outdated:
         clear_text_queue()
+    else:
+        # Routine commentary: bounded FIFO so continuous broadcast doesn't
+        # silently lose every item to the next arrival before it's spoken.
+        _trim_text_queue(_MAX_QUEUE_DEPTH)
     _text_queue.put((text, ref_ts, start_t))
 
 def interrupt_tts() -> None:

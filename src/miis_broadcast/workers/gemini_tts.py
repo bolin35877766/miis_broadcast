@@ -80,7 +80,10 @@ class GeminiTTSWorker(QtCore.QObject):
         with self._queue_remaining_lock:
             self._queue_remaining_sec = est
         self._speak_start_wall = time.time()
-        enqueue_tts_text(text, ref_ts=ref_ts, drop_outdated=True, priority=priority, start_t=start_t)
+        # P1/P2 (urgent): replace queue immediately. P3-P5 (routine commentary):
+        # bounded FIFO so continuous LiveCC-driven broadcast keeps flowing to TTS
+        # instead of being discarded by the next arrival before it's ever spoken.
+        enqueue_tts_text(text, ref_ts=ref_ts, drop_outdated=(priority <= 2), priority=priority, start_t=start_t)
 
     @QtCore.Slot()
     def interrupt(self) -> None:
