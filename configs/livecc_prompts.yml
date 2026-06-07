@@ -1,40 +1,39 @@
 # configs/livecc_prompts.yml
-version: 2
+version: 3
 
-# Fixed query always sent to LiveCC — describes what it sees objectively.
-# This never changes regardless of broadcast style.
-# Output must be plain natural language — no JSON, no markdown, no special symbols.
+# Primary prompt — assumes frames are CROPPED to the RIGHT half (the first-person
+# VR game view) before reaching LiveCC. That half contains the hoop, ball, shot and
+# all on-court action; the left half (a real person filmed in a room) is out of
+# distribution for LiveCC and is dropped. See examples/vr_test/stream_test_vr_frank.py.
 livecc_query: |-
-  The screen uses a LEFT-RIGHT split-screen format:
-  - LEFT half: VR player's first-person perspective — observe this player's movement
-    and on-ball actions.
-  - RIGHT half: Third-person full-court view — shows overall game flow, teammate
-    positions, and court layout.
+  A basketball player is practicing shots at a hoop. In ONE short present-tense sentence,
+  describe only what the ball and the player are doing right now: the shot going up, the
+  ball dropping through the net, bouncing off the rim, or being dribbled and reset.
+  Use third person ("the player", "the ball"). Do NOT use "I" or "you", do NOT talk about
+  the video, the camera or the viewer, and do NOT read scoreboard text. Plain words only.
 
-  Naming conventions:
-  - First-person view (left): "the attacker" (ball-handler) or "the defender".
-  - Third-person view (right): "Player <N>" by jersey number.
+# Fallback prompt for the UN-cropped left-right split frame (no OpenCV crop).
+# NOTE: left/right are now labelled correctly (the previous version had them reversed).
+livecc_query_splitscreen: |-
+  The screen is a LEFT-RIGHT split:
+  - LEFT half: a real person wearing a VR headset, filmed in a room — body and shooting
+    motion only. There is no real ball or hoop here; ignore the room.
+  - RIGHT half: the player's first-person VR game view — this holds the hoop, net, ball
+    and all the actual basketball action. Base your commentary on THIS half.
 
-  Integrate both perspectives. Output exactly 1 short, objective, present-tense sentence
-  describing the current game moment.
+  Call the live action in one short, present-tense spoken sentence, like a play-by-play
+  commentator, focusing on the ball and the hoop in the RIGHT half.
 
-  If a clear key event is happening (score, dunk, steal, block, foul), name it explicitly.
-  If NO key event is happening, output a neutral transition phrase — do NOT output
-  "No active play visible." Vary freely from these examples:
-  "Both teams are still looking for an opening."
-  "Players continue their off-ball movement."
-  "The pace has slowed as both sides reset."
-  "Setting up for the next offensive push."
-  "Defense holding position, waiting for the attack."
-  "Ball movement keeping the defense honest."
-  "Both sides maintaining their spacing."
+  If a clear event happens (shot, make, miss off the rim, dribble), say it plainly.
+  If nothing decisive is happening, give a short neutral filler line and vary the wording.
 
-  Rules: plain sentences ONLY — no JSON, no markdown, no special symbols.
+  Ignore any on-screen scoreboard text. Speak only plain natural sentences — no JSON,
+  no markdown, no special symbols.
+
+livecc_response_prefix: ""
 
 default_style: objective
 
-# Style metadata only — labels and descriptions for the UI combobox.
-# The actual Gemini system prompts for each style live in system_prompts.yml.
 styles:
   objective:
     label: "標準播報型"

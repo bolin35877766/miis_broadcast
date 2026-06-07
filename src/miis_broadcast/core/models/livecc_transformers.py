@@ -374,6 +374,48 @@ class LiveCCInfer:
         self.carry_text_max_chars = int(carry_text_max_chars)
         self.carry_recent_k = int(carry_recent_k)
 
+        # Ban pure-number tokens so the model cannot collapse into "The player 5 / 6 / 2D"
+        # jersey-number / scoreboard counting loops on this VR-gameplay footage.
+        self.suppress_numbers: bool = bool(cfg.get("suppress_numbers", True))
+        self._bad_words_ids: Optional[List[List[int]]] = (
+            self._build_number_bad_words() if self.suppress_numbers else None
+        )
+
+        # Right/left half crop applied to every clip before inference (split-screen input).
+        # "right" keeps the first-person VR game view; left half (real person in a room) is OOD.
+        self.input_crop: str = str(cfg.get("input_crop", "none")).strip().lower()
+
+        # File path resizes the full frame to max_pixels BEFORE the in-model crop, so when
+        # cropping a half-frame raise this (~2x) to keep the kept half at full resolution —
+        # low-res crops make the model collapse into reading jersey/scoreboard numbers.
+        self.max_pixels: int = int(cfg.get("max_pixels", 384 * 28 * 28))
+
+    def _build_number_bad_words(self) -> List[List[int]]:
+        tok = self.processor.tokenizer
+        bad: List[List[int]] = []
+        for token_str, tid in tok.get_vocab().items():
+            s = tok.convert_tokens_to_string([token_str]).strip()
+            if s and all(c.isdigit() for c in s):
+                bad.append([int(tid)])
+        return bad
+
+    def _apply_input_crop(self, frames: Any) -> Any:
+        """Keep only the right/left half of each frame. clip is TCHW tensor (file path);
+        camera frames are THWC numpy. Drops the OOD left-half real-person recording."""
+        if self.input_crop not in ("right", "left"):
+            return frames
+        if torch.is_tensor(frames):
+            w = int(frames.shape[-1]); half = w // 2
+            if half <= 0:
+                return frames
+            return frames[..., half:] if self.input_crop == "right" else frames[..., :half]
+        if isinstance(frames, np.ndarray) and frames.ndim == 4:
+            w = int(frames.shape[2]); half = w // 2
+            if half <= 0:
+                return frames
+            return frames[:, :, half:, :] if self.input_crop == "right" else frames[:, :, :half, :]
+        return frames
+
     def _pad_token_id_for_generate(self) -> int:
         """Avoid pad_token_id=None, which can destabilize HF generate on some Qwen2 builds."""
         cfg = self.model.config
@@ -460,7 +502,10 @@ class LiveCCInfer:
             return True
 
         words = text.split()
-        if len(words) < 3:
+        # Count real content words (>=2 alphabetic chars) — rejects number stubs like
+        # "The player 5 ..." or "The player 2D ..." that have <3 actual words.
+        content_words = [w for w in words if sum(c.isalpha() for c in w) >= 2]
+        if len(content_words) < 2:
             return True
 
         # Excessive length indicates hallucination/wandering (real play descriptions are <80 words)
@@ -492,18 +537,35 @@ class LiveCCInfer:
 
         return False
 
-    def _update_recent_texts(self, state: Dict[str, Any], response: str) -> None:
+    def _update_recent_texts(
+        self, state: Dict[str, Any], response: str, query: str = ""
+    ) -> None:
         if not isinstance(response, str):
             return
         r = response.strip()
-        if not r:
+
+        # Degenerate output (empty / score-banner loops / word-salad) must NOT be carried
+        # forward as context, otherwise carry_text re-seeds the next window with garbage and
+        # the stream collapses into a "Practice / Practices / w-18" loop. Track the streak and
+        # hard-reset the KV cache after 2 consecutive bad outputs to self-heal.
+        if not r or self._is_degenerate(r, query):
+            streak = int(state.get("degenerate_streak", 0)) + 1
+            state["degenerate_streak"] = streak
+            if streak >= 3:
+                state.pop("past_ids", None)
+                state.pop("past_key_values", None)
+                state["carry_text"] = ""
+                state["recent_texts"] = []
+                state["mm_window_start"] = None
+                state["degenerate_streak"] = 0
             return
+
+        state["degenerate_streak"] = 0
         recent = state.get("recent_texts", [])
         if not isinstance(recent, list):
             recent = []
         recent.append(r)
-        # Keep only the most recent carry_recent_k sentences
-        if len(recent) > self.carry_recent_k:
+        if self.carry_recent_k > 0 and len(recent) > self.carry_recent_k:
             recent = recent[-self.carry_recent_k :]
         state["recent_texts"] = recent
 
@@ -559,22 +621,6 @@ class LiveCCInfer:
             content.append({"type": "text", "text": query})
             state["query"] = query
 
-        # Reduce copy-paste commentary when recent_texts / KV keep prior wording
-        recent = state.get("recent_texts", [])
-        if isinstance(recent, list) and any(
-            isinstance(t, str) and t.strip() for t in recent
-        ):
-            content.append(
-                {
-                    "type": "text",
-                    "text": (
-                        "Diversity: do not restate the previous sentence. "
-                        "Vary phrasing. If the scene is unchanged, note one new micro-detail; "
-                        "avoid repeating the same opening clause as last time."
-                    ),
-                }
-            )
-
         return {"role": "user", "content": content}
 
     # ------------------------------
@@ -584,10 +630,11 @@ class LiveCCInfer:
         self,
         query: str,
         state: Dict[str, Any],
-        max_pixels: int = 384 * 28 * 28,
+        max_pixels: Optional[int] = None,
         response_prefix: str = "",
     ) -> Generator[Tuple[Tuple[float, float], str, Dict[str, Any]], None, None]:
 
+        max_pixels = max_pixels or self.max_pixels
         video_timestamp = state.get("video_timestamp", 0.0)
         last_timestamp = state.get("last_timestamp", -1.0 / self.fps)
         video_path = state["video_path"]
@@ -651,6 +698,9 @@ class LiveCCInfer:
             interleave_timestamps.extend(list(clip_timestamps.split(self.streaming_fps_frames)))
 
         for clip_part, ts_part in zip(interleave_clips, interleave_timestamps):
+            # File path crops via ffmpeg upstream (worker/test) — cropping the reader's
+            # already-downscaled clip here yields a low-res half that collapses into
+            # number-reading. Camera path crops numpy frames pre-resize (see _apply_input_crop).
             start_timestamp = ts_part[0].item()
             stop_timestamp = ts_part[-1].item() + self.frame_time_interval
 
@@ -731,6 +781,7 @@ class LiveCCInfer:
                     top_k=self._gen_top_k,
                     repetition_penalty=self._gen_repetition_penalty,
                     no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
+                    bad_words_ids=self._bad_words_ids,
                     max_new_tokens=self.max_new_tokens,
                 )
 
@@ -746,7 +797,7 @@ class LiveCCInfer:
             )
 
             # ✅ Option A: Update recent commentaries (for the next reset)
-            self._update_recent_texts(state, response)
+            self._update_recent_texts(state, response, query)
 
             yield (start_timestamp, stop_timestamp), response, state
 
@@ -765,6 +816,8 @@ class LiveCCInfer:
         if num_frames == 0:
             return
 
+        frames = self._apply_input_crop(clip.frames)
+
         duration = num_frames / max(clip.fps, 1e-6)
         start_timestamp = float(clip.t_start)
         stop_timestamp = start_timestamp + duration
@@ -776,7 +829,7 @@ class LiveCCInfer:
             message = self._build_message_content(
                 start_ts=start_timestamp,
                 stop_ts=stop_timestamp,
-                clip_obj=clip.frames,
+                clip_obj=frames,
                 query=query,
                 state=state,
             )
@@ -798,7 +851,7 @@ class LiveCCInfer:
             inputs = self.processor(
                 text=texts,
                 images=None,
-                videos=[clip.frames],
+                videos=[frames],
                 return_tensors="pt",
                 return_attention_mask=True,
             )
@@ -868,6 +921,7 @@ class LiveCCInfer:
                     top_p=self._gen_top_p,
                     repetition_penalty=self._gen_repetition_penalty,
                     no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
+                    bad_words_ids=self._bad_words_ids,
                     max_new_tokens=self.max_new_tokens,
                 )
 
@@ -883,7 +937,7 @@ class LiveCCInfer:
             )
 
             # ✅ Option A: Update recent commentaries
-            self._update_recent_texts(state, response)
+            self._update_recent_texts(state, response, query)
 
             yield (start_timestamp, stop_timestamp), response, state
             break

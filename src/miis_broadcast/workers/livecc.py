@@ -23,7 +23,35 @@ except ImportError:
 
 from ..core.models.openai_tts import print_tts_stats
 
- 
+
+def crop_video_half(src_path: str, side: str) -> str:
+    """ffmpeg-crop a video to its right/left half (cached next to the source) and return
+    the new path. File mode must crop BEFORE LiveCC's internal downscale; cropping the
+    already-downscaled clip in-model produces a low-res half that degenerates into
+    number-reading. Returns src_path unchanged on any failure or if side is not right/left."""
+    import os
+    import subprocess
+
+    side = (side or "none").strip().lower()
+    if side not in ("right", "left"):
+        return src_path
+    x_expr = "iw/2" if side == "right" else "0"
+    base, ext = os.path.splitext(src_path)
+    out = f"{base}.{side}half{ext or '.mp4'}"
+    try:
+        if not (os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(src_path)):
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                 "-i", src_path, "-vf", f"crop=iw/2:ih:{x_expr}:0",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an", out],
+                check=True,
+            )
+        return out
+    except Exception as e:
+        logging.warning("[LiveCCWorker] crop_video_half failed (%s); using original", e)
+        return src_path
+
+
 class LiveCCWorker(QtCore.QObject):
     # 模型載入完成
     signal_model_loaded = QtCore.Signal()
@@ -78,6 +106,13 @@ class LiveCCWorker(QtCore.QObject):
             # ✅ 新增：推論開始前清空舊的快取（解決重複選擇同一影片的問題）
             self.livecc._cached_video_readers_with_hw.clear()
             logging.info("[LiveCCWorker] Cleared cached video readers")
+
+            # Split-screen source: pre-crop to the configured half (ffmpeg, cached) so LiveCC
+            # gets a full-resolution single view instead of the OOD left+right frame.
+            side = getattr(self.livecc, "input_crop", "none")
+            if side in ("right", "left"):
+                video_path = crop_video_half(video_path, side)
+                logging.info("[LiveCCWorker] Using cropped video: %s", video_path)
 
             # 初始化 state
             state = self.livecc.init_state(video_path)

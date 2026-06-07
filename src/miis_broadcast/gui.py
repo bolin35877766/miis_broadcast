@@ -2515,10 +2515,15 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             prompt = "Describe only what you see on screen right now in one objective sentence."
 
+        if self.prompt_manager is not None:
+            stem = self.prompt_manager.livecc_response_prefix()
+            response_prefix = (stem + " ") if stem else ""
+        else:
+            response_prefix = ""
         if hasattr(self, "livecc_worker") and self.livecc_worker is not None:
-            self.livecc_worker.response_prefix = ""
+            self.livecc_worker.response_prefix = response_prefix
         if hasattr(self, "cam_worker") and self.cam_worker is not None:
-            self.cam_worker.response_prefix = ""
+            self.cam_worker.response_prefix = response_prefix
         self._use_gemini = True
 
         # Apply TTS settings before start, then pre-connect OpenAI Realtime (warmup).

@@ -21,6 +21,7 @@ class PromptManager:
         self._styles: Dict[str, StyleItem] = {}
         self._default_style: str = ""
         self._livecc_query: str = ""
+        self._livecc_response_prefix: str = ""
         self.reload()
 
     def reload(self) -> None:
@@ -32,6 +33,7 @@ class PromptManager:
 
         self._default_style = (data.get("default_style") or "").strip()
         self._livecc_query = (data.get("livecc_query") or "").strip()
+        self._livecc_response_prefix = (data.get("livecc_response_prefix") or "").strip()
 
         styles = data.get("styles") or {}
         parsed: Dict[str, StyleItem] = {}
@@ -55,3 +57,9 @@ class PromptManager:
     def livecc_query(self) -> str:
         """Return the fixed LiveCC objective description query."""
         return self._livecc_query
+
+    def livecc_response_prefix(self) -> str:
+        """Forced opening stem for every LiveCC line (e.g. 'The player'). Keeps the
+        fine-tuned model in grounded third-person commentary instead of drifting into
+        first-person YouTube-narration hallucination on this VR-gameplay footage."""
+        return self._livecc_response_prefix

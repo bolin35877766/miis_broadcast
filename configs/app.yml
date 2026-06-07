@@ -39,7 +39,7 @@ inference:
 # Remote inference (set client_only: false to load LiveCC locally)
 remote:
   enabled: true
-  client_only: true
+  client_only: false
   host: 127.0.0.1
   port: 9000
 

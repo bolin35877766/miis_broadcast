@@ -5,20 +5,22 @@ classifiers:
     # auto | flash_attention_2 | sdpa | eager — auto uses flash_attn when installed
     attn_implementation: auto
     device_id: 0
-    fps: 4.0
-    initial_fps_frames: 6
-    streaming_fps_frames: 3
-    max_new_tokens: 12
+    input_crop: right
+    suppress_numbers: false
+    fps: 3.0
+    initial_fps_frames: 4
+    streaming_fps_frames: 4
+    max_new_tokens: 26
     headroom: 1024
-    mm_window_sec: 8.0
-    carry_text_max_chars: 0
-    carry_recent_k: 0
+    mm_window_sec: 6.0
+    carry_text_max_chars: 120
+    carry_recent_k: 2
     generation:
-      temperature: 0.3
-      top_p: 0.75
-      top_k: 15
-      repetition_penalty: 1.5
-      no_repeat_ngram_size: 4
+      temperature: 0.5
+      top_p: 0.9
+      top_k: 30
+      repetition_penalty: 1.15
+      no_repeat_ngram_size: 3
     camera:
       window_sec: 1.5
       target_fps: 2.0
@@ -28,21 +30,21 @@ classifiers:
 # ---------------------------------------------------------------------------
 # ByteTrack — YOLOX + BYTETracker subject-tracking configuration
 # ---------------------------------------------------------------------------
-bytetrack:
-  bytetrack_repo: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo"
-  exp_file: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/exps/example/mot/yolox_s_mix_det.py"
-  ckpt_path: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/pretrained/bytetrack_s_mot17.pth.tar"
-  model_size: "s"
-  device: "cuda"
-  fp16: true
-  fuse: true
-  track_thresh: 0.5
-  match_thresh: 0.8
-  track_buffer: 60
-  aspect_ratio_thresh: 1.6
-  min_box_area: 10
-  mot20: false
-  subject_only: true
-  subject_pad: 0.15
-  min_subject_area_ratio: 0.03
-  preempt_ratio: 4.0
+# bytetrack:
+#   bytetrack_repo: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo"
+#   exp_file: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/exps/example/mot/yolox_s_mix_det.py"
+#   ckpt_path: "C:/Users/HP/Desktop/INNC Traning Course/ByteTrack/ByteTrack_repo/pretrained/bytetrack_s_mot17.pth.tar"
+#   model_size: "s"
+#   device: "cuda"
+#   fp16: true
+#   fuse: true
+#   track_thresh: 0.5
+#   match_thresh: 0.8
+#   track_buffer: 60
+#   aspect_ratio_thresh: 1.6
+#   min_box_area: 10
+#   mot20: false
+#   subject_only: true
+#   subject_pad: 0.15
+#   min_subject_area_ratio: 0.03
+#   preempt_ratio: 4.0
