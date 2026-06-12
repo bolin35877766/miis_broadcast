@@ -100,6 +100,8 @@ def enable_dry_run(enabled: bool = True) -> None:
 _perf_stats = {
     "tts_latencies": [],
     "e2e_latencies": [],    # Vision-to-audio end-to-end samples
+    "e2e_latencies_seg": [],  # [延遲][語音][段落] — frame-anchored (small start_t)
+    "e2e_latencies_bg": [],   # [延遲][語音][背景] — Gemini background narration (epoch start_t)
     "last_text_sent_ts": 0.0,
     "current_ref_ts": 0.0,  # Reference timestamp for current utterance (vision side)
     "current_start_t": 0.0,    # video timestamp of segment being spoken
@@ -131,6 +133,8 @@ def print_tts_stats() -> None:
 
     _perf_stats["tts_latencies"].clear()
     _perf_stats["e2e_latencies"].clear()
+    _perf_stats["e2e_latencies_seg"].clear()
+    _perf_stats["e2e_latencies_bg"].clear()
     _perf_stats["last_text_sent_ts"] = 0.0
     _perf_stats["current_ref_ts"] = 0.0
     _perf_stats["current_start_t"] = 0.0
@@ -557,6 +561,15 @@ def _apply_audio_chunk_latency_stats() -> None:
     if _perf_stats["current_ref_ts"] > 0:
         e2e_latency = time.time() - _perf_stats["current_ref_ts"]
         _perf_stats["e2e_latencies"].append(e2e_latency)
+        is_bg = _perf_stats["current_start_t"] > 1e6
+        bucket_key = "e2e_latencies_bg" if is_bg else "e2e_latencies_seg"
+        bucket = _perf_stats[bucket_key]
+        bucket.append(e2e_latency)
+        tag = "背景" if is_bg else "段落"
+        logging.info(
+            "[延遲][語音][%s] latency=%.2fs (平均=%.2fs, n=%d)",
+            tag, e2e_latency, sum(bucket) / len(bucket), len(bucket),
+        )
         _perf_stats["current_ref_ts"] = 0.0
 
 

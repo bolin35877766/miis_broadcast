@@ -5,6 +5,7 @@ Architecture mirrors openai_tts.py: module-level singleton threads + queues,
 plus set_natural_completion_callback() for the OpenAITTSWorker interface.
 """
 
+import concurrent.futures
 import os
 import re
 import shutil
@@ -15,6 +16,7 @@ import queue
 import logging
 from typing import Optional, Callable
 
+import numpy as np
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types as genai_types
@@ -63,6 +65,13 @@ _text_queue: "queue.Queue[tuple]" = queue.Queue()
 _stop_event = threading.Event()
 _interrupt_event = threading.Event()
 _tts_threads_started = False
+
+# [延遲][語音] Stage 3 running averages, split by origin:
+# - "_background"-tagged items carry an epoch start_t (>1e6) — Gemini's own
+#   continuous narration, no LiveCC frame anchor.
+# - everything else carries a small video-relative start_t — frame-anchored.
+_voice_latencies_seg: list = []
+_voice_latencies_bg: list = []
 
 # Bounded depth for routine commentary (drop_outdated=False): keeps speech
 # continuous (always something queued up next) without unbounded backlog drift.
@@ -166,12 +175,12 @@ def _play_pcm(data: bytes, sample_rate: int = 24000) -> bool:
         chunk_size = 4096
         for i in range(0, len(data), chunk_size):
             if _interrupt_event.is_set():
-                proc.terminate()
+                _soft_stop_proc(proc)
                 return True
             try:
                 proc.stdin.write(data[i : i + chunk_size])
                 proc.stdin.flush()
-            except (BrokenPipeError, OSError):
+            except (BrokenPipeError, OSError, ValueError):
                 return True
         proc.stdin.close()
         proc.wait()
@@ -187,6 +196,71 @@ def _parse_sample_rate(mime_type: str) -> int:
     m = re.search(r"rate=(\d+)", mime_type or "")
     return int(m.group(1)) if m else 24000
 
+# Linear fade-in/out applied to every utterance before playback. Each utterance
+# spawns a fresh ffplay process, so an un-faded clip starts/ends at full
+# amplitude right as the audio device opens/closes — audible as a click/pop.
+_FADE_MS = 15
+
+def _apply_fade(data: bytes, sample_rate: int) -> bytes:
+    if len(data) < 4:
+        return data
+    samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+    fade_n = min(len(samples) // 2, int(sample_rate * _FADE_MS / 1000))
+    if fade_n > 1:
+        ramp = np.linspace(0.0, 1.0, fade_n, dtype=np.float32)
+        samples[:fade_n] *= ramp
+        samples[-fade_n:] *= ramp[::-1]
+    return samples.astype(np.int16).tobytes()
+
+def _soft_stop_proc(proc: subprocess.Popen) -> None:
+    """Stop ffplay without an abrupt kill: close stdin (EOF) so ffplay drains
+    its small buffer and exits on its own; fall back to SIGTERM only if it
+    doesn't exit quickly. Avoids the pop/click from killing ffplay mid-DMA."""
+    try:
+        if proc.stdin and not proc.stdin.closed:
+            proc.stdin.close()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=0.06)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+# ==========================================
+# Generation helper + prefetch executor
+# ==========================================
+# A single background slot used to generate the *next* utterance's audio
+# while the *current* one is still playing — closes the generate-then-play
+# gap (~0.5-2s of silence per utterance) that causes audible 卡頓.
+_tts_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="GeminiTTSGen"
+)
+
+def _generate_audio(client, cfg: dict, text: str) -> tuple:
+    """Blocking call: generate_content + fade. Returns (audio_bytes, sample_rate)."""
+    response = client.models.generate_content(
+        model=cfg["model"],
+        contents=text,
+        config=genai_types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=genai_types.SpeechConfig(
+                voice_config=genai_types.VoiceConfig(
+                    prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                        voice_name=cfg["voice"]
+                    )
+                )
+            ),
+        ),
+    )
+    part = response.candidates[0].content.parts[0]
+    audio_bytes: bytes = part.inline_data.data
+    sample_rate = _parse_sample_rate(part.inline_data.mime_type)
+    audio_bytes = _apply_fade(audio_bytes, sample_rate)
+    return audio_bytes, sample_rate
+
 # ==========================================
 # TTS worker thread
 # ==========================================
@@ -195,46 +269,44 @@ def _gemini_tts_worker() -> None:
     print("🚀 [GeminiTTS] Gemini TTS 背景服務已啟動")
     client = _get_client()
     _first_success = [True]
+    prefetch: Optional[tuple] = None  # (Future, item) for the next utterance
 
     while not _stop_event.is_set():
         # Drain any pending interrupt before picking next item
         if _interrupt_event.is_set():
             _interrupt_event.clear()
+            prefetch = None
             continue
 
-        try:
-            item = _text_queue.get(timeout=0.1)
-        except queue.Empty:
-            continue
+        if prefetch is not None:
+            future, item = prefetch
+            prefetch = None
+        else:
+            try:
+                item = _text_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            future = None
 
         if isinstance(item, tuple):
             text = item[0]
+            ref_ts = item[1] if len(item) > 1 else 0.0
+            start_t = item[2] if len(item) > 2 else 0.0
         else:
-            text = item
+            text, ref_ts, start_t = item, 0.0, 0.0
 
-        if not contains_meaningful_text(text):
+        if future is None and not contains_meaningful_text(text):
             continue
 
         cfg = _get_cfg()
         interrupted = False
 
         try:
-            response = client.models.generate_content(
-                model=cfg["model"],
-                contents=text,
-                config=genai_types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=genai_types.SpeechConfig(
-                        voice_config=genai_types.VoiceConfig(
-                            prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
-                                voice_name=cfg["voice"]
-                            )
-                        )
-                    ),
-                ),
+            audio_bytes, sample_rate = (
+                future.result() if future is not None else _generate_audio(client, cfg, text)
             )
 
-            # Check interrupt immediately after blocking API call returns
+            # Check interrupt immediately after the (blocking or prefetched) call returns
             if _interrupt_event.is_set():
                 _interrupt_event.clear()
                 interrupted = True
@@ -242,9 +314,33 @@ def _gemini_tts_worker() -> None:
                 if _first_success[0]:
                     print(f"✅ [GeminiTTS] 連線成功！(model={cfg['model']}, voice={cfg['voice']})")
                     _first_success[0] = False
-                part = response.candidates[0].content.parts[0]
-                audio_bytes: bytes = part.inline_data.data
-                sample_rate = _parse_sample_rate(part.inline_data.mime_type)
+                if ref_ts > 0:
+                    latency = time.time() - ref_ts
+                    is_bg = start_t > 1e6
+                    bucket = _voice_latencies_bg if is_bg else _voice_latencies_seg
+                    bucket.append(latency)
+                    avg = sum(bucket) / len(bucket)
+                    tag = "背景" if is_bg else "段落"
+                    logging.info(
+                        "[延遲][語音][%s] latency=%.2fs (平均=%.2fs, n=%d)",
+                        tag, latency, avg, len(bucket),
+                    )
+
+                # Kick off generation for the next queued utterance now, so its
+                # audio is ready (or nearly ready) by the time this one finishes.
+                while True:
+                    try:
+                        next_item = _text_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    next_text = next_item[0] if isinstance(next_item, tuple) else next_item
+                    if contains_meaningful_text(next_text):
+                        prefetch = (
+                            _tts_executor.submit(_generate_audio, client, cfg, next_text),
+                            next_item,
+                        )
+                        break
+
                 interrupted = _play_pcm(audio_bytes, sample_rate)
                 if interrupted:
                     _interrupt_event.clear()
@@ -260,7 +356,10 @@ def _gemini_tts_worker() -> None:
             if interrupted:
                 _interrupt_event.clear()
 
-        if not interrupted:
+        if interrupted:
+            # Discard any in-flight prefetch — its text is now stale.
+            prefetch = None
+        else:
             _fire_natural_completion()
 
     logging.info("[GeminiTTS] Worker thread stopped")
@@ -305,13 +404,11 @@ def enqueue_tts_text(
     _text_queue.put((text, ref_ts, start_t))
 
 def interrupt_tts() -> None:
-    """Signal interrupt: kills current ffplay process and clears text queue."""
+    """Signal interrupt: gracefully stops the current ffplay process (see
+    _soft_stop_proc) and clears the pending text queue."""
     clear_text_queue()
     with _current_proc_lock:
         proc = _current_proc
     if proc:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
+        _soft_stop_proc(proc)
     _interrupt_event.set()
