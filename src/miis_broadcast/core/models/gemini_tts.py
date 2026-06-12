@@ -251,7 +251,14 @@ def _gemini_tts_worker() -> None:
 
         except Exception as e:
             logging.exception("[GeminiTTS] generate_content failed")
-            interrupted = True
+            # Only a genuine user-initiated interrupt should suppress the
+            # natural-completion signal. A pure API/generation failure (e.g.
+            # 429 quota exhaustion) produced no audio and must still fire
+            # _fire_natural_completion(), otherwise _post_p1_pending never
+            # clears and GeminiBackgroundWorker stays paused forever.
+            interrupted = _interrupt_event.is_set()
+            if interrupted:
+                _interrupt_event.clear()
 
         if not interrupted:
             _fire_natural_completion()

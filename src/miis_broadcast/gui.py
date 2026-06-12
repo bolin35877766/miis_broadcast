@@ -1098,11 +1098,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_fps: float = 30.0
         self.tts_mode: str = "none"
         self._use_gemini: bool = False
-        self._tts_last_priority: int = 5       # priority of last content sent to TTS
-        self._pending_tts_transition: str = "" # transition phrase to prepend on next speak
         self._last_tts_raw_text: str = ""      # raw text of last TTS emit (dedup)
         self._last_tts_emit_ts: float = 0.0    # wall-clock time of last TTS emit (dedup)
         self._tts_protect_until: float = 0.0   # wall-clock deadline: block lower-priority below this time
+        self._tts_protected_priority: int = 5  # priority being protected until _tts_protect_until
         self._post_p1_pending: bool = False     # True while waiting for 1.0s post-P1 silence
         self._pending_livecc_fragment: Optional[tuple] = None  # truncated "..." fragment awaiting stitching
 
@@ -1542,51 +1541,45 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tts_worker.signal_tts_done.connect(self._on_tts_done)
         self.gemini_tts_worker.signal_tts_done.connect(self._on_tts_done)
 
-    # Interrupt threshold: new_priority must be strictly better than current by this margin
-    _INTERRUPT_MATRIX = {
-        1: 2,
-        2: 3,
-        3: 4,
-    }
-    _TRANSITION_PHRASES = {
-        1: "Oh!—",
-        2: "And—",
-        3: "",   # P3: seamless, no explicit word
-    }
+    # Time-aware Gemini priority: Gemini-originated content never interrupts
+    # TTS playback directly (only LiveCC's fast-blade P1 in _route_segment may
+    # do that). Instead, Gemini's priority decides queue placement, adjusted by
+    # how stale the content has become and whether a more urgent item is still
+    # protecting its queue position.
+    _PRIORITY_DECAY_INTERVAL_SEC = 2.0          # every N sec of staleness, priority worsens by 1
+    _TTS_PROTECT_WINDOW_SEC = {1: 6.0, 2: 3.0}  # after sending P1/P2, shield queue position this long
 
     @QtCore.Slot(float, float, int, bool)
     def _on_gemini_priority(self, start_t: float, stop_t: float, priority: int, should_speak: bool) -> None:
         """
         Fires as soon as Gemini returns the PRIORITY line (before SPEAK text arrives).
-        Decides whether to interrupt current TTS and what transition phrase to use.
-        Also triggers KV cache reset for P1 events.
+        Gemini priority is queue-ordering information only — it never interrupts
+        current TTS playback. A P1 confirmation still resets LiveCC's KV cache.
         """
         if priority == 1:
             # Gemini confirmed P1 — reset LiveCC KV cache via QueuedConnection
             self.signal_p1_confirmed.emit()
 
-        if not should_speak:
-            return
+    def _effective_gemini_priority(self, base_priority: int, enqueue_ts: float) -> int:
+        """Time-aware priority for Gemini-originated content (queue placement only).
 
-        interrupt_threshold = self._INTERRUPT_MATRIX.get(priority)
-        if interrupt_threshold is None:
-            return  # P4/P5 never interrupt
+        Staleness decay: content that waited longer before reaching TTS describes
+        an increasingly stale moment, so its priority worsens over time.
+        Protection clamp: if a more urgent item was sent to TTS recently, this
+        item can't claim a better queue position until that window expires.
+        """
+        priority = base_priority + int((time.time() - enqueue_ts) // self._PRIORITY_DECAY_INTERVAL_SEC)
+        if time.time() < self._tts_protect_until:
+            priority = max(priority, self._tts_protected_priority + 1)
+        return min(priority, 5)
 
-        if self._tts_last_priority >= interrupt_threshold:
-            phrase = self._TRANSITION_PHRASES.get(priority, "")
-            self._pending_tts_transition = phrase
-            self._next_gemini_interrupt = True  # flag for UI display in on_segment
-            # Clear audio immediately; new text will arrive shortly via signal_broadcast
-            if self.tts_mode == "openai":
-                self.signal_tts_interrupt.emit()
-            elif self.tts_mode == "gemini":
-                self.signal_gemini_tts_interrupt.emit()
-            elif self.tts_mode == "local":
-                self.signal_local_tts_interrupt.emit()
-            logging.info(
-                "[Priority] P%d interrupting P%d — transition: %r → signal_tts_interrupt emitted",
-                priority, self._tts_last_priority, phrase,
-            )
+    def _register_tts_priority(self, priority: int) -> None:
+        """Arm the protection window when P1/P2 content is sent to TTS, so
+        Gemini's subsequent (time-decayed) priority can't immediately bump it."""
+        window = self._TTS_PROTECT_WINDOW_SEC.get(priority)
+        if window:
+            self._tts_protected_priority = priority
+            self._tts_protect_until = time.time() + window
 
     def _get_active_tts_remaining_sec(self) -> float:
         """Remaining queued playback time of whichever TTS engine is active.
@@ -1662,30 +1655,38 @@ class MainWindow(QtWidgets.QMainWindow):
             tts_remaining = self._get_active_tts_remaining_sec()
             if hasattr(self, "gemini_bg_worker"):
                 self.gemini_bg_worker.pause()
-            if self.tts_mode == "openai":
-                self.signal_tts_interrupt.emit()
-            elif self.tts_mode == "gemini":
-                self.signal_gemini_tts_interrupt.emit()
-            elif self.tts_mode == "local":
-                self.signal_local_tts_interrupt.emit()
+            # An interrupt can't be interrupted: if what's currently playing is
+            # itself a P1 utterance issued moments ago (still within its own
+            # protection window), let it finish — queue this one behind it
+            # instead of cutting it off mid-sentence.
+            already_p1 = time.time() < self._tts_protect_until and self._tts_protected_priority == 1
+            if not already_p1:
+                if self.tts_mode == "openai":
+                    self.signal_tts_interrupt.emit()
+                elif self.tts_mode == "gemini":
+                    self.signal_gemini_tts_interrupt.emit()
+                elif self.tts_mode == "local":
+                    self.signal_local_tts_interrupt.emit()
             tts_text = raw.strip()
             if tts_text:
                 self._post_p1_pending = True
                 # Prepend "Oh wait!" only when actually cutting off something mid-speech
-                if tts_remaining > 0.0:
+                if tts_remaining > 0.0 and not already_p1:
                     tts_text = "Oh wait! " + tts_text
-                self._pending_tts_transition = ""
+                self._register_tts_priority(1)
                 if self.tts_mode == "gemini":
                     self.signal_gemini_tts_speak.emit(tts_text, 1, time.time(), start_t)
                 else:
                     self.signal_tts_speak.emit(tts_text, 1, time.time(), start_t)
-                self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [⚡ INTERRUPT] {tts_text}")
+                label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
+                self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} {tts_text}")
             self.signal_p1_confirmed.emit()
 
         elif fast_priority == 2:
             logging.info("[FastBlade] P2 hit: %r", raw[:80])
             tts_text = raw.strip()
             if tts_text:
+                self._register_tts_priority(2)
                 if self.tts_mode == "gemini":
                     self.signal_gemini_tts_speak.emit(tts_text, 2, time.time(), start_t)
                 else:
@@ -2016,7 +2017,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if not display_text.strip():
                 continue
 
-            interrupt_label = "[⚡ INTERRUPT] " if (isinstance(data, dict) and data.get("_interrupt")) else ""
+            interrupt_label = "[⚡ PRIORITY] " if (isinstance(data, dict) and data.get("_priority_jump")) else ""
             line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {interrupt_label}{display_text}"
             self._append_ui(line)
 
@@ -2515,7 +2516,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text(f"[FreeSwitch] 已切換至：{source}")
 
     def _apply_tts_settings_before_start(self) -> None:
-        """根據目前模式套用對應設定，並更新 GeminiBackgroundWorker 的 TTS 參考。"""
+        """根據目前模式套用對應設定。"""
         self.tts_mode = self.control_panel.get_tts_mode()
 
         if self.tts_mode == "openai":
@@ -2530,13 +2531,6 @@ class MainWindow(QtWidgets.QMainWindow):
             exag = self.control_panel.get_local_exaggeration()
             cfg = self.control_panel.get_local_cfg()
             self.signal_local_tts_apply_settings.emit(float(exag), float(cfg))
-
-        # Point GeminiBackgroundWorker at the active TTS worker for backpressure
-        if hasattr(self, "gemini_bg_worker"):
-            if self.tts_mode == "gemini" and hasattr(self, "gemini_tts_worker"):
-                self.gemini_bg_worker._tts_worker = self.gemini_tts_worker
-            else:
-                self.gemini_bg_worker._tts_worker = self.tts_worker
 
     @QtCore.Slot()
     def on_start_clicked(self) -> None:
@@ -2686,11 +2680,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_text("停止推論")
             self.is_inference_running = False
             self._stop_remote_client_ram_monitor()
-            self._tts_last_priority = 5
-            self._pending_tts_transition = ""
             self._last_tts_raw_text = ""
             self._last_tts_emit_ts = 0.0
             self._tts_protect_until = 0.0
+            self._tts_protected_priority = 5
             if hasattr(self, "_pending_segments"):
                 self._pending_segments.clear()
             self._pending_livecc_fragment = None
@@ -2873,15 +2866,6 @@ class MainWindow(QtWidgets.QMainWindow):
         overlap = len(new_words & last_words) / min(len(new_words), len(last_words))
         return overlap >= self._DEDUP_THRESHOLD
 
-    def _apply_tts_transition(self, tts_text: str, priority: int) -> str:
-        """Prepend any pending transition phrase and update _tts_last_priority."""
-        phrase = self._pending_tts_transition
-        self._pending_tts_transition = ""
-        self._tts_last_priority = priority
-        if phrase:
-            return f"{phrase} {tts_text}"
-        return tts_text
-
     @QtCore.Slot(float, float, str)
     def on_remote_segment(self, start_t: float, stop_t: float, text: str) -> None:
         """Dedicated slot for SocketClientRunner.signal_segment (Signal(float, float, str)).
@@ -2937,10 +2921,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"[Gemini] [{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P{priority}] {broadcast_text}",
             )
 
-        # Resolve priority for this segment (Gemini dict has it; fallback to 5)
+        # Resolve priority for this segment (Gemini dict has it; fallback to 5).
+        # Gemini-originated content (carries _enqueue_ts) is time-decayed and
+        # clamped against the active protection window — this only affects its
+        # own queue placement (_register_tts_priority), never an interrupt.
         seg_priority = 5
+        gemini_priority_jump = False
         if isinstance(data, dict):
             seg_priority = int(data.get("priority", 5))
+            enqueue_ts = data.get("_enqueue_ts")
+            if enqueue_ts is not None:
+                seg_priority = self._effective_gemini_priority(seg_priority, enqueue_ts)
+                gemini_priority_jump = seg_priority <= 2
+                self._register_tts_priority(seg_priority)
 
         # MatchTracker scoring — triggered by Gemini action_label
         if isinstance(data, dict) and "action_label" in data:
@@ -2956,10 +2949,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.mode != "file":
             if not self.is_inference_running:
                 return
-            interrupt_prefix = ""
-            if getattr(self, "_next_gemini_interrupt", False):
-                interrupt_prefix = "[⚡ INTERRUPT] "
-                self._next_gemini_interrupt = False
+            interrupt_prefix = "[⚡ PRIORITY] " if gemini_priority_jump else ""
             line = f"[{self._fmt_time(start_t)}] {interrupt_prefix}{display_text}"
             self._append_ui(line)
 
@@ -2972,7 +2962,6 @@ class MainWindow(QtWidgets.QMainWindow):
             now = time.time()
             self._last_tts_raw_text = tts_text
             self._last_tts_emit_ts = now
-            tts_text = self._apply_tts_transition(tts_text, seg_priority)
             if self.tts_mode == "openai":
                 self.signal_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
             elif self.tts_mode == "gemini":
@@ -2985,10 +2974,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not hasattr(self, "_pending_segments"):
             self._pending_segments = deque()
 
-        interrupt_prefix = ""
-        if getattr(self, "_next_gemini_interrupt", False):
-            interrupt_prefix = "[⚡ INTERRUPT] "
-            self._next_gemini_interrupt = False
+        interrupt_prefix = "[⚡ PRIORITY] " if gemini_priority_jump else ""
 
         if isinstance(data, dict) and data.get("_background"):
             # epoch start_t would wedge at the head of _pending_segments forever
@@ -2996,8 +2982,8 @@ class MainWindow(QtWidgets.QMainWindow):
             line = f"[{self._fmt_time(cur)}] {interrupt_prefix}{display_text}"
             self._append_ui(line)
         else:
-            # Tag segment with interrupt marker if _on_gemini_priority flagged one
-            seg_data = dict(data, _interrupt=True) if (interrupt_prefix and isinstance(data, dict)) else data
+            # Tag segment so the playback-time consumer can show the priority-jump marker
+            seg_data = dict(data, _priority_jump=True) if (gemini_priority_jump and isinstance(data, dict)) else data
             self._pending_segments.append((float(start_t), float(stop_t), seg_data))
 
         if not tts_text.strip():
@@ -3009,7 +2995,6 @@ class MainWindow(QtWidgets.QMainWindow):
         now = time.time()
         self._last_tts_raw_text = tts_text
         self._last_tts_emit_ts = now
-        tts_text = self._apply_tts_transition(tts_text, seg_priority)
         if self.tts_mode == "openai":
             self.signal_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
         elif self.tts_mode == "gemini":

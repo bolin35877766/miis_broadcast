@@ -381,13 +381,6 @@ class LiveCCInfer:
             self._build_number_bad_words() if self.suppress_numbers else None
         )
 
-        # Right/left half crop applied to every clip before inference (split-screen input).
-        # "right" keeps the first-person VR game view; left half (real person in a room) is OOD.
-        self.input_crop: str = str(cfg.get("input_crop", "none")).strip().lower()
-
-        # File path resizes the full frame to max_pixels BEFORE the in-model crop, so when
-        # cropping a half-frame raise this (~2x) to keep the kept half at full resolution —
-        # low-res crops make the model collapse into reading jersey/scoreboard numbers.
         self.max_pixels: int = int(cfg.get("max_pixels", 384 * 28 * 28))
 
     def _build_number_bad_words(self) -> List[List[int]]:
@@ -398,23 +391,6 @@ class LiveCCInfer:
             if s and all(c.isdigit() for c in s):
                 bad.append([int(tid)])
         return bad
-
-    def _apply_input_crop(self, frames: Any) -> Any:
-        """Keep only the right/left half of each frame. clip is TCHW tensor (file path);
-        camera frames are THWC numpy. Drops the OOD left-half real-person recording."""
-        if self.input_crop not in ("right", "left"):
-            return frames
-        if torch.is_tensor(frames):
-            w = int(frames.shape[-1]); half = w // 2
-            if half <= 0:
-                return frames
-            return frames[..., half:] if self.input_crop == "right" else frames[..., :half]
-        if isinstance(frames, np.ndarray) and frames.ndim == 4:
-            w = int(frames.shape[2]); half = w // 2
-            if half <= 0:
-                return frames
-            return frames[:, :, half:, :] if self.input_crop == "right" else frames[:, :, :half, :]
-        return frames
 
     def _pad_token_id_for_generate(self) -> int:
         """Avoid pad_token_id=None, which can destabilize HF generate on some Qwen2 builds."""
@@ -699,9 +675,6 @@ class LiveCCInfer:
             interleave_timestamps.extend(list(clip_timestamps.split(self.streaming_fps_frames)))
 
         for clip_part, ts_part in zip(interleave_clips, interleave_timestamps):
-            # File path crops via ffmpeg upstream (worker/test) — cropping the reader's
-            # already-downscaled clip here yields a low-res half that collapses into
-            # number-reading. Camera path crops numpy frames pre-resize (see _apply_input_crop).
             start_timestamp = ts_part[0].item()
             stop_timestamp = ts_part[-1].item() + self.frame_time_interval
 
@@ -817,7 +790,7 @@ class LiveCCInfer:
         if num_frames == 0:
             return
 
-        frames = self._apply_input_crop(clip.frames)
+        frames = clip.frames
 
         duration = num_frames / max(clip.fps, 1e-6)
         start_timestamp = float(clip.t_start)
