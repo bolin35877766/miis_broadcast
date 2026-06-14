@@ -1050,7 +1050,6 @@ class MainWindow(QtWidgets.QMainWindow):
     signal_local_tts_stop = QtCore.Signal()
     signal_gemini_tts_speak = QtCore.Signal(str, int, float, float)
     signal_gemini_tts_interrupt = QtCore.Signal()
-    signal_gemini_tts_soft_interrupt = QtCore.Signal()
     signal_gemini_tts_stop = QtCore.Signal()
     _signal_to_gemini = QtCore.Signal(float, float, object)
     # Fires when Gemini confirms a P1 event — used to reset LiveCC KV cache
@@ -1551,6 +1550,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _PRIORITY_DECAY_INTERVAL_SEC = 2.0          # every N sec of staleness, priority worsens by 1
     _TTS_PROTECT_WINDOW_SEC = {1: 6.0, 2: 3.0}  # after sending P1/P2, shield queue position this long
     _FAST_BLADE_DEDUP_WINDOW_S = 5.0            # suppress repeated P1/P2 triggers for the same event
+    _GEMINI_P1_FILLER = "等等！"                 # instant zh-TW cue after hard interrupt (avoids silence gap)
     _P3_BACKPRESSURE_WATERMARK_SEC = 2.0        # only feed GeminiWorker while TTS backlog is below this
 
     @QtCore.Slot(float, float, int, bool)
@@ -1623,6 +1623,25 @@ class MainWindow(QtWidgets.QMainWindow):
         if not data.get("broadcast_text"):
             return False
         return bool(data.get("should_speak", True)) or bool(data.get("_background"))
+
+    def _emit_gemini_tts_speak(
+        self,
+        text: str,
+        priority: int,
+        ref_ts: float,
+        start_t: float,
+        *,
+        cut_current: bool = False,
+    ) -> None:
+        """Enqueue Gemini TTS; optionally hard-cut current audio first (P1 real line)."""
+        if cut_current and priority <= 1:
+            already_p1 = (
+                time.time() < self._tts_protect_until
+                and self._tts_protected_priority == 1
+            )
+            if not already_p1:
+                self.signal_gemini_tts_interrupt.emit()
+        self.signal_gemini_tts_speak.emit(text, priority, ref_ts, start_t)
 
     def _fast_blade_gemini_event(self, raw: str, data: object) -> dict:
         if isinstance(data, dict):
@@ -1700,22 +1719,20 @@ class MainWindow(QtWidgets.QMainWindow):
                 # protection window), let it finish — queue this one behind it
                 # instead of cutting it off mid-sentence.
                 already_p1 = time.time() < self._tts_protect_until and self._tts_protected_priority == 1
-                # Gemini: soft interrupt (drop pending queue, keep current audio) — hard cut
-                # would leave 2–4s silence while broadcaster+TTS regenerate. OpenAI/local
-                # realtime TTS still hard-interrupt.
                 if not already_p1:
                     if self.tts_mode == "openai":
                         self.signal_tts_interrupt.emit()
                     elif self.tts_mode == "gemini":
-                        self.signal_gemini_tts_soft_interrupt.emit()
+                        self.signal_gemini_tts_interrupt.emit()
+                        if tts_remaining > 0.0:
+                            self.signal_gemini_tts_speak.emit(
+                                self._GEMINI_P1_FILLER, 1, time.time(), start_t
+                            )
                     elif self.tts_mode == "local":
                         self.signal_local_tts_interrupt.emit()
                 if tts_text:
-                    self._post_p1_pending = True
                     label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
                     if self.tts_mode == "gemini":
-                        # Gemini TTS is read-aloud only — route through GeminiBroadcaster
-                        # for zh-TW broadcast_text instead of speaking raw LiveCC English.
                         gem_event = self._fast_blade_gemini_event(raw, data)
                         if not already_p1 and hasattr(self, "gemini_worker"):
                             self.gemini_worker.flush_and_abort()
@@ -1725,6 +1742,7 @@ class MainWindow(QtWidgets.QMainWindow):
                             f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} …"
                         )
                     else:
+                        self._post_p1_pending = True
                         self._last_tts_raw_text = tts_text
                         self._last_tts_emit_ts = time.time()
                         spoken_text = tts_text
@@ -2054,7 +2072,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.gemini_tts_thread.started.connect(self.gemini_tts_worker.start)
             self.signal_gemini_tts_speak.connect(self.gemini_tts_worker.speak, QtCore.Qt.QueuedConnection)
             self.signal_gemini_tts_interrupt.connect(self.gemini_tts_worker.interrupt, QtCore.Qt.QueuedConnection)
-            self.signal_gemini_tts_soft_interrupt.connect(self.gemini_tts_worker.soft_interrupt, QtCore.Qt.QueuedConnection)
             self.signal_gemini_tts_stop.connect(self.gemini_tts_worker.stop, QtCore.Qt.QueuedConnection)
             # gemini_tts_thread.start() is called lazily in _on_tts_mode_changed()
 
@@ -3121,7 +3138,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.tts_mode == "openai":
                 self.signal_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
             elif self.tts_mode == "gemini":
-                self.signal_gemini_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
+                if seg_priority <= 1:
+                    self._post_p1_pending = True
+                self._emit_gemini_tts_speak(
+                    tts_text, seg_priority, ref_ts, start_t, cut_current=(seg_priority <= 1)
+                )
             elif self.tts_mode == "local":
                 self.signal_local_tts_speak.emit(tts_text)
             return
@@ -3156,7 +3177,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.tts_mode == "openai":
             self.signal_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
         elif self.tts_mode == "gemini":
-            self.signal_gemini_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
+            if seg_priority <= 1:
+                self._post_p1_pending = True
+            self._emit_gemini_tts_speak(
+                tts_text, seg_priority, ref_ts, start_t, cut_current=(seg_priority <= 1)
+            )
         elif self.tts_mode == "local":
             self.signal_local_tts_speak.emit(tts_text)
 
