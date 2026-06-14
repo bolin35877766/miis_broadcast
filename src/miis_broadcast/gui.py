@@ -1610,6 +1610,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 return 2
         return 3
 
+    @staticmethod
+    def _livecc_event_dict(raw: str) -> dict:
+        """Normalize a LiveCC caption into the dict shape GeminiBroadcaster expects."""
+        return {"metadata": {"raw": raw}, "event": "raw_description"}
+
+    def _gemini_tts_allowed(self, data: object) -> bool:
+        """Gemini TTS only speaks Gemini broadcast_text (zh-TW), never raw LiveCC."""
+        if not isinstance(data, dict):
+            return False
+        if not data.get("broadcast_text"):
+            return False
+        return bool(data.get("should_speak", True)) or bool(data.get("_background"))
+
+    def _fast_blade_gemini_event(self, raw: str, data: object) -> dict:
+        if isinstance(data, dict):
+            return data
+        return self._livecc_event_dict(raw)
+
     @QtCore.Slot(float, float, object)
     def _route_segment(self, start_t: float, stop_t: float, data: object) -> None:
         """Fast-slow blade routing: P1/P2 direct-to-TTS, P3 → context pool."""
@@ -1690,20 +1708,33 @@ class MainWindow(QtWidgets.QMainWindow):
                         self.signal_local_tts_interrupt.emit()
                 if tts_text:
                     self._post_p1_pending = True
-                    self._last_tts_raw_text = tts_text
-                    self._last_tts_emit_ts = time.time()
-                    # Prepend "Oh wait!" only when actually cutting off something mid-speech
-                    spoken_text = tts_text
-                    if tts_remaining > 0.0 and not already_p1:
-                        spoken_text = "Oh wait! " + tts_text
-                    self._register_tts_priority(1)
-                    if self.tts_mode == "gemini":
-                        self.signal_gemini_tts_speak.emit(spoken_text, 1, time.time(), start_t)
-                    else:
-                        self.signal_tts_speak.emit(spoken_text, 1, time.time(), start_t)
                     label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
-                    self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} {spoken_text}")
-                    self._write_log(self.combination_log_file, f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {spoken_text}")
+                    if self.tts_mode == "gemini":
+                        # Gemini TTS is read-aloud only — route through GeminiBroadcaster
+                        # for zh-TW broadcast_text instead of speaking raw LiveCC English.
+                        gem_event = self._fast_blade_gemini_event(raw, data)
+                        if not already_p1 and hasattr(self, "gemini_worker"):
+                            self.gemini_worker.flush_and_abort()
+                        if hasattr(self, "gemini_worker"):
+                            self.gemini_worker.enqueue_front(start_t, stop_t, gem_event)
+                        self._append_ui(
+                            f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} …"
+                        )
+                    else:
+                        self._last_tts_raw_text = tts_text
+                        self._last_tts_emit_ts = time.time()
+                        spoken_text = tts_text
+                        if tts_remaining > 0.0 and not already_p1:
+                            spoken_text = "Oh wait! " + tts_text
+                        self._register_tts_priority(1)
+                        self.signal_tts_speak.emit(spoken_text, 1, time.time(), start_t)
+                        self._append_ui(
+                            f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} {spoken_text}"
+                        )
+                        self._write_log(
+                            self.combination_log_file,
+                            f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {spoken_text}",
+                        )
             self.signal_p1_confirmed.emit()
 
         elif fast_priority == 2:
@@ -1712,15 +1743,25 @@ class MainWindow(QtWidgets.QMainWindow):
             if tts_text and self._is_duplicate_tts(tts_text, window=self._FAST_BLADE_DEDUP_WINDOW_S):
                 logging.info("[FastBlade] P2 duplicate suppressed: %r", tts_text[:80])
             elif tts_text:
-                self._register_tts_priority(2)
-                self._last_tts_raw_text = tts_text
-                self._last_tts_emit_ts = time.time()
                 if self.tts_mode == "gemini":
-                    self.signal_gemini_tts_speak.emit(tts_text, 2, time.time(), start_t)
+                    gem_event = self._fast_blade_gemini_event(raw, data)
+                    if hasattr(self, "gemini_worker"):
+                        self.gemini_worker.enqueue_front(start_t, stop_t, gem_event)
+                    self._append_ui(
+                        f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P2] …"
+                    )
                 else:
+                    self._register_tts_priority(2)
+                    self._last_tts_raw_text = tts_text
+                    self._last_tts_emit_ts = time.time()
                     self.signal_tts_speak.emit(tts_text, 2, time.time(), start_t)
-                self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P2] {tts_text}")
-                self._write_log(self.combination_log_file, f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {tts_text}")
+                    self._append_ui(
+                        f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P2] {tts_text}"
+                    )
+                    self._write_log(
+                        self.combination_log_file,
+                        f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {tts_text}",
+                    )
 
         else:
             # P3: feed into GeminiWorker for direct commentary + update context pool.
@@ -2941,7 +2982,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "session_logger"):
             self.session_logger.log_commentary(text)
         try:
-            self._on_segment_impl(start_t, stop_t, text)
+            # Same Fast-Slow Blade path as local LiveCC — never send raw English
+            # captions directly to Gemini TTS (only Gemini broadcast_text is spoken).
+            self._route_segment(start_t, stop_t, self._livecc_event_dict(text))
         except Exception:
             logging.exception("[on_remote_segment] unhandled exception")
 
@@ -3055,6 +3098,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             if tts_text.strip().lower() == "silence":
                 return  # model silence sentinel — skip TTS
+            if self.tts_mode == "gemini" and not self._gemini_tts_allowed(data):
+                return
             if self._is_duplicate_tts(tts_text):
                 return
             now = time.time()
@@ -3088,6 +3133,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if tts_text.strip().lower() == "silence":
             return  # model silence sentinel — skip TTS
+        if self.tts_mode == "gemini" and not self._gemini_tts_allowed(data):
+            return
         if self._is_duplicate_tts(tts_text):
             return
         now = time.time()
