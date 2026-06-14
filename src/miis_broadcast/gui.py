@@ -1554,6 +1554,32 @@ class MainWindow(QtWidgets.QMainWindow):
     _GEMINI_P1_FILLER = _GEMINI_DEFAULT_FILLER  # instant zh-TW cue after hard interrupt (avoids silence gap)
     _P3_BACKPRESSURE_WATERMARK_SEC = 2.0        # only feed GeminiWorker while TTS backlog is below this
 
+    def _format_segment_ui_line(self, start_t: float, stop_t: float, tag: str, body: str) -> str:
+        """Build one timestamped UI line with an explicit source tag."""
+        return f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {tag} {body}"
+
+    @staticmethod
+    def _preview_text(text: str, limit: int = 72) -> str:
+        text = (text or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "…"
+
+    def _gemini_ui_display(self, data: dict) -> str:
+        """Human-readable Gemini line — distinct from LiveCC / interrupt filler."""
+        priority = data.get("priority", "?")
+        broadcast = (data.get("broadcast_text") or "").strip()
+        if data.get("_background"):
+            return f"[Gemini·BG] [P{priority}] {broadcast}"
+        return f"[Gemini→TTS] [P{priority}] {broadcast}"
+
+    def _segment_ui_body(self, data: object, display_text: str, *, priority_jump: bool = False) -> str:
+        """Map segment payload to a clearly labelled UI string."""
+        if isinstance(data, dict) and data.get("broadcast_text"):
+            return self._gemini_ui_display(data)
+        prefix = "[⚡ PRIORITY] " if priority_jump else ""
+        return f"{prefix}{display_text}"
+
     @QtCore.Slot(float, float, int, bool)
     def _on_gemini_priority(self, start_t: float, stop_t: float, priority: int, should_speak: bool) -> None:
         """
@@ -1733,18 +1759,27 @@ class MainWindow(QtWidgets.QMainWindow):
                     elif self.tts_mode == "local":
                         self.signal_local_tts_interrupt.emit()
                 if tts_text:
-                    label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
                     if self.tts_mode == "gemini":
                         gem_event = self._fast_blade_gemini_event(raw, data)
                         if not already_p1 and hasattr(self, "gemini_worker"):
                             self.gemini_worker.flush_and_abort()
                         if hasattr(self, "gemini_worker"):
                             self.gemini_worker.enqueue_front(start_t, stop_t, gem_event)
-                        self._append_ui(
-                            f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} …"
-                        )
+                        livecc_preview = self._preview_text(raw)
+                        if already_p1:
+                            ui_line = self._format_segment_ui_line(
+                                start_t, stop_t, "[LiveCC·排隊]",
+                                livecc_preview,
+                            )
+                        else:
+                            ui_line = self._format_segment_ui_line(
+                                start_t, stop_t, "[LiveCC→INT]",
+                                f"{livecc_preview}  （口播「{self._GEMINI_P1_FILLER}」→ 等 Gemini 中文稿）",
+                            )
+                        self._append_ui(ui_line)
                     else:
                         self._post_p1_pending = True
+                        label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
                         self._last_tts_raw_text = tts_text
                         self._last_tts_emit_ts = time.time()
                         spoken_text = tts_text
@@ -1772,7 +1807,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     if hasattr(self, "gemini_worker"):
                         self.gemini_worker.enqueue_front(start_t, stop_t, gem_event)
                     self._append_ui(
-                        f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P2] …"
+                        self._format_segment_ui_line(
+                            start_t, stop_t, "[LiveCC→P2]",
+                            f"{self._preview_text(raw)}  （等 Gemini 中文稿）",
+                        )
                     )
                 else:
                     self._register_tts_priority(2)
@@ -2115,8 +2153,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if not display_text.strip():
                 continue
 
-            interrupt_label = "[⚡ PRIORITY] " if (isinstance(data, dict) and data.get("_priority_jump")) else ""
-            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {interrupt_label}{display_text}"
+            ui_body = self._segment_ui_body(
+                data, display_text,
+                priority_jump=isinstance(data, dict) and bool(data.get("_priority_jump")),
+            )
+            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {ui_body}"
             self._append_ui(line)
 
         while len(self._pending_segments) > self._MAX_PENDING:
@@ -3122,8 +3163,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.mode != "file":
             if not self.is_inference_running:
                 return
-            interrupt_prefix = "[⚡ PRIORITY] " if gemini_priority_jump else ""
-            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {interrupt_prefix}{display_text}"
+            ui_body = self._segment_ui_body(data, display_text, priority_jump=gemini_priority_jump)
+            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {ui_body}"
             self._append_ui(line)
 
             if not tts_text.strip():
@@ -3154,12 +3195,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not hasattr(self, "_pending_segments"):
             self._pending_segments = deque()
 
-        interrupt_prefix = "[⚡ PRIORITY] " if gemini_priority_jump else ""
-
         if isinstance(data, dict) and data.get("_background"):
             # epoch start_t would wedge at the head of _pending_segments forever
             cur = float(getattr(self, "_playback_sec", 0.0))
-            line = f"[{self._fmt_time(cur)}-{self._fmt_time(cur)}] {interrupt_prefix}{display_text}"
+            ui_body = self._segment_ui_body(data, display_text, priority_jump=gemini_priority_jump)
+            line = f"[{self._fmt_time(cur)}-{self._fmt_time(cur)}] {ui_body}"
             self._append_ui(line)
         else:
             # Tag segment so the playback-time consumer can show the priority-jump marker
