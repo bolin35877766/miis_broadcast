@@ -26,8 +26,8 @@ gemini_tts:
 gemini:
   model_name: gemini-3.1-flash-lite-preview
   rag_threshold: 600
-  temperature: 0.4
-  max_output_tokens: 50
+  temperature: 0.7
+  max_output_tokens: 120
   # Solo VR / practice footage has no team match — keep false unless broadcasting
   # a real red-vs-blue game with MatchTracker score events.
   inject_match_state: false

@@ -1699,16 +1699,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 # protection window), let it finish — queue this one behind it
                 # instead of cutting it off mid-sentence.
                 already_p1 = time.time() < self._tts_protect_until and self._tts_protected_priority == 1
-                if not already_p1:
+                # Gemini path regenerates through two API stages (broadcaster + TTS),
+                # so a hard audio interrupt would leave a multi-second silence gap
+                # before the new line is ready. For Gemini we let the current
+                # utterance finish and only replace the pending queue (drop_outdated
+                # at enqueue time) — flush_and_abort still drops stale broadcaster
+                # work. OpenAI/local realtime TTS can cut in instantly, so they
+                # still hard-interrupt.
+                if not already_p1 and self.tts_mode != "gemini":
                     if self.tts_mode == "openai":
                         self.signal_tts_interrupt.emit()
-                    elif self.tts_mode == "gemini":
-                        self.signal_gemini_tts_interrupt.emit()
                     elif self.tts_mode == "local":
                         self.signal_local_tts_interrupt.emit()
                 if tts_text:
                     self._post_p1_pending = True
-                    label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
+                    if self.tts_mode == "gemini":
+                        label = "[P1]"  # Gemini queues behind current audio, no hard cut
+                    else:
+                        label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
                     if self.tts_mode == "gemini":
                         # Gemini TTS is read-aloud only — route through GeminiBroadcaster
                         # for zh-TW broadcast_text instead of speaking raw LiveCC English.
