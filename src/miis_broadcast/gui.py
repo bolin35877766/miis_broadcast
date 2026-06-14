@@ -2851,6 +2851,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
             self._flush_local_inference_telemetry_summary(obs_tracker_for_avg)
 
+            # Session latency summary (same as worker.stop() on window close)
+            if self.tts_mode == "openai":
+                from .core.models.openai_tts import print_tts_stats as _print_tts_stats
+                _print_tts_stats()
+            elif self.tts_mode == "gemini":
+                from .core.models.gemini_tts import print_tts_stats as _print_tts_stats
+                _print_tts_stats()
+
             # Stop audio recording and clear recording sinks
             from .core.models import openai_tts as _oai_tts_mod
             from .core.models import gemini_tts as _gem_tts_mod

@@ -120,10 +120,11 @@ def print_tts_stats() -> None:
     _perf_stats["current_start_t"] = 0.0
 
 
-def _bind_utterance_perf_stats(ref_ts: float, start_t: float, gen_start_ts: float) -> None:
-    """Attach latency anchors for the utterance about to play (first-chunk stats)."""
-    _perf_stats["last_text_sent_ts"] = gen_start_ts
-    _perf_stats["current_ref_ts"] = ref_ts if ref_ts > 0 else 0.0
+def _mark_utterance_sent(ref_ts: float, start_t: float, sent_ts: float | None = None) -> None:
+    """Mirror openai_tts: mark anchors when text enters the TTS API."""
+    ts = ref_ts if ref_ts > 0 else time.time()
+    _perf_stats["last_text_sent_ts"] = sent_ts if sent_ts is not None else time.time()
+    _perf_stats["current_ref_ts"] = ts
     _perf_stats["current_start_t"] = start_t
 
 
@@ -559,16 +560,17 @@ def _gemini_tts_worker() -> None:
 
         try:
             if future is None:
-                gen_start_ts = time.time()
-                _bind_utterance_perf_stats(ref_ts, start_t, gen_start_ts)
+                _mark_utterance_sent(ref_ts, start_t)
                 audio_bytes, sample_rate = _generate_audio(client, cfg, text)
             else:
+                # Prefetch started the API call earlier — anchor TTS latency there.
+                _mark_utterance_sent(ref_ts, start_t, gen_start_ts)
                 audio_bytes, sample_rate = future.result()
-                _bind_utterance_perf_stats(ref_ts, start_t, gen_start_ts)
 
             # Check interrupt immediately after the (blocking or prefetched) call returns
             if _interrupt_event.is_set():
                 _perf_stats["last_text_sent_ts"] = 0.0
+                _perf_stats["current_ref_ts"] = 0.0
                 _interrupt_event.clear()
                 interrupted = True
             else:
@@ -596,6 +598,7 @@ def _gemini_tts_worker() -> None:
                 interrupted = _play_pcm(audio_bytes, sample_rate)
                 if interrupted:
                     _perf_stats["last_text_sent_ts"] = 0.0
+                    _perf_stats["current_ref_ts"] = 0.0
                     _interrupt_event.clear()
 
         except Exception as e:
@@ -656,11 +659,14 @@ def enqueue_tts_text(
         # Routine commentary: bounded FIFO so continuous broadcast doesn't
         # silently lose every item to the next arrival before it's spoken.
         _trim_text_queue(_MAX_QUEUE_DEPTH)
-    _text_queue.put((text, ref_ts, start_t))
+    # ref_ts=0 means caller did not attach a vision timestamp; use wall clock
+    ts = ref_ts if ref_ts > 0 else time.time()
+    _text_queue.put((text, ts, start_t))
 
 def interrupt_tts() -> None:
     """Hard interrupt: drop pending audio, flush audience buffers, clear pending text."""
     clear_text_queue()
     clear_audio_queue()
     _perf_stats["last_text_sent_ts"] = 0.0
+    _perf_stats["current_ref_ts"] = 0.0
     _interrupt_event.set()
