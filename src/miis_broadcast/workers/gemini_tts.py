@@ -18,6 +18,7 @@ from ..core.models.gemini_tts import (
     interrupt_tts,
     set_tts_voice,
     set_natural_completion_callback,
+    print_tts_stats,
 )
 
 
@@ -96,4 +97,5 @@ class GeminiTTSWorker(QtCore.QObject):
     @QtCore.Slot()
     def stop(self) -> None:
         stop_tts_system()
+        print_tts_stats()
         self._started = False

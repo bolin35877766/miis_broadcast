@@ -2064,6 +2064,10 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = self.control_panel.get_tts_mode() if hasattr(self, "control_panel") else None
         if mode == "gemini" and not self.gemini_tts_thread.isRunning():
             self.gemini_tts_thread.start()
+        self.tts_mode = mode or getattr(self, "tts_mode", "none")
+        if self._audience_publisher is not None:
+            self._clear_all_pcm_sinks()
+            self._register_audience_pcm_sink()
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
@@ -2432,10 +2436,38 @@ class MainWindow(QtWidgets.QMainWindow):
         if pub is not None:
             pub.push_video_frame(frame_rgb)
 
+    def _clear_all_pcm_sinks(self) -> None:
+        """Clear audience PCM sinks on every TTS backend that supports them."""
+        from .core.models import openai_tts as _oai_tts_mod
+        from .core.models import gemini_tts as _gem_tts_mod
+        _oai_tts_mod.register_pcm_sink(None, mute_local=False)
+        _gem_tts_mod.register_pcm_sink(None, mute_local=False)
+
+    def _audience_pcm_tts_module(self):
+        """Core TTS module for the active dropdown mode (OpenAI or Gemini only)."""
+        mode = getattr(self, "tts_mode", "none")
+        if mode == "openai":
+            from .core.models import openai_tts as mod
+            return mod
+        if mode == "gemini":
+            from .core.models import gemini_tts as mod
+            return mod
+        return None
+
+    def _register_audience_pcm_sink(self) -> None:
+        """Route TTS PCM to LiveKit for the currently selected TTS engine."""
+        mod = self._audience_pcm_tts_module()
+        if mod is None or self._audience_publisher is None:
+            return
+        mod.register_pcm_sink(
+            self._audience_publisher.push_audio_chunk,
+            mute_local=True,
+            flush_callback=self._audience_publisher.flush_pending_audio,
+        )
+
     def _stop_audience_publisher_only(self) -> None:
         """Tear down LiveKit publisher + TTS sink; keep HTTP token server running."""
-        from .core.models import openai_tts as _tts_mod
-        _tts_mod.register_pcm_sink(None, mute_local=False)
+        self._clear_all_pcm_sinks()
         if self._audience_publisher is not None:
             try:
                 if self.free_switch_thread is not None:
@@ -2461,8 +2493,6 @@ class MainWindow(QtWidgets.QMainWindow):
         api_secret = audience_cfg.get("api_secret", "devsecret")
         room_name = audience_cfg.get("room", "broadcast-room")
 
-        from .core.models import openai_tts as _tts_mod
-
         self._audience_publisher = AudiencePublisher(
             lk_url, api_key, api_secret, room_name
         )
@@ -2475,11 +2505,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtCore.Qt.QueuedConnection,
             )
 
-        _tts_mod.register_pcm_sink(
-            self._audience_publisher.push_audio_chunk,
-            mute_local=True,
-            flush_callback=self._audience_publisher.flush_pending_audio,
-        )
+        self._register_audience_pcm_sink()
 
     def _stop_audience_services(self) -> None:
         """Tear down publisher only (HTTP /audience stays up for the app lifetime)."""

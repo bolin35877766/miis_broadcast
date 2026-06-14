@@ -2,19 +2,19 @@
 # Ground-Truth Annotation for Collage Test Video
 # =============================================================================
 #
-# 填寫說明：
-#   video_id  : 隨意取名，用來識別這份 GT 對應哪支影片
-#   events    : 事件清單，每個事件一筆
+# Fields:
+#   video_id  : Identifier for this test video
+#   events    : List of annotated events
 #
-# 每個事件欄位：
-#   id            : 事件唯一 ID（英數字，方便 log 對照）
-#   label         : 人類可讀的事件名稱
-#   t_start       : 事件在影片中的開始時間（秒）
-#   t_end         : 事件在影片中的結束時間（秒）
-#   keywords      : 「結果」同義詞（命中其中任一個即算語意通過）
-#                   - 只列結果詞（得分 / 沒進），不要列「投籃」「出手」「運球」
-#                     （那些只代表動作，無法區分進或沒進）
-#                   - 若設為空清單 []，語意部分永遠算「通過」
+# Per event:
+#   id        : Unique event ID (alphanumeric)
+#   label     : Human-readable event description
+#   t_start   : Event start time in the video (seconds)
+#   t_end     : Event end time in the video (seconds)
+#   keywords  : Outcome synonyms (semantic hit if ANY one appears in broadcast text)
+#               - List result words only (score / miss), NOT action words
+#                 like "shot" or "shoots" (those do not distinguish make vs miss)
+#               - Empty list [] always passes semantic check
 #
 # =============================================================================
 
@@ -22,119 +22,157 @@ video_id: test
 
 events:
 
-  # ─── 正常播報事件 ───────────────────────────────────────────────
+  # ─── Broadcast events ─────────────────────────────────────────
 
   - id: evt_01
-    label: "選手投籃沒進"
+    label: "Player shot missed"
     t_start: 0.0
     t_end: 3.0
     keywords:
-      - "沒進"
-      - "未進"
-      - "沒中"
-      - "未中"
-      - "打鐵"
-      - "鐵框"
-      - "彈框"
+      - "miss"
+      - "missed"
+      - "misses"
+      - "no good"
+      - "off the rim"
+      - "rattles"
+      - "clanks"
+      - "brick"
+      - "airball"
+      - "bounces out"
+      - "bounces away"
 
   - id: evt_02
-    label: "選手投籃得分"
+    label: "Player shot scored"
     t_start: 3.0
     t_end: 6.0
     keywords:
-      - "得分"
-      - "進球"
-      - "命中"
-      - "投進"
-      - "進了"
-      - "穿網"
+      - "score"
+      - "scores"
+      - "scored"
+      - "bucket"
+      - "buckets"
+      - "swish"
+      - "goes in"
+      - "drops in"
+      - "makes it"
+      - "good shot"
+      - "count it"
 
   - id: evt_03
-    label: "選手運球，籃球投籃得分"
+    label: "Player dribbles, shot scored"
     t_start: 6.9
     t_end: 10.0
     keywords:
-      - "得分"
-      - "進球"
-      - "命中"
-      - "投進"
-      - "進了"
-      - "穿網"
+      - "score"
+      - "scores"
+      - "scored"
+      - "bucket"
+      - "buckets"
+      - "swish"
+      - "goes in"
+      - "drops in"
+      - "makes it"
+      - "good shot"
+      - "count it"
 
   - id: evt_04
-    label: "選手運球，籃球投籃沒進"
+    label: "Player dribbles, shot missed"
     t_start: 10.0
     t_end: 14.0
     keywords:
-      - "沒進"
-      - "未進"
-      - "沒中"
-      - "未中"
-      - "打鐵"
-      - "鐵框"
-      - "彈框"
+      - "miss"
+      - "missed"
+      - "misses"
+      - "no good"
+      - "off the rim"
+      - "rattles"
+      - "clanks"
+      - "brick"
+      - "airball"
+      - "bounces out"
+      - "bounces away"
 
   - id: evt_05
-    label: "選手運球，籃球投籃沒進"
+    label: "Player dribbles, shot missed"
     t_start: 14.0
     t_end: 18.0
     keywords:
-      - "沒進"
-      - "未進"
-      - "沒中"
-      - "未中"
-      - "打鐵"
-      - "鐵框"
-      - "彈框"
+      - "miss"
+      - "missed"
+      - "misses"
+      - "no good"
+      - "off the rim"
+      - "rattles"
+      - "clanks"
+      - "brick"
+      - "airball"
+      - "bounces out"
+      - "bounces away"
 
   - id: evt_06
-    label: "選手運球，籃球投籃沒進"
+    label: "Player dribbles, shot missed"
     t_start: 18.0
     t_end: 22.0
     keywords:
-      - "沒進"
-      - "未進"
-      - "沒中"
-      - "未中"
-      - "打鐵"
-      - "鐵框"
-      - "彈框"
-      - "麵包"
+      - "miss"
+      - "missed"
+      - "misses"
+      - "no good"
+      - "off the rim"
+      - "rattles"
+      - "clanks"
+      - "brick"
+      - "airball"
+      - "bounces out"
+      - "bounces away"
 
   - id: evt_07
-    label: "選手投籃沒進"
+    label: "Player shot missed"
     t_start: 22.0
     t_end: 26.0
     keywords:
-      - "沒進"
-      - "未進"
-      - "沒中"
-      - "未中"
-      - "打鐵"
-      - "鐵框"
-      - "彈框"
-      - "麵包"
+      - "miss"
+      - "missed"
+      - "misses"
+      - "no good"
+      - "off the rim"
+      - "rattles"
+      - "clanks"
+      - "brick"
+      - "airball"
+      - "bounces out"
+      - "bounces away"
 
   - id: evt_08
-    label: "選手投籃得分"
+    label: "Player shot scored"
     t_start: 26.0
     t_end: 30.0
     keywords:
-      - "得分"
-      - "進球"
-      - "命中"
-      - "投進"
-      - "進了"
-      - "穿網"
+      - "score"
+      - "scores"
+      - "scored"
+      - "bucket"
+      - "buckets"
+      - "swish"
+      - "goes in"
+      - "drops in"
+      - "makes it"
+      - "good shot"
+      - "count it"
 
   - id: evt_09
-    label: "選手投籃得分"
+    label: "Player shot scored"
     t_start: 30.0
     t_end: 35.0
     keywords:
-      - "得分"
-      - "進球"
-      - "命中"
-      - "投進"
-      - "進了"
-      - "穿網"
+      - "score"
+      - "scores"
+      - "scored"
+      - "bucket"
+      - "buckets"
+      - "swish"
+      - "goes in"
+      - "drops in"
+      - "makes it"
+      - "good shot"
+      - "count it"
