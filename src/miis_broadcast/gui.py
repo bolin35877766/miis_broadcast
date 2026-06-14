@@ -3176,7 +3176,12 @@ class MainWindow(QtWidgets.QMainWindow):
             if not self.is_inference_running:
                 return
             ui_body = self._segment_ui_body(data, display_text, priority_jump=gemini_priority_jump)
-            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {ui_body}"
+            # Background Gemini uses wall-clock epoch for start_t — show stream timeline instead.
+            if isinstance(data, dict) and data.get("_background"):
+                cur = self._video_playback_sec_for_log()
+                line = f"[{self._fmt_time(cur)}-{self._fmt_time(cur)}] {ui_body}"
+            else:
+                line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {ui_body}"
             self._append_ui(line)
 
             if not tts_text.strip():
