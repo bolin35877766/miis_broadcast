@@ -1103,6 +1103,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_tts_emit_ts: float = 0.0    # wall-clock time of last TTS emit (dedup)
         self._tts_protect_until: float = 0.0   # wall-clock deadline: block lower-priority below this time
         self._tts_protected_priority: int = 5  # priority being protected until _tts_protect_until
+        self._p1_filler_armed: bool = False    # True while zh-TW filler is playing (safe to hard-cut)
         self._post_p1_pending: bool = False     # True while waiting for 1.0s post-P1 silence
         self._pending_livecc_fragment: Optional[tuple] = None  # truncated "..." fragment awaiting stitching
         self._livecc_start_wall: float = 0.0   # wall-clock anchor for file-mode "frame appeared" latency (== LiveCC inference start)
@@ -1610,7 +1611,24 @@ class MainWindow(QtWidgets.QMainWindow):
         window = self._TTS_PROTECT_WINDOW_SEC.get(priority)
         if window:
             self._tts_protected_priority = priority
-            self._tts_protect_until = time.time() + window
+            extra = self._get_active_tts_remaining_sec() if priority == 1 else 0.0
+            self._tts_protect_until = time.time() + window + extra
+
+    def _is_p1_audio_active(self) -> bool:
+        """True while P1 filler or broadcast is playing — block another P1 interrupt."""
+        if self._p1_filler_armed:
+            return True
+        if time.time() < self._tts_protect_until and self._tts_protected_priority == 1:
+            return True
+        if self._tts_protected_priority == 1 and self._get_active_tts_remaining_sec() > 0.3:
+            return True
+        return False
+
+    def _should_hard_cut_for_p1(self) -> bool:
+        """Only hard-cut for P1 when replacing filler or non-P1 audio — never cut active P1."""
+        if self._p1_filler_armed:
+            return True
+        return not self._is_p1_audio_active()
 
     def _get_active_tts_remaining_sec(self) -> float:
         """Remaining queued playback time of whichever TTS engine is active.
@@ -1658,6 +1676,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Hard-cut current audio and play the zh-TW filler (same for OpenAI / Gemini TTS)."""
         if already_p1:
             return
+        self._p1_filler_armed = True
+        self._register_tts_priority(1)
         if self.tts_mode == "openai":
             self.signal_tts_interrupt.emit()
             self.signal_tts_speak.emit(self._GEMINI_P1_FILLER, 1, time.time(), start_t)
@@ -1705,12 +1725,9 @@ class MainWindow(QtWidgets.QMainWindow):
         cut_current: bool = False,
     ) -> None:
         if cut_current and priority <= 1:
-            already_p1 = (
-                time.time() < self._tts_protect_until
-                and self._tts_protected_priority == 1
-            )
-            if not already_p1:
+            if self._should_hard_cut_for_p1():
                 self.signal_tts_interrupt.emit()
+            self._p1_filler_armed = False
         self.signal_tts_speak.emit(text, priority, ref_ts, start_t)
 
     def _emit_gemini_tts_speak(
@@ -1722,14 +1739,11 @@ class MainWindow(QtWidgets.QMainWindow):
         *,
         cut_current: bool = False,
     ) -> None:
-        """Enqueue Gemini TTS; optionally hard-cut current audio first (P1 real line)."""
+        """Enqueue Gemini TTS; hard-cut only filler or non-P1 audio — never an active P1 line."""
         if cut_current and priority <= 1:
-            already_p1 = (
-                time.time() < self._tts_protect_until
-                and self._tts_protected_priority == 1
-            )
-            if not already_p1:
+            if self._should_hard_cut_for_p1():
                 self.signal_gemini_tts_interrupt.emit()
+            self._p1_filler_armed = False
         self.signal_gemini_tts_speak.emit(text, priority, ref_ts, start_t)
 
     def _fast_blade_gemini_event(self, raw: str, data: object) -> dict:
@@ -1801,7 +1815,7 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 if hasattr(self, "gemini_bg_worker"):
                     self.gemini_bg_worker.pause()
-                already_p1 = time.time() < self._tts_protect_until and self._tts_protected_priority == 1
+                already_p1 = self._is_p1_audio_active()
                 self._p1_hard_interrupt_with_filler(start_t, already_p1)
                 if tts_text:
                     self._fast_blade_enqueue_gemini(
@@ -3138,10 +3152,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if isinstance(data, dict):
             seg_priority = int(data.get("priority", 5))
             enqueue_ts = data.get("_enqueue_ts")
+            base_priority = seg_priority
             if enqueue_ts is not None:
                 seg_priority = self._effective_gemini_priority(seg_priority, enqueue_ts)
                 gemini_priority_jump = seg_priority <= 2
-                self._register_tts_priority(seg_priority)
+                self._register_tts_priority(base_priority)
 
         # MatchTracker scoring — only when dual-team match mode is enabled
         if isinstance(data, dict) and "action_label" in data:
