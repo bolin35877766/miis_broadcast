@@ -18,6 +18,7 @@ from .widgets.text_output import TextOutputWidget
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.gemini import GeminiWorker
 from .workers.openai_tts import OpenAITTSWorker
+from .core.models.gemini_tts import DEFAULT_FILLER as _GEMINI_DEFAULT_FILLER
 from .workers.obs_input import OBSCameraThread
 from .workers.camera_bytetrack import CameraByteTrackThread
 from .workers.dual_source import DualSourceCameraThread
@@ -138,9 +139,10 @@ class VideoThread(QtCore.QThread):
         if fps is None or fps <= 0:
             fps = 30.0
 
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.signal_video_loaded.emit(frame_count, fps)
         delay_sec = 1.0 / fps
-        frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        frame_idx = 0
         last_time = time.time()
 
         while not self._stop_requested:
@@ -1042,13 +1044,13 @@ class MainWindow(QtWidgets.QMainWindow):
     signal_tts_warmup = QtCore.Signal()
     signal_tts_stop = QtCore.Signal()
 
-    signal_tts_speak = QtCore.Signal(str, int, float, float)  # (text, priority, ref_ts, start_t)
+    signal_tts_speak = QtCore.Signal(str, int, float, float, float, object)  # text, pri, ref_ts, start_t, stop_t, log_meta
     signal_tts_interrupt = QtCore.Signal()
     signal_local_tts_apply_settings = QtCore.Signal(float, float) # exag, cfg
     signal_local_tts_speak = QtCore.Signal(str)
     signal_local_tts_interrupt = QtCore.Signal()
     signal_local_tts_stop = QtCore.Signal()
-    signal_gemini_tts_speak = QtCore.Signal(str, int, float, float)
+    signal_gemini_tts_speak = QtCore.Signal(str, int, float, float, float, object)
     signal_gemini_tts_interrupt = QtCore.Signal()
     signal_gemini_tts_stop = QtCore.Signal()
     _signal_to_gemini = QtCore.Signal(float, float, object)
@@ -1102,6 +1104,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_tts_emit_ts: float = 0.0    # wall-clock time of last TTS emit (dedup)
         self._tts_protect_until: float = 0.0   # wall-clock deadline: block lower-priority below this time
         self._tts_protected_priority: int = 5  # priority being protected until _tts_protect_until
+        self._p1_filler_armed: bool = False    # True while zh-TW filler is playing (safe to hard-cut)
         self._post_p1_pending: bool = False     # True while waiting for 1.0s post-P1 silence
         self._pending_livecc_fragment: Optional[tuple] = None  # truncated "..." fragment awaiting stitching
         self._livecc_start_wall: float = 0.0   # wall-clock anchor for file-mode "frame appeared" latency (== LiveCC inference start)
@@ -1147,6 +1150,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
 
         self._playback_sec: float = 0.0
+        self._broadcast_playback_sec: float = 0.0  # timeline sec since admin Start
+        self._broadcast_start_wall: float = 0.0    # wall-clock anchor at admin Start (all modes)
         self._pending_segments = deque()  # items: (start_t, stop_t, text)
 
         self._subtitle_timer = QtCore.QTimer(self)
@@ -1541,6 +1546,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # signal_tts_done → P1 post-interrupt silence handler (all TTS workers)
         self.tts_worker.signal_tts_done.connect(self._on_tts_done)
         self.gemini_tts_worker.signal_tts_done.connect(self._on_tts_done)
+        self.tts_worker.signal_playback_start.connect(self._on_tts_playback_log)
+        self.gemini_tts_worker.signal_playback_start.connect(self._on_tts_playback_log)
 
     # Time-aware Gemini priority: Gemini-originated content never interrupts
     # TTS playback directly (only LiveCC's fast-blade P1 in _route_segment may
@@ -1550,7 +1557,34 @@ class MainWindow(QtWidgets.QMainWindow):
     _PRIORITY_DECAY_INTERVAL_SEC = 2.0          # every N sec of staleness, priority worsens by 1
     _TTS_PROTECT_WINDOW_SEC = {1: 6.0, 2: 3.0}  # after sending P1/P2, shield queue position this long
     _FAST_BLADE_DEDUP_WINDOW_S = 5.0            # suppress repeated P1/P2 triggers for the same event
+    _GEMINI_P1_FILLER = _GEMINI_DEFAULT_FILLER  # zh-TW interrupt cue (OpenAI + Gemini TTS)
     _P3_BACKPRESSURE_WATERMARK_SEC = 2.0        # only feed GeminiWorker while TTS backlog is below this
+
+    def _format_segment_ui_line(self, start_t: float, stop_t: float, tag: str, body: str) -> str:
+        """Build one timestamped UI line with an explicit source tag."""
+        return f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {tag} {body}"
+
+    @staticmethod
+    def _preview_text(text: str, limit: int = 72) -> str:
+        text = (text or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "…"
+
+    def _gemini_ui_display(self, data: dict) -> str:
+        """Human-readable Gemini line — distinct from LiveCC / interrupt filler."""
+        priority = data.get("priority", "?")
+        broadcast = (data.get("broadcast_text") or "").strip()
+        if data.get("_background"):
+            return f"[Gemini·BG] [P{priority}] {broadcast}"
+        return f"[Gemini→TTS] [P{priority}] {broadcast}"
+
+    def _segment_ui_body(self, data: object, display_text: str, *, priority_jump: bool = False) -> str:
+        """Map segment payload to a clearly labelled UI string."""
+        if isinstance(data, dict) and data.get("broadcast_text"):
+            return self._gemini_ui_display(data)
+        prefix = "[⚡ PRIORITY] " if priority_jump else ""
+        return f"{prefix}{display_text}"
 
     @QtCore.Slot(float, float, int, bool)
     def _on_gemini_priority(self, start_t: float, stop_t: float, priority: int, should_speak: bool) -> None:
@@ -1582,7 +1616,24 @@ class MainWindow(QtWidgets.QMainWindow):
         window = self._TTS_PROTECT_WINDOW_SEC.get(priority)
         if window:
             self._tts_protected_priority = priority
-            self._tts_protect_until = time.time() + window
+            extra = self._get_active_tts_remaining_sec() if priority == 1 else 0.0
+            self._tts_protect_until = time.time() + window + extra
+
+    def _is_p1_audio_active(self) -> bool:
+        """True while P1 filler or broadcast is playing — block another P1 interrupt."""
+        if self._p1_filler_armed:
+            return True
+        if time.time() < self._tts_protect_until and self._tts_protected_priority == 1:
+            return True
+        if self._tts_protected_priority == 1 and self._get_active_tts_remaining_sec() > 0.3:
+            return True
+        return False
+
+    def _should_hard_cut_for_p1(self) -> bool:
+        """Only hard-cut for P1 when replacing filler or non-P1 audio — never cut active P1."""
+        if self._p1_filler_armed:
+            return True
+        return not self._is_p1_audio_active()
 
     def _get_active_tts_remaining_sec(self) -> float:
         """Remaining queued playback time of whichever TTS engine is active.
@@ -1610,12 +1661,123 @@ class MainWindow(QtWidgets.QMainWindow):
                 return 2
         return 3
 
+    @staticmethod
+    def _livecc_event_dict(raw: str) -> dict:
+        """Normalize a LiveCC caption into the dict shape GeminiBroadcaster expects."""
+        return {"metadata": {"raw": raw}, "event": "raw_description"}
+
+    def _broadcast_tts_allowed(self, data: object) -> bool:
+        """Only speak Gemini broadcast_text (zh-TW), never raw LiveCC — all TTS engines."""
+        if not isinstance(data, dict):
+            return False
+        if not data.get("broadcast_text"):
+            return False
+        return bool(data.get("should_speak", True)) or bool(data.get("_background"))
+
+    def _gemini_tts_allowed(self, data: object) -> bool:
+        return self._broadcast_tts_allowed(data)
+
+    def _p1_hard_interrupt_with_filler(self, start_t: float, already_p1: bool) -> None:
+        """Hard-cut current audio and play the zh-TW filler (same for OpenAI / Gemini TTS)."""
+        if already_p1:
+            return
+        self._p1_filler_armed = True
+        self._register_tts_priority(1)
+        if self.tts_mode == "openai":
+            self.signal_tts_interrupt.emit()
+            self.signal_tts_speak.emit(self._GEMINI_P1_FILLER, 1, time.time(), start_t, start_t, {})
+        elif self.tts_mode == "gemini":
+            self.signal_gemini_tts_interrupt.emit()
+            self.signal_gemini_tts_speak.emit(self._GEMINI_P1_FILLER, 1, time.time(), start_t, start_t, {})
+        elif self.tts_mode == "local":
+            self.signal_local_tts_interrupt.emit()
+
+    def _fast_blade_enqueue_gemini(
+        self,
+        start_t: float,
+        stop_t: float,
+        raw: str,
+        data: object,
+        *,
+        already_p1: bool,
+        flush: bool,
+        p2: bool = False,
+    ) -> None:
+        """Send LiveCC text to GeminiBroadcaster; UI shows LiveCC preview (all TTS modes).
+
+        When already_p1 is True AND the filler is still armed, it means Gemini has
+        not yet returned a translation for the first P1 event — skip enqueue_front so
+        we don't stack up duplicate Gemini requests that would each produce an utterance.
+        """
+        gem_event = self._fast_blade_gemini_event(raw, data)
+        if flush and not already_p1 and hasattr(self, "gemini_worker"):
+            self.gemini_worker.flush_and_abort()
+        if hasattr(self, "gemini_worker"):
+            # Don't add another Gemini request while filler is still playing (first
+            # P1 translation not yet returned). This prevents cascaded duplicate P1s.
+            if already_p1 and self._p1_filler_armed:
+                logging.info("[FastBlade] P1 already queued to Gemini (filler armed), skipping enqueue_front")
+            else:
+                self.gemini_worker.enqueue_front(start_t, stop_t, gem_event)
+        livecc_preview = self._preview_text(raw)
+        if p2:
+            tag, hint = "[LiveCC→P2]", "（等 Gemini 中文稿）"
+        elif already_p1:
+            tag, hint = "[LiveCC·排隊]", ""
+        else:
+            tag = "[LiveCC→INT]"
+            hint = f"（口播「{self._GEMINI_P1_FILLER}」→ 等 Gemini 中文稿）"
+        body = f"{livecc_preview}  {hint}".strip() if hint else livecc_preview
+        self._append_ui(self._format_segment_ui_line(start_t, stop_t, tag, body))
+
+    def _emit_openai_tts_speak(
+        self,
+        text: str,
+        priority: int,
+        ref_ts: float,
+        start_t: float,
+        stop_t: float,
+        *,
+        cut_current: bool = False,
+        log_meta: Optional[dict] = None,
+    ) -> None:
+        if cut_current and priority <= 1:
+            if self._should_hard_cut_for_p1():
+                self.signal_tts_interrupt.emit()
+            self._p1_filler_armed = False
+        self.signal_tts_speak.emit(
+            text, priority, ref_ts, start_t, stop_t, log_meta or {}
+        )
+
+    def _emit_gemini_tts_speak(
+        self,
+        text: str,
+        priority: int,
+        ref_ts: float,
+        start_t: float,
+        stop_t: float,
+        *,
+        cut_current: bool = False,
+        log_meta: Optional[dict] = None,
+    ) -> None:
+        """Enqueue Gemini TTS; hard-cut only filler or non-P1 audio — never an active P1 line."""
+        if cut_current and priority <= 1:
+            if self._should_hard_cut_for_p1():
+                self.signal_gemini_tts_interrupt.emit()
+            self._p1_filler_armed = False
+        self.signal_gemini_tts_speak.emit(
+            text, priority, ref_ts, start_t, stop_t, log_meta or {}
+        )
+
+    def _fast_blade_gemini_event(self, raw: str, data: object) -> dict:
+        if isinstance(data, dict):
+            return data
+        return self._livecc_event_dict(raw)
+
     @QtCore.Slot(float, float, object)
     def _route_segment(self, start_t: float, stop_t: float, data: object) -> None:
         """Fast-slow blade routing: P1/P2 direct-to-TTS, P3 → context pool."""
         self._ensure_log_dir()
-        display, _ = self._extract_segment_texts(data)
-        self._write_log(self.livecc_log_file, f"[LiveCC] [{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {display}")
 
         if not self._use_gemini:
             self.on_segment(start_t, stop_t, data)
@@ -1675,37 +1837,15 @@ class MainWindow(QtWidgets.QMainWindow):
             if tts_text and self._is_duplicate_tts(tts_text, window=self._FAST_BLADE_DEDUP_WINDOW_S):
                 logging.info("[FastBlade] P1 duplicate suppressed: %r", tts_text[:80])
             else:
-                # Check whether TTS is currently playing so we know whether to interrupt
-                tts_remaining = self._get_active_tts_remaining_sec()
                 if hasattr(self, "gemini_bg_worker"):
                     self.gemini_bg_worker.pause()
-                # An interrupt can't be interrupted: if what's currently playing is
-                # itself a P1 utterance issued moments ago (still within its own
-                # protection window), let it finish — queue this one behind it
-                # instead of cutting it off mid-sentence.
-                already_p1 = time.time() < self._tts_protect_until and self._tts_protected_priority == 1
-                if not already_p1:
-                    if self.tts_mode == "openai":
-                        self.signal_tts_interrupt.emit()
-                    elif self.tts_mode == "gemini":
-                        self.signal_gemini_tts_interrupt.emit()
-                    elif self.tts_mode == "local":
-                        self.signal_local_tts_interrupt.emit()
+                already_p1 = self._is_p1_audio_active()
+                self._p1_hard_interrupt_with_filler(start_t, already_p1)
                 if tts_text:
-                    self._post_p1_pending = True
-                    self._last_tts_raw_text = tts_text
-                    self._last_tts_emit_ts = time.time()
-                    # Prepend "Oh wait!" only when actually cutting off something mid-speech
-                    spoken_text = tts_text
-                    if tts_remaining > 0.0 and not already_p1:
-                        spoken_text = "Oh wait! " + tts_text
-                    self._register_tts_priority(1)
-                    if self.tts_mode == "gemini":
-                        self.signal_gemini_tts_speak.emit(spoken_text, 1, tts_ref_ts, start_t)
-                    else:
-                        self.signal_tts_speak.emit(spoken_text, 1, tts_ref_ts, start_t)
-                    label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
-                    self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} {spoken_text}")
+                    self._fast_blade_enqueue_gemini(
+                        start_t, stop_t, raw, data,
+                        already_p1=already_p1, flush=True,
+                    )
             self.signal_p1_confirmed.emit()
 
         elif fast_priority == 2:
@@ -1714,27 +1854,21 @@ class MainWindow(QtWidgets.QMainWindow):
             if tts_text and self._is_duplicate_tts(tts_text, window=self._FAST_BLADE_DEDUP_WINDOW_S):
                 logging.info("[FastBlade] P2 duplicate suppressed: %r", tts_text[:80])
             elif tts_text:
-                self._register_tts_priority(2)
-                self._last_tts_raw_text = tts_text
-                self._last_tts_emit_ts = time.time()
-                if self.tts_mode == "gemini":
-                    self.signal_gemini_tts_speak.emit(tts_text, 2, tts_ref_ts, start_t)
-                else:
-                    self.signal_tts_speak.emit(tts_text, 2, tts_ref_ts, start_t)
-                self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P2] {tts_text}")
+                self._fast_blade_enqueue_gemini(
+                    start_t, stop_t, raw, data,
+                    already_p1=False, flush=False, p2=True,
+                )
 
         else:
-            # P3: feed into GeminiWorker for direct commentary + update context pool.
+            # P3: feed the slow-blade context pool only. GeminiBackgroundWorker is
+            # the single continuous-commentary source — it polls the pool and fires
+            # under its own backpressure/interval. Previously P3 ALSO went to the
+            # foreground GeminiWorker (_signal_to_gemini), so the same description
+            # was voiced twice (foreground + background), doubling utterances,
+            # fighting over the TTS queue, and stalling the opening seconds.
             description = raw.strip()
             if description:
                 self.signal_livecc_context.emit(description)
-                # Backpressure: only hand off to GeminiWorker for spoken commentary
-                # while there's little TTS backlog left, mirroring
-                # GeminiBackgroundWorker's watermark. Otherwise generated lines pile
-                # up behind _MAX_QUEUE_DEPTH and get trimmed before ever being
-                # spoken, each on a different topic ("不斷轉變論述").
-                if self._get_active_tts_remaining_sec() <= self._P3_BACKPRESSURE_WATERMARK_SEC:
-                    self._signal_to_gemini.emit(start_t, stop_t, data)
 
     # ---------------- Remote Socket ----------------
 
@@ -2053,8 +2187,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if not display_text.strip():
                 continue
 
-            interrupt_label = "[⚡ PRIORITY] " if (isinstance(data, dict) and data.get("_priority_jump")) else ""
-            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {interrupt_label}{display_text}"
+            ui_body = self._segment_ui_body(
+                data, display_text,
+                priority_jump=isinstance(data, dict) and bool(data.get("_priority_jump")),
+            )
+            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {ui_body}"
             self._append_ui(line)
 
         while len(self._pending_segments) > self._MAX_PENDING:
@@ -2065,6 +2202,10 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = self.control_panel.get_tts_mode() if hasattr(self, "control_panel") else None
         if mode == "gemini" and not self.gemini_tts_thread.isRunning():
             self.gemini_tts_thread.start()
+        self.tts_mode = mode or getattr(self, "tts_mode", "none")
+        if self._audience_publisher is not None:
+            self._clear_all_pcm_sinks()
+            self._register_audience_pcm_sink()
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
@@ -2090,8 +2231,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_pending_segments"):
             self._pending_segments.clear()
         self._playback_sec = 0.0
-
-        self._stop_all_source_threads()
+        self._broadcast_playback_sec = 0.0
 
         self.current_video_path = path
         self.control_panel.set_status(f"File: {os.path.basename(path)}")
@@ -2177,7 +2317,6 @@ class MainWindow(QtWidgets.QMainWindow):
         cam_idx = find_physical_camera_index()
         print(f"[Camera] Using physical camera index {cam_idx}")
 
-        self.camera_start_time = time.time()
         self.camera_thread = CameraThread(camera_index=cam_idx)
         self.camera_thread.signal_frame.connect(self.on_camera_frame)
         self.camera_thread.signal_error.connect(self.on_error)
@@ -2235,7 +2374,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.set_status("Mode: OBS Virtual Camera")
         self.append_text("Switched to OBS stream mode - ensure OBS Virtual Camera is active")
         self._stop_all_source_threads()
-        self.camera_start_time = time.time()
         self.obs_thread = OBSCameraThread()
         self.obs_thread.signal_frame.connect(self.on_camera_frame)
         self.obs_thread.signal_error.connect(self.on_error)
@@ -2273,7 +2411,6 @@ class MainWindow(QtWidgets.QMainWindow):
         print(f"[CameraTrack] Using physical camera index {cam_idx}")
         print(f"[CameraTrack] 使用實體攝影機 index {cam_idx}")
 
-        self.camera_start_time = time.time()
         self.obs_bytetrack_thread = CameraByteTrackThread(
             ckpt_path              = ckpt_path,
             exp_file               = exp_file,
@@ -2312,7 +2449,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text("已切換至雙路同步模式 (Webcam + VR 左右拼接)")
         self._stop_all_source_threads()
 
-        self.camera_start_time = time.time()
         self.dual_sync_thread = DualSourceCameraThread(cam_idx=0, vr_idx=5)
         self.dual_sync_thread.signal_frame.connect(self.on_camera_frame)
         self.dual_sync_thread.signal_error.connect(self.on_error)
@@ -2381,7 +2517,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text(f"[FreeSwitch] 初始來源：{initial_source}  (兩組攝影機同時開啟)")
         self._stop_all_source_threads()
 
-        self.camera_start_time = time.time()
         self.free_switch_thread = FreeSwitchCameraThread(
             initial_source=initial_source,
             cam_idx=0,
@@ -2433,10 +2568,38 @@ class MainWindow(QtWidgets.QMainWindow):
         if pub is not None:
             pub.push_video_frame(frame_rgb)
 
+    def _clear_all_pcm_sinks(self) -> None:
+        """Clear audience PCM sinks on every TTS backend that supports them."""
+        from .core.models import openai_tts as _oai_tts_mod
+        from .core.models import gemini_tts as _gem_tts_mod
+        _oai_tts_mod.register_pcm_sink(None, mute_local=False)
+        _gem_tts_mod.register_pcm_sink(None, mute_local=False)
+
+    def _audience_pcm_tts_module(self):
+        """Core TTS module for the active dropdown mode (OpenAI or Gemini only)."""
+        mode = getattr(self, "tts_mode", "none")
+        if mode == "openai":
+            from .core.models import openai_tts as mod
+            return mod
+        if mode == "gemini":
+            from .core.models import gemini_tts as mod
+            return mod
+        return None
+
+    def _register_audience_pcm_sink(self) -> None:
+        """Route TTS PCM to LiveKit for the currently selected TTS engine."""
+        mod = self._audience_pcm_tts_module()
+        if mod is None or self._audience_publisher is None:
+            return
+        mod.register_pcm_sink(
+            self._audience_publisher.push_audio_chunk,
+            mute_local=True,
+            flush_callback=self._audience_publisher.flush_pending_audio,
+        )
+
     def _stop_audience_publisher_only(self) -> None:
         """Tear down LiveKit publisher + TTS sink; keep HTTP token server running."""
-        from .core.models import openai_tts as _tts_mod
-        _tts_mod.register_pcm_sink(None, mute_local=False)
+        self._clear_all_pcm_sinks()
         if self._audience_publisher is not None:
             try:
                 if self.free_switch_thread is not None:
@@ -2462,8 +2625,6 @@ class MainWindow(QtWidgets.QMainWindow):
         api_secret = audience_cfg.get("api_secret", "devsecret")
         room_name = audience_cfg.get("room", "broadcast-room")
 
-        from .core.models import openai_tts as _tts_mod
-
         self._audience_publisher = AudiencePublisher(
             lk_url, api_key, api_secret, room_name
         )
@@ -2476,11 +2637,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtCore.Qt.QueuedConnection,
             )
 
-        _tts_mod.register_pcm_sink(
-            self._audience_publisher.push_audio_chunk,
-            mute_local=True,
-            flush_callback=self._audience_publisher.flush_pending_audio,
-        )
+        self._register_audience_pcm_sink()
 
     def _stop_audience_services(self) -> None:
         """Tear down publisher only (HTTP /audience stays up for the app lifetime)."""
@@ -2619,6 +2776,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.signal_tts_warmup.emit()
 
         self.is_inference_running = True
+        self._reset_broadcast_timeline()
 
         # Start audio recording only when user has opted in via checkbox
         if hasattr(self.control_panel, "chk_record") and self.control_panel.chk_record.isChecked():
@@ -2660,10 +2818,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_pending_segments"):
                 self._pending_segments.clear()
             self._playback_sec = 0.0
-            # Anchor for 3-stage latency logging: LiveCC's start_t/stop_t are seconds
-            # since its own inference loop began, so this wall-clock timestamp lets us
-            # convert them back to "when did this frame actually appear".
-            self._livecc_start_wall = time.time()
+            # _livecc_start_wall aligns LiveCC segment latency stats with the same anchor.
+            self._livecc_start_wall = self._broadcast_start_wall
 
         if self.mode == "file":
             if self.video_thread:
@@ -2728,6 +2884,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._pending_segments.clear()
             self._pending_livecc_fragment = None
             self._livecc_start_wall = 0.0
+            self._broadcast_start_wall = 0.0
+            self._broadcast_playback_sec = 0.0
             if self.tts_mode == "openai":
                 try: self.signal_tts_interrupt.emit()
                 except Exception: pass
@@ -2779,6 +2937,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
             self._flush_local_inference_telemetry_summary(obs_tracker_for_avg)
 
+            # Session latency summary (same as worker.stop() on window close)
+            if self.tts_mode == "openai":
+                from .core.models.openai_tts import print_tts_stats as _print_tts_stats
+                _print_tts_stats()
+            elif self.tts_mode == "gemini":
+                from .core.models.gemini_tts import print_tts_stats as _print_tts_stats
+                _print_tts_stats()
+
             # Stop audio recording and clear recording sinks
             from .core.models import openai_tts as _oai_tts_mod
             from .core.models import gemini_tts as _gem_tts_mod
@@ -2805,7 +2971,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.set_position(frame_idx, fps)
 
         if self.mode == "file" and fps and fps > 0:
-            self._playback_sec = float(frame_idx) / float(fps)
+            sec = float(frame_idx) / float(fps)
+            self._playback_sec = sec
+            if self.is_inference_running:
+                self._broadcast_playback_sec = sec
 
         # Stream video frames to remote server for file-mode inference
         if self.mode == "file" and self.is_inference_running and self._socket_runner is not None:
@@ -2823,7 +2992,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-        t_relative = time.time() - self.camera_start_time
+        t_relative = self._broadcast_timeline_sec()
 
         if self._socket_runner is not None:
             self._socket_runner.send_frame(frame_bgr, t_relative)
@@ -2846,7 +3015,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         fixed = cv2.resize(subject_crop_rgb, (640, 480))
         subject_bgr = cv2.cvtColor(fixed, cv2.COLOR_RGB2BGR)
-        t_relative = time.time() - self.camera_start_time
+        t_relative = self._broadcast_timeline_sec()
 
         if self._socket_runner is not None:
             self._socket_runner.send_frame(subject_bgr, t_relative)
@@ -2916,7 +3085,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "session_logger"):
             self.session_logger.log_commentary(text)
         try:
-            self._on_segment_impl(start_t, stop_t, text)
+            # Same Fast-Slow Blade path as local LiveCC — never send raw English
+            # captions directly to Gemini TTS (only Gemini broadcast_text is spoken).
+            self._route_segment(start_t, stop_t, self._livecc_event_dict(text))
         except Exception:
             logging.exception("[on_remote_segment] unhandled exception")
 
@@ -2971,16 +3142,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         display_text, tts_text = self._extract_segment_texts(data)
 
-        # Log Gemini output separately when using Gemini
-        if self._use_gemini and isinstance(data, dict):
-            self._ensure_log_dir()
-            priority = data.get("priority", "?")
-            broadcast_text = data.get("broadcast_text", "")
-            self._write_log(
-                self.gemini_log_file,
-                f"[Gemini] [{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P{priority}] {broadcast_text}",
-            )
-
         # Resolve priority for this segment (Gemini dict has it; fallback to 5).
         # Gemini-originated content (carries _enqueue_ts) is time-decayed and
         # clamped against the active protection window — this only affects its
@@ -2990,42 +3151,68 @@ class MainWindow(QtWidgets.QMainWindow):
         if isinstance(data, dict):
             seg_priority = int(data.get("priority", 5))
             enqueue_ts = data.get("_enqueue_ts")
+            base_priority = seg_priority
             if enqueue_ts is not None:
                 seg_priority = self._effective_gemini_priority(seg_priority, enqueue_ts)
                 gemini_priority_jump = seg_priority <= 2
-                self._register_tts_priority(seg_priority)
+                self._register_tts_priority(base_priority)
 
-        # MatchTracker scoring — triggered by Gemini action_label
+        # MatchTracker scoring — only when dual-team match mode is enabled
         if isinstance(data, dict) and "action_label" in data:
             action_label = data["action_label"] or ""
             if action_label.startswith("score_"):
-                team = action_label[len("score_"):]  # "red" or "blue"
-                match_tracker.add_score(team)
-                match_tracker.set_last_event(action_label)
-                red, blue = match_tracker.get_scores()
-                logging.info("[MatchTracker] %s scored → Red %d : Blue %d", team, red, blue)
+                from .core.models.gemini_broadcaster import match_tracking_enabled
+                if match_tracking_enabled():
+                    team = action_label[len("score_"):]  # "red" or "blue"
+                    match_tracker.add_score(team)
+                    match_tracker.set_last_event(action_label)
+                    red, blue = match_tracker.get_scores()
+                    logging.info("[MatchTracker] %s scored → Red %d : Blue %d", team, red, blue)
 
         # Camera mode：沒有播放器時間軸可排程，所以直接顯示/唸
         if self.mode != "file":
             if not self.is_inference_running:
                 return
-            interrupt_prefix = "[⚡ PRIORITY] " if gemini_priority_jump else ""
-            line = f"[{self._fmt_time(start_t)}] {interrupt_prefix}{display_text}"
+            ui_body = self._segment_ui_body(data, display_text, priority_jump=gemini_priority_jump)
+            # Background Gemini uses wall-clock epoch for start_t — show stream timeline instead.
+            if isinstance(data, dict) and data.get("_background"):
+                cur = self._video_playback_sec_for_log()
+                line = f"[{self._fmt_time(cur)}-{self._fmt_time(cur)}] {ui_body}"
+            else:
+                line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {ui_body}"
             self._append_ui(line)
 
             if not tts_text.strip():
                 return
             if tts_text.strip().lower() == "silence":
                 return  # model silence sentinel — skip TTS
-            if self._is_duplicate_tts(tts_text):
+            if self.tts_mode == "gemini" and not self._broadcast_tts_allowed(data):
+                return
+            if self.tts_mode == "openai" and self._use_gemini and not self._broadcast_tts_allowed(data):
+                return
+            # P1 scoring plays must always be voiced; only dedup routine commentary.
+            if seg_priority > 1 and self._is_duplicate_tts(tts_text):
                 return
             now = time.time()
             self._last_tts_raw_text = tts_text
             self._last_tts_emit_ts = now
+            log_meta = self._build_tts_log_meta(data, tts_text, seg_priority, start_t, stop_t)
             if self.tts_mode == "openai":
-                self.signal_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
+                if seg_priority <= 1:
+                    self._post_p1_pending = True
+                    self._arm_p1_fallback_timer()
+                self._emit_openai_tts_speak(
+                    tts_text, seg_priority, ref_ts, start_t, stop_t,
+                    cut_current=(seg_priority <= 1), log_meta=log_meta,
+                )
             elif self.tts_mode == "gemini":
-                self.signal_gemini_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
+                if seg_priority <= 1:
+                    self._post_p1_pending = True
+                    self._arm_p1_fallback_timer()
+                self._emit_gemini_tts_speak(
+                    tts_text, seg_priority, ref_ts, start_t, stop_t,
+                    cut_current=(seg_priority <= 1), log_meta=log_meta,
+                )
             elif self.tts_mode == "local":
                 self.signal_local_tts_speak.emit(tts_text)
             return
@@ -3034,12 +3221,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not hasattr(self, "_pending_segments"):
             self._pending_segments = deque()
 
-        interrupt_prefix = "[⚡ PRIORITY] " if gemini_priority_jump else ""
-
         if isinstance(data, dict) and data.get("_background"):
             # epoch start_t would wedge at the head of _pending_segments forever
             cur = float(getattr(self, "_playback_sec", 0.0))
-            line = f"[{self._fmt_time(cur)}] {interrupt_prefix}{display_text}"
+            ui_body = self._segment_ui_body(data, display_text, priority_jump=gemini_priority_jump)
+            line = f"[{self._fmt_time(cur)}-{self._fmt_time(cur)}] {ui_body}"
             self._append_ui(line)
         else:
             # Tag segment so the playback-time consumer can show the priority-jump marker
@@ -3050,15 +3236,33 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if tts_text.strip().lower() == "silence":
             return  # model silence sentinel — skip TTS
-        if self._is_duplicate_tts(tts_text):
+        if self.tts_mode == "gemini" and not self._broadcast_tts_allowed(data):
+            return
+        if self.tts_mode == "openai" and self._use_gemini and not self._broadcast_tts_allowed(data):
+            return
+        # P1 scoring plays must always be voiced; only dedup routine commentary.
+        if seg_priority > 1 and self._is_duplicate_tts(tts_text):
             return
         now = time.time()
         self._last_tts_raw_text = tts_text
         self._last_tts_emit_ts = now
+        log_meta = self._build_tts_log_meta(data, tts_text, seg_priority, start_t, stop_t)
         if self.tts_mode == "openai":
-            self.signal_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
+            if seg_priority <= 1:
+                self._post_p1_pending = True
+                self._arm_p1_fallback_timer()
+            self._emit_openai_tts_speak(
+                tts_text, seg_priority, ref_ts, start_t, stop_t,
+                cut_current=(seg_priority <= 1), log_meta=log_meta,
+            )
         elif self.tts_mode == "gemini":
-            self.signal_gemini_tts_speak.emit(tts_text, seg_priority, ref_ts, start_t)
+            if seg_priority <= 1:
+                self._post_p1_pending = True
+                self._arm_p1_fallback_timer()
+            self._emit_gemini_tts_speak(
+                tts_text, seg_priority, ref_ts, start_t, stop_t,
+                cut_current=(seg_priority <= 1), log_meta=log_meta,
+            )
         elif self.tts_mode == "local":
             self.signal_local_tts_speak.emit(tts_text)
 
@@ -3073,8 +3277,31 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_tts_done(self) -> None:
         if self._post_p1_pending:
             self._post_p1_pending = False
+            if hasattr(self, "_p1_fallback_timer") and self._p1_fallback_timer is not None:
+                self._p1_fallback_timer.stop()
+                self._p1_fallback_timer = None
             QtCore.QTimer.singleShot(1000, self._resume_gemini_background)
             logging.info("[P1 Silence] TTS done naturally, scheduling 1.0s before Gemini resumes")
+
+    def _arm_p1_fallback_timer(self) -> None:
+        """Start a 12s safety timer that force-resumes background if signal_tts_done never fires
+        (e.g. P1 was interrupted before natural completion)."""
+        if hasattr(self, "_p1_fallback_timer") and self._p1_fallback_timer is not None:
+            self._p1_fallback_timer.stop()
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(12000)
+        timer.timeout.connect(self._p1_fallback_resume)
+        timer.start()
+        self._p1_fallback_timer = timer
+
+    @QtCore.Slot()
+    def _p1_fallback_resume(self) -> None:
+        self._p1_fallback_timer = None
+        if self._post_p1_pending:
+            self._post_p1_pending = False
+            logging.warning("[P1 Fallback] signal_tts_done never fired after 12s — force-resuming background")
+            self._resume_gemini_background()
 
     def _resume_gemini_background(self) -> None:
         if hasattr(self, "gemini_bg_worker") and self.is_inference_running:
@@ -3124,6 +3351,130 @@ class MainWindow(QtWidgets.QMainWindow):
             self.log_dir.mkdir(parents=True, exist_ok=True)
             self.livecc_log_file = self.log_dir / "livecc_output.log"
             self.gemini_log_file = self.log_dir / "gemini_output.log"
+            self.combination_log_file = self.log_dir / "combination_output.log"
+
+    @staticmethod
+    def _estimate_playback_duration(text: str) -> float:
+        """CJK-aware spoken duration estimate for log end timestamps."""
+        cjk_count = sum(
+            1 for c in text
+            if '一' <= c <= '鿿' or '぀' <= c <= 'ヿ'
+        )
+        ascii_only = ''.join(' ' if '一' <= c <= '鿿' else c for c in text)
+        other_words = len(ascii_only.split())
+        return max(cjk_count / 4.0 + other_words / 2.5, 0.5)
+
+    def _build_tts_log_meta(
+        self,
+        data: object,
+        tts_text: str,
+        seg_priority: int,
+        start_t: float,
+        stop_t: float,
+    ) -> Optional[dict]:
+        """Build log payload written when TTS audio actually starts playing."""
+        text = (tts_text or "").strip()
+        if not text or text.lower() == "silence" or text == self._GEMINI_P1_FILLER:
+            return None
+
+        is_bg = isinstance(data, dict) and bool(data.get("_background"))
+        livecc_raw = ""
+        if isinstance(data, dict):
+            livecc_raw = data.get("metadata", {}).get("raw", "") or ""
+            event = data.get("event", "")
+            if not livecc_raw and event and event != "raw_description":
+                livecc_raw = event.replace("_", " ")
+        elif isinstance(data, str):
+            livecc_raw = data
+
+        gemini_text = ""
+        base_p = seg_priority
+        if isinstance(data, dict):
+            gemini_text = (data.get("broadcast_text") or "").strip()
+            base_p = int(data.get("priority", seg_priority))
+
+        combination_text = gemini_text if (self._use_gemini and gemini_text) else text
+
+        return {
+            "log": True,
+            "log_livecc": bool(livecc_raw.strip()) and not is_bg,
+            "log_gemini": bool(self._use_gemini and gemini_text),
+            "log_combination": bool(combination_text.strip()) and not is_bg,
+            "livecc_text": livecc_raw.strip(),
+            "gemini_priority": base_p,
+            "gemini_text": gemini_text,
+            "combination_text": combination_text.strip(),
+            "seg_start_t": float(start_t),
+            "seg_stop_t": float(stop_t),
+            "is_background": is_bg,
+        }
+
+    def _reset_broadcast_timeline(self) -> None:
+        """Reset timeline anchor to admin Start — used by all modes."""
+        self._broadcast_start_wall = time.time()
+        self._broadcast_playback_sec = 0.0
+
+    def _broadcast_timeline_sec(self) -> float:
+        """Elapsed seconds on the broadcast timeline since admin Start."""
+        if not self.is_inference_running:
+            return 0.0
+        if self.mode == "file":
+            return float(getattr(self, "_broadcast_playback_sec", 0.0))
+        wall = float(getattr(self, "_broadcast_start_wall", 0.0))
+        if wall > 0:
+            return max(0.0, time.time() - wall)
+        return 0.0
+
+    def _video_playback_sec_for_log(self) -> float:
+        """Seconds since admin Start (file: frame index; live modes: wall clock)."""
+        return self._broadcast_timeline_sec()
+
+    @QtCore.Slot(object)
+    def _on_tts_playback_log(self, meta: object) -> None:
+        """Write LiveCC / Gemini / combination logs at TTS playback start.
+        Also re-arms the P1 protection window the moment audio actually starts,
+        so the window covers the full spoken duration regardless of generation latency."""
+        if not isinstance(meta, dict) or not meta.get("log"):
+            return
+        if not self.is_inference_running:
+            return
+        self._ensure_log_dir()
+
+        play_t = self._video_playback_sec_for_log()
+        spoken = (meta.get("text") or meta.get("combination_text") or "").strip()
+        est = self._estimate_playback_duration(spoken)
+        log_start, log_end = play_t, play_t + est
+        ts = f"{self._fmt_time(log_start)}-{self._fmt_time(log_end)}"
+        logging.info(
+            "[Log][TTS playback] video_t=%.2fs text=%r",
+            play_t, spoken[:48],
+        )
+
+        # Re-arm P1 protection window when audio actually starts to avoid it
+        # expiring mid-sentence (Gemini generation latency is not accounted for
+        # in the initial window set at interrupt time).
+        if int(meta.get("gemini_priority", 5)) <= 1:
+            self._tts_protected_priority = 1
+            self._tts_protect_until = time.time() + est + 1.5
+            self._p1_filler_armed = False
+            logging.info("[P1 Guard] re-armed protect window: %.1fs + 1.5s buffer", est)
+
+        if meta.get("log_livecc") and meta.get("livecc_text"):
+            self._write_log(
+                self.livecc_log_file,
+                f"[LiveCC] [{ts}] {meta['livecc_text']}",
+            )
+        if meta.get("log_gemini") and meta.get("gemini_text"):
+            priority = meta.get("gemini_priority", "?")
+            self._write_log(
+                self.gemini_log_file,
+                f"[Gemini] [{ts}] [P{priority}] {meta['gemini_text']}",
+            )
+        if meta.get("log_combination") and meta.get("combination_text"):
+            self._write_log(
+                self.combination_log_file,
+                f"[{ts}] {meta['combination_text']}",
+            )
 
     def _write_log(self, filepath: "Path", msg: str) -> None:
         try:
@@ -3140,7 +3491,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._write_log(self.livecc_log_file, msg)
 
     def _append_ui(self, msg: str) -> None:
-        """Append a segment line to the UI only — do not re-log (already logged at source)."""
+        """Append a segment line to the UI only — file logs are written at TTS playback."""
         self.text_output.appendText(msg)
 
 

@@ -16,13 +16,17 @@ from ..core.models.gemini_tts import (
     stop_tts_system,
     enqueue_tts_text,
     interrupt_tts,
+    soft_interrupt_tts,
     set_tts_voice,
     set_natural_completion_callback,
+    set_playback_start_callback,
+    print_tts_stats,
 )
 
 
 class GeminiTTSWorker(QtCore.QObject):
     signal_tts_done = QtCore.Signal()  # emitted ONLY on natural completion
+    signal_playback_start = QtCore.Signal(object)  # dict payload when first audio chunk plays
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,25 +82,41 @@ class GeminiTTSWorker(QtCore.QObject):
         if not self._started:
             start_tts_system()
             set_natural_completion_callback(self._on_core_tts_complete)
+            set_playback_start_callback(self._on_core_playback_start)
             self._started = True
 
-    @QtCore.Slot(str, int, float, float)
-    def speak(self, text: str, priority: int = 5, ref_ts: float = 0.0, start_t: float = 0.0) -> None:
+    def _on_core_playback_start(self, meta: dict) -> None:
+        self.signal_playback_start.emit(meta)
+
+    @QtCore.Slot(str, int, float, float, float, object)
+    def speak(
+        self,
+        text: str,
+        priority: int = 5,
+        ref_ts: float = 0.0,
+        start_t: float = 0.0,
+        stop_t: float = 0.0,
+        log_meta: object = None,
+    ) -> None:
         self._interrupted = False
         est = self._estimate_tts_duration(text)
         with self._queue_remaining_lock:
             self._decay_locked()
             if priority <= 2:
-                # P1/P2: queue gets replaced (drop_outdated below) — backlog
-                # becomes just this one urgent utterance.
                 self._queue_remaining_sec = est
             else:
-                # P3-P5: bounded FIFO — this utterance adds to the existing backlog.
                 self._queue_remaining_sec += est
-        # P1/P2 (urgent): replace queue immediately. P3-P5 (routine commentary):
-        # bounded FIFO so continuous LiveCC-driven broadcast keeps flowing to TTS
-        # instead of being discarded by the next arrival before it's ever spoken.
-        enqueue_tts_text(text, ref_ts=ref_ts, drop_outdated=(priority <= 2), priority=priority, start_t=start_t)
+        self._speak_start_wall = time.time()
+        meta = log_meta if isinstance(log_meta, dict) else {}
+        enqueue_tts_text(
+            text,
+            ref_ts=ref_ts,
+            drop_outdated=(priority <= 2),
+            priority=priority,
+            start_t=start_t,
+            stop_t=stop_t,
+            log_meta=meta,
+        )
 
     @QtCore.Slot()
     def interrupt(self) -> None:
@@ -107,6 +127,12 @@ class GeminiTTSWorker(QtCore.QObject):
         interrupt_tts()
 
     @QtCore.Slot()
+    def soft_interrupt(self) -> None:
+        """P1 priority bump: drop pending TTS, keep current sentence playing."""
+        soft_interrupt_tts()
+
+    @QtCore.Slot()
     def stop(self) -> None:
         stop_tts_system()
+        print_tts_stats()
         self._started = False

@@ -280,12 +280,14 @@ class GeminiBackgroundWorker(QtCore.QObject):
         logging.info("[GeminiBackgroundWorker] Background loop stopped")
 
     def _build_context(self) -> dict:
-        from ..core.match_tracker import match_tracker
+        from ..core.models.gemini_broadcaster import _get_match_state
         recent = list(self._context_pool)
         event_text = " ".join(recent) if recent else "Game in progress."
         return {
             "event": event_text,
-            "match_state": match_tracker.get_state_string(),
+            # Shared 0:0-opening suppression (see _get_match_state) so background
+            # commentary doesn't recite a bogus scoreline before anyone scores.
+            "match_state": _get_match_state(),
         }
 
     @QtCore.Slot()

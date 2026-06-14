@@ -26,8 +26,11 @@ gemini_tts:
 gemini:
   model_name: gemini-3.1-flash-lite-preview
   rag_threshold: 600
-  temperature: 0.4
-  max_output_tokens: 50
+  temperature: 0.7
+  max_output_tokens: 120
+  # Solo VR / practice footage has no team match — keep false unless broadcasting
+  # a real red-vs-blue game with MatchTracker score events.
+  inject_match_state: false
 
 inference:
   # Gemini bg-worker can repeat the same line every ~1s; 15s window prevents
@@ -39,7 +42,7 @@ inference:
 # Remote inference (set client_only: false to load LiveCC locally)
 remote:
   enabled: true
-  client_only: false
+  client_only: true
   host: 127.0.0.1
   port: 9000
 

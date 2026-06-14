@@ -1,0 +1,113 @@
+# =============================================================================
+# Collage 測試影片 Ground-Truth 標註
+# =============================================================================
+#
+# 填寫說明：
+#   video_id  : 隨意取名，用來識別這份 GT 對應哪支影片
+#   events    : 事件清單，每個事件一筆
+#
+# 每個事件欄位：
+#   id            : 事件唯一 ID（英數字，方便 log 對照）
+#   label         : 人類可讀的事件名稱
+#   t_start       : 事件在影片中的開始時間（秒）
+#   t_end         : 事件在影片中的結束時間（秒）
+#   keywords      : 「結果」同義詞（命中其中任一個即算語意通過）
+#                   - 只列結果詞（得分 / 沒進），不要列「投籃」「出手」「運球」
+#                     （那些只代表動作，無法區分進或沒進）
+#                   - 若設為空清單 []，語意部分永遠算「通過」
+#
+# =============================================================================
+
+video_id: test
+
+# 共用 keyword 錨點（結果同義詞）
+score_keywords: &score_keywords
+  - "進球"
+  - "得分"
+  - "入網"
+  - "命中"
+  - "投進"
+  - "打進"
+  - "進了"
+  - "穿網"
+  - "空心入網"
+  - "穿過籃網"
+  - "落入籃網"
+  - "完成得分"
+  - "有效得分"
+
+miss_keywords: &miss_keywords
+  - "沒進"
+  - "未進"
+  - "沒有進"
+  - "沒能進"
+  - "未能進"
+  - "沒中"
+  - "未中"
+  - "打鐵"
+  - "彈框"
+  - "打框"
+  - "擦框"
+  - "彈出"
+  - "彈飛"
+  - "三不沾"
+  - "沒能順利"
+  - "麵包"
+
+events:
+
+  # ─── 正常播報事件 ───────────────────────────────────────────────
+
+  - id: evt_01
+    label: "選手投籃沒進"
+    t_start: 0.0
+    t_end: 3.0
+    keywords: *miss_keywords
+
+  - id: evt_02
+    label: "選手投籃得分"
+    t_start: 3.0
+    t_end: 6.0
+    keywords: *score_keywords
+
+  - id: evt_03
+    label: "選手運球，投籃沒進"
+    t_start: 6.0
+    t_end: 10.0
+    keywords: *miss_keywords
+
+  - id: evt_04
+    label: "選手運球，投籃沒進"
+    t_start: 10.0
+    t_end: 14.0
+    keywords: *miss_keywords
+
+  - id: evt_05
+    label: "選手運球，投籃沒進"
+    t_start: 14.0
+    t_end: 18.0
+    keywords: *miss_keywords
+
+  - id: evt_06
+    label: "選手運球，投籃沒進"
+    t_start: 18.0
+    t_end: 22.0
+    keywords: *miss_keywords
+
+  - id: evt_07
+    label: "選手投籃沒進"
+    t_start: 22.0
+    t_end: 26.0
+    keywords: *miss_keywords
+
+  - id: evt_08
+    label: "選手投籃得分"
+    t_start: 26.0
+    t_end: 30.0
+    keywords: *score_keywords
+
+  - id: evt_09
+    label: "選手投籃沒進"
+    t_start: 30.0
+    t_end: 35.0
+    keywords: *score_keywords

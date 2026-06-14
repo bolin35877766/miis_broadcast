@@ -21,17 +21,24 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types as genai_types
 
+from miis_broadcast.core.utils.config import load_app_config
+
 load_dotenv()
 _GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+_log = logging.getLogger(__name__)
 
 # ==========================================
 # Config
 # ==========================================
+_app_cfg = load_app_config().get("gemini_tts", {})
 _tts_cfg_lock = threading.Lock()
 _tts_cfg: dict = {
-    "model": "models/gemini-3.1-flash-tts-preview",
-    "voice": "Kore",
+    "model": _app_cfg.get("model_name", "models/gemini-3.1-flash-tts-preview"),
+    "voice": _app_cfg.get("voice", "Kore"),
 }
+
+# Audience / LiveKit expects 24 kHz mono int16 (same as openai_tts).
+_AUDIENCE_SAMPLE_RATE = 24000
 
 def set_tts_voice(voice: str) -> None:
     with _tts_cfg_lock:
@@ -64,22 +71,156 @@ def _get_client():
 _text_queue: "queue.Queue[tuple]" = queue.Queue()
 _stop_event = threading.Event()
 _interrupt_event = threading.Event()
+_prefetch_cancel = threading.Event()
 _tts_threads_started = False
 
 # [延遲][語音] running averages, split by origin:
-# - priority<=2 (P1/P2 fast-blade): "中斷" — dimension 2, frame -> sound for interrupts.
-# - "_background"-tagged items carry an epoch start_t (>1e6): "背景" — Gemini's own
-#   continuous narration, no LiveCC frame anchor.
-# - everything else carries a small video-relative start_t: "段落" — dimension 1,
-#   normal frame -> spoken latency for Gemini-enriched commentary.
 _voice_latencies_seg: list = []
 _voice_latencies_bg: list = []
 _voice_latencies_interrupt: list = []
 
-# [延遲][語音][段間]: dead-air between one utterance's playback ending and the
-# next one's audio becoming ready (queue-wait + generation-wait). Diagnoses
-# "gap between consecutive voice clips" independent of per-utterance latency.
+# [延遲][語音][段間]: dead-air between one utterance ending and the next becoming ready.
 _voice_gaps: list = []
+
+# ==========================================
+# TTS latency stats (same schema as openai_tts)
+# ==========================================
+_perf_stats = {
+    "tts_latencies": [],
+    "e2e_latencies": [],
+    "e2e_latencies_seg": [],
+    "e2e_latencies_bg": [],
+    "e2e_latencies_interrupt": [],
+    "last_text_sent_ts": 0.0,
+    "current_ref_ts": 0.0,
+    "current_start_t": 0.0,
+    "current_stop_t": 0.0,
+    "current_priority": 5,
+    "current_text": "",
+    "current_log_meta": {},
+    "playback_start_fired": False,
+}
+
+
+def _unpack_queue_item(item) -> tuple:
+    if not isinstance(item, tuple):
+        return str(item), 0.0, 0.0, 0.0, 5, {}
+    log_meta = item[5] if len(item) > 5 else {}
+    if not isinstance(log_meta, dict):
+        log_meta = {}
+    return (
+        item[0],
+        item[1] if len(item) > 1 else 0.0,
+        item[2] if len(item) > 2 else 0.0,
+        item[3] if len(item) > 3 else 0.0,
+        item[4] if len(item) > 4 else 5,
+        log_meta,
+    )
+
+
+def _arm_utterance_playback(
+    text: str,
+    ref_ts: float,
+    start_t: float,
+    stop_t: float,
+    log_meta: dict,
+    priority: int = 5,
+    sent_ts: float | None = None,
+) -> None:
+    ts = ref_ts if ref_ts > 0 else time.time()
+    _perf_stats["last_text_sent_ts"] = sent_ts if sent_ts is not None else time.time()
+    _perf_stats["current_ref_ts"] = ts
+    _perf_stats["current_start_t"] = start_t
+    _perf_stats["current_stop_t"] = stop_t
+    _perf_stats["current_priority"] = priority
+    _perf_stats["current_text"] = text
+    _perf_stats["current_log_meta"] = log_meta
+    _perf_stats["playback_start_fired"] = False
+
+
+def _log_tts_latency(value: float) -> None:
+    _perf_stats["tts_latencies"].append(value)
+
+
+def print_tts_stats() -> None:
+    """Print TTS and vision-to-audio latency summary when shutting down TTS."""
+    print("\n" + "=" * 40)
+    print("Latency Performance Report (GeminiTTS)")
+    print("=" * 40)
+
+    if _perf_stats["tts_latencies"]:
+        avg_tts = sum(_perf_stats["tts_latencies"]) / len(_perf_stats["tts_latencies"])
+        print(f"Average TTS Latency (Text->Audio):    {avg_tts:.3f} s")
+    else:
+        print("Average TTS Latency:                   N/A")
+
+    if _perf_stats["e2e_latencies"]:
+        avg_e2e = sum(_perf_stats["e2e_latencies"]) / len(_perf_stats["e2e_latencies"])
+        print(f"Average E2E Latency (Vision->Audio):   {avg_e2e:.3f} s")
+    else:
+        print("Average E2E Latency:                   N/A")
+
+    for bucket, label in [
+        (_voice_latencies_seg, "段落"),
+        (_voice_latencies_bg, "背景"),
+        (_voice_latencies_interrupt, "中斷"),
+        (_voice_gaps, "段間"),
+    ]:
+        if bucket:
+            print(f"  [{label}] avg={sum(bucket)/len(bucket):.3f}s n={len(bucket)}")
+
+    print("=" * 40 + "\n")
+
+    _perf_stats["tts_latencies"].clear()
+    _perf_stats["e2e_latencies"].clear()
+    _perf_stats["e2e_latencies_seg"].clear()
+    _perf_stats["e2e_latencies_bg"].clear()
+    _perf_stats["e2e_latencies_interrupt"].clear()
+    _perf_stats["last_text_sent_ts"] = 0.0
+    _perf_stats["current_ref_ts"] = 0.0
+    _perf_stats["current_start_t"] = 0.0
+    _perf_stats["current_stop_t"] = 0.0
+    _perf_stats["current_priority"] = 5
+    _perf_stats["current_text"] = ""
+    _perf_stats["current_log_meta"] = {}
+    _perf_stats["playback_start_fired"] = False
+    _voice_latencies_seg.clear()
+    _voice_latencies_bg.clear()
+    _voice_latencies_interrupt.clear()
+    _voice_gaps.clear()
+
+
+def _mark_utterance_sent(ref_ts: float, start_t: float, sent_ts: float | None = None) -> None:
+    """Legacy helper — prefer _arm_utterance_playback for new code paths."""
+    _arm_utterance_playback("", ref_ts, start_t, 0.0, {}, sent_ts=sent_ts)
+
+
+def _apply_audio_chunk_latency_stats() -> None:
+    """First audio chunk per utterance: record TTS and E2E latency stats."""
+    _fire_playback_start_if_needed()
+    if _perf_stats["last_text_sent_ts"] > 0:
+        latency = time.time() - _perf_stats["last_text_sent_ts"]
+        _log_tts_latency(latency)
+        _perf_stats["last_text_sent_ts"] = 0.0
+    if _perf_stats["current_ref_ts"] > 0:
+        e2e_latency = time.time() - _perf_stats["current_ref_ts"]
+        _perf_stats["e2e_latencies"].append(e2e_latency)
+        priority = _perf_stats.get("current_priority", 5)
+        is_interrupt = priority <= 2
+        is_bg = _perf_stats["current_start_t"] > 1e6
+        if is_interrupt:
+            bucket_key, tag = "e2e_latencies_interrupt", "中斷"
+        elif is_bg:
+            bucket_key, tag = "e2e_latencies_bg", "背景"
+        else:
+            bucket_key, tag = "e2e_latencies_seg", "段落"
+        bucket = _perf_stats[bucket_key]
+        bucket.append(e2e_latency)
+        logging.info(
+            "[延遲][語音][%s] latency=%.2fs (平均=%.2fs, n=%d)",
+            tag, e2e_latency, sum(bucket) / len(bucket), len(bucket),
+        )
+        _perf_stats["current_ref_ts"] = 0.0
 
 # Bounded depth for routine commentary (drop_outdated=False): keeps speech
 # continuous (always something queued up next) without unbounded backlog drift.
@@ -126,6 +267,42 @@ def _fire_natural_completion() -> None:
         except Exception:
             pass
 
+
+_playback_start_callback: Optional[Callable] = None
+_playback_start_lock = threading.Lock()
+
+
+def set_playback_start_callback(cb: Optional[Callable]) -> None:
+    global _playback_start_callback
+    with _playback_start_lock:
+        _playback_start_callback = cb
+
+
+def _fire_playback_start(payload: dict) -> None:
+    with _playback_start_lock:
+        cb = _playback_start_callback
+    if cb is not None:
+        try:
+            cb(payload)
+        except Exception:
+            logging.exception("[GeminiTTS] playback start callback failed")
+
+
+def _fire_playback_start_if_needed() -> None:
+    if _perf_stats.get("playback_start_fired"):
+        return
+    meta = _perf_stats.get("current_log_meta") or {}
+    if not meta.get("log"):
+        _perf_stats["playback_start_fired"] = True
+        return
+    _perf_stats["playback_start_fired"] = True
+    payload = dict(meta)
+    payload["text"] = _perf_stats.get("current_text", "")
+    payload["seg_start_t"] = _perf_stats.get("current_start_t", 0.0)
+    payload["seg_stop_t"] = _perf_stats.get("current_stop_t", 0.0)
+    _fire_playback_start(payload)
+
+
 # ==========================================
 # Recording sink — receives raw PCM bytes for WAV capture
 # ==========================================
@@ -144,69 +321,250 @@ def clear_recording_sink() -> None:
 
 
 # ==========================================
-# ffplay subprocess (interruptible playback)
+# PCM sink (audience second screen — same contract as openai_tts)
 # ==========================================
-_current_proc: Optional[subprocess.Popen] = None
-_current_proc_lock = threading.Lock()
+_pcm_sink: Optional[Callable] = None
+_pcm_sink_mute_local: bool = False
+_pcm_sink_flush: Optional[Callable] = None
 
-def _play_pcm(data: bytes, sample_rate: int = 24000) -> bool:
-    """Play raw PCM16 audio via ffplay. Returns True if interrupted."""
-    global _current_proc
 
-    # Forward to recording sink if active
-    if _recording_sink is not None and data:
+def register_pcm_sink(
+    callback: Optional[Callable],
+    mute_local: bool = True,
+    flush_callback: Optional[Callable] = None,
+) -> None:
+    """Register a PCM sink for the audience publisher."""
+    global _pcm_sink, _pcm_sink_mute_local, _pcm_sink_flush
+    _pcm_sink = callback
+    _pcm_sink_mute_local = mute_local if callback is not None else False
+    _pcm_sink_flush = flush_callback if callback is not None else None
+    tag = "[AUDIO] PCM sink registered" if callback is not None else "[AUDIO] PCM sink cleared"
+    print(f"{time.strftime('%H:%M:%S')} | {tag} | mute_local={_pcm_sink_mute_local}")
+
+
+def clear_audio_queue() -> None:
+    while not _audio_output_queue.empty():
         try:
-            _recording_sink(data)
+            _audio_output_queue.get_nowait()
+        except queue.Empty:
+            break
+    if _pcm_sink_flush is not None:
+        try:
+            _pcm_sink_flush()
         except Exception:
             pass
 
-    if not shutil.which("ffplay"):
-        # No ffplay: simulate duration and check interrupt
-        duration = len(data) / (sample_rate * 2)
-        start = time.time()
-        while time.time() - start < duration:
-            if _interrupt_event.is_set():
-                return True
-            time.sleep(0.05)
-        return False
 
-    cmd = [
-        "ffplay", "-f", "s16le", "-ar", str(sample_rate), "-ac", "1",
-        "-nodisp", "-i", "pipe:0", "-loglevel", "quiet",
-        "-fflags", "nobuffer", "-flags", "low_delay",
-    ]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
-    with _current_proc_lock:
-        _current_proc = proc
+# ==========================================
+# Playback — persistent player thread + audio queue (mirrors openai_tts)
+# ==========================================
+# A single long-lived OutputStream owned by a dedicated player thread. Opening a
+# fresh sounddevice stream per utterance (the old approach) is unreliable on
+# Windows — it races/conflicts with OpenAI TTS's always-on stream and any open
+# error silently fell through to a no-op "paced silence" path. The persistent
+# player thread is exactly how openai_tts.py drives audio reliably.
+_audio_output_queue: "queue.Queue[Optional[np.ndarray]]" = queue.Queue()
+_player_started = False
+_player_lock = threading.Lock()
+
+
+def _resample_to_audience_rate(samples: np.ndarray, src_rate: int) -> np.ndarray:
+    if src_rate == _AUDIENCE_SAMPLE_RATE or len(samples) == 0:
+        return samples
+    n_out = max(1, int(len(samples) * _AUDIENCE_SAMPLE_RATE / src_rate))
+    x_out = np.linspace(0, len(samples) - 1, n_out)
+    x_in = np.arange(len(samples), dtype=np.float32)
+    return np.interp(x_out, x_in, samples.astype(np.float32)).astype(np.int16)
+
+
+def _forward_chunk(chunk: np.ndarray) -> None:
+    """Forward one 24 kHz PCM chunk to audience sink and recording sink."""
+    if chunk is None or getattr(chunk, "size", 0) == 0:
+        return
+    chunk_i16 = np.ascontiguousarray(chunk, dtype=np.int16)
+    if _pcm_sink is not None:
+        try:
+            _pcm_sink(chunk_i16)
+        except Exception:
+            pass
+    if _recording_sink is not None:
+        try:
+            _recording_sink(chunk_i16)
+        except Exception:
+            pass
+
+
+def _audio_player_worker_sounddevice() -> None:
+    """Play PCM int16 @ 24 kHz mono via a single persistent PortAudio stream."""
+    import sounddevice as sd
+
+    stream = sd.OutputStream(
+        samplerate=_AUDIENCE_SAMPLE_RATE,
+        channels=1,
+        dtype="int16",
+        latency=0.2,
+    )
+    stream.start()
+    print("🔊 [GeminiTTS] playing via sounddevice (default output device)")
+
+    while not _stop_event.is_set():
+        try:
+            chunk = _audio_output_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if chunk is None:
+            continue
+        _apply_audio_chunk_latency_stats()
+        _forward_chunk(chunk)
+        try:
+            x = np.ascontiguousarray(chunk, dtype=np.int16).reshape(-1, 1)
+            # Muted (audience-only): write silence to keep the hardware clock
+            # pacing so the LiveKit sink stays real-time (same as openai_tts).
+            stream.write(np.zeros_like(x) if _pcm_sink_mute_local else x)
+        except Exception as e:
+            _log.debug("GeminiTTS sounddevice write: %s", e)
 
     try:
-        chunk_size = 4096
-        for i in range(0, len(data), chunk_size):
-            if _interrupt_event.is_set():
-                _soft_stop_proc(proc)
-                return True
-            try:
-                proc.stdin.write(data[i : i + chunk_size])
-                proc.stdin.flush()
-            except (BrokenPipeError, OSError, ValueError):
-                return True
-        proc.stdin.close()
-        proc.wait()
-        return _interrupt_event.is_set()
+        stream.stop()
+        stream.close()
     except Exception:
-        return True
-    finally:
-        with _current_proc_lock:
-            if _current_proc is proc:
-                _current_proc = None
+        pass
+
+
+def _audio_player_worker_ffplay() -> None:
+    """Play via ffplay raw PCM pipe (legacy fallback)."""
+    cmd = [
+        "ffplay", "-f", "s16le", "-ar", str(_AUDIENCE_SAMPLE_RATE), "-ac", "1",
+        "-nodisp", "-i", "pipe:0", "-loglevel", "quiet", "-fflags", "nobuffer",
+        "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0",
+    ]
+    process: Optional[subprocess.Popen] = None
+    print("🔊 [GeminiTTS] using ffplay for playback")
+
+    while not _stop_event.is_set():
+        try:
+            chunk = _audio_output_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if chunk is None:
+            continue
+        _apply_audio_chunk_latency_stats()
+        _forward_chunk(chunk)
+        if process is None or process.poll() is not None:
+            try:
+                process = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0
+                )
+            except OSError as e:
+                _log.debug("GeminiTTS ffplay Popen: %s", e)
+                process = None
+        if process and process.stdin:
+            try:
+                payload = (
+                    np.zeros(len(chunk), dtype=np.int16).tobytes()
+                    if _pcm_sink_mute_local
+                    else np.ascontiguousarray(chunk, dtype=np.int16).tobytes()
+                )
+                process.stdin.write(payload)
+                process.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                process = None
+
+    if process and process.poll() is None:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+
+
+def _audio_player_worker() -> None:
+    # Prefer sounddevice (requirements.txt): works on Windows without ffplay.
+    try:
+        _audio_player_worker_sounddevice()
+        return
+    except Exception as e:
+        _log.warning("GeminiTTS sounddevice playback path failed: %s", e, exc_info=True)
+        print(f"⚠️ [GeminiTTS] sounddevice unavailable ({e!s}), trying ffplay…")
+
+    if shutil.which("ffplay"):
+        _audio_player_worker_ffplay()
+        return
+
+    _log.error(
+        "No audio backend: install sounddevice (pip) or add ffplay (FFmpeg) to PATH"
+    )
+    print(
+        "❌ [GeminiTTS] no audio backend: install sounddevice (pip) or add ffplay (FFmpeg) to PATH"
+    )
+    # Drain queue at real-time pace so callers don't block forever.
+    while not _stop_event.is_set():
+        try:
+            chunk = _audio_output_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if chunk is None:
+            continue
+        _apply_audio_chunk_latency_stats()
+        _forward_chunk(chunk)
+        time.sleep(len(chunk) / float(_AUDIENCE_SAMPLE_RATE))
+
+
+def _ensure_player_thread() -> None:
+    global _player_started
+    with _player_lock:
+        if _player_started:
+            return
+        threading.Thread(
+            target=_audio_player_worker, daemon=True, name="GeminiTTSPlayer"
+        ).start()
+        _player_started = True
+
+
+def _play_pcm(data: bytes, sample_rate: int = 24000) -> bool:
+    """Enqueue PCM16 to the persistent player thread, blocking until it has been
+    played (so natural-completion timing stays accurate). Returns True if interrupted."""
+    if not data:
+        return False
+    samples = np.frombuffer(data, dtype=np.int16)
+    if len(samples) == 0:
+        return False
+    if sample_rate != _AUDIENCE_SAMPLE_RATE:
+        samples = _resample_to_audience_rate(samples, sample_rate)
+
+    _ensure_player_thread()
+
+    # 0.1s chunks keep interrupt latency low and pace the audience sink smoothly.
+    chunk_size = _AUDIENCE_SAMPLE_RATE // 10
+    for i in range(0, len(samples), chunk_size):
+        if _interrupt_event.is_set() or _stop_event.is_set():
+            return True
+        _audio_output_queue.put(
+            np.ascontiguousarray(samples[i : i + chunk_size], dtype=np.int16)
+        )
+
+    # Wait until the player has consumed every chunk (it writes in real time).
+    while not _stop_event.is_set():
+        if _interrupt_event.is_set():
+            return True
+        if _audio_output_queue.empty():
+            break
+        time.sleep(0.02)
+
+    # Let the final buffered chunk drain from the device (~latency).
+    deadline = time.time() + 0.3
+    while time.time() < deadline:
+        if _interrupt_event.is_set():
+            return True
+        time.sleep(0.02)
+    return _interrupt_event.is_set()
 
 def _parse_sample_rate(mime_type: str) -> int:
     m = re.search(r"rate=(\d+)", mime_type or "")
     return int(m.group(1)) if m else 24000
 
-# Linear fade-in/out applied to every utterance before playback. Each utterance
-# spawns a fresh ffplay process, so an un-faded clip starts/ends at full
-# amplitude right as the audio device opens/closes — audible as a click/pop.
+# Linear fade-in/out applied to every utterance before playback. Without it a
+# clip starts/ends at full amplitude as the device opens/closes — audible as a
+# click/pop.
 _FADE_MS = 15
 
 def _apply_fade(data: bytes, sample_rate: int) -> bytes:
@@ -247,8 +605,35 @@ _tts_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="GeminiTTSGen"
 )
 
+# Short zh-TW cue spoken instantly after a P1 hard interrupt so the cut never
+# leaves dead air while the real broadcast line is generated.
+DEFAULT_FILLER = "等等！"
+_filler_cache: dict = {}
+
+
+def prime_filler(text: str = DEFAULT_FILLER) -> None:
+    """Pre-synthesize and cache a filler phrase so it can play with zero latency."""
+    if not text or text in _filler_cache:
+        return
+    try:
+        client = _get_client()
+        cfg = _get_cfg()
+        _filler_cache[text] = _generate_audio(client, cfg, text)
+        logging.info("[GeminiTTS] filler primed: %r", text)
+    except Exception:
+        logging.exception("[GeminiTTS] filler prime failed")
+
 def _generate_audio(client, cfg: dict, text: str) -> tuple:
-    """Blocking call: generate_content + fade. Returns (audio_bytes, sample_rate)."""
+    """Blocking call: generate_content + fade. Returns (audio_bytes, sample_rate).
+
+    Filler phrases (e.g. "等等！") are served from a pre-synthesized cache so a
+    P1 interrupt can play an instant cue while the real broadcast line is still
+    being generated — no extra API round-trip, no silence gap.
+    """
+    cached = _filler_cache.get(text)
+    if cached is not None:
+        return cached
+
     response = client.models.generate_content(
         model=cfg["model"],
         contents=text,
@@ -277,7 +662,7 @@ def _gemini_tts_worker() -> None:
     print("🚀 [GeminiTTS] Gemini TTS 背景服務已啟動")
     client = _get_client()
     _first_success = [True]
-    prefetch: Optional[tuple] = None  # (Future, item) for the next utterance
+    prefetch: Optional[tuple] = None  # (Future, item, gen_start_ts) for the next utterance
     prev_play_end: float = 0.0  # wall-clock time the previous utterance's playback ended
 
     while not _stop_event.is_set():
@@ -287,8 +672,13 @@ def _gemini_tts_worker() -> None:
             prefetch = None
             continue
 
+        if _prefetch_cancel.is_set():
+            _prefetch_cancel.clear()
+            prefetch = None
+
+        gen_start_ts = 0.0
         if prefetch is not None:
-            future, item = prefetch
+            future, item, gen_start_ts = prefetch
             prefetch = None
             prefetch_hit = True
         else:
@@ -302,12 +692,9 @@ def _gemini_tts_worker() -> None:
         t_dequeue = time.time()
 
         if isinstance(item, tuple):
-            text = item[0]
-            ref_ts = item[1] if len(item) > 1 else 0.0
-            start_t = item[2] if len(item) > 2 else 0.0
-            priority = item[3] if len(item) > 3 else 5
+            text, ref_ts, start_t, stop_t, priority, log_meta = _unpack_queue_item(item)
         else:
-            text, ref_ts, start_t, priority = item, 0.0, 0.0, 5
+            text, ref_ts, start_t, stop_t, priority, log_meta = str(item), 0.0, 0.0, 0.0, 5, {}
 
         if future is None and not contains_meaningful_text(text):
             continue
@@ -316,13 +703,18 @@ def _gemini_tts_worker() -> None:
         interrupted = False
 
         try:
-            audio_bytes, sample_rate = (
-                future.result() if future is not None else _generate_audio(client, cfg, text)
-            )
+            if future is None:
+                _arm_utterance_playback(text, ref_ts, start_t, stop_t, log_meta, priority=priority)
+                audio_bytes, sample_rate = _generate_audio(client, cfg, text)
+            else:
+                _arm_utterance_playback(text, ref_ts, start_t, stop_t, log_meta, priority=priority, sent_ts=gen_start_ts)
+                audio_bytes, sample_rate = future.result()
             t_ready = time.time()
 
             # Check interrupt immediately after the (blocking or prefetched) call returns
             if _interrupt_event.is_set():
+                _perf_stats["last_text_sent_ts"] = 0.0
+                _perf_stats["current_ref_ts"] = 0.0
                 _interrupt_event.clear()
                 interrupted = True
             else:
@@ -364,9 +756,11 @@ def _gemini_tts_worker() -> None:
                         break
                     next_text = next_item[0] if isinstance(next_item, tuple) else next_item
                     if contains_meaningful_text(next_text):
+                        prefetch_gen_start = time.time()
                         prefetch = (
                             _tts_executor.submit(_generate_audio, client, cfg, next_text),
                             next_item,
+                            prefetch_gen_start,
                         )
                         break
 
@@ -399,6 +793,7 @@ def _gemini_tts_worker() -> None:
                                 _slot[0] = (
                                     _tts_executor.submit(_generate_audio, _cli, _cfg, _txt),
                                     item,
+                                    time.time(),
                                 )
                             _ev.set()
                             return
@@ -418,6 +813,8 @@ def _gemini_tts_worker() -> None:
                     prefetch = _deferred_slot[0]
                     logging.info("[GeminiTTS] Deferred prefetch acquired — generation overlapping next play")
                 if interrupted:
+                    _perf_stats["last_text_sent_ts"] = 0.0
+                    _perf_stats["current_ref_ts"] = 0.0
                     _interrupt_event.clear()
 
         except Exception as e:
@@ -446,19 +843,23 @@ def start_tts_system() -> None:
     global _tts_threads_started
     if _tts_threads_started:
         return
+    if not shutil.which("ffplay"):
+        print(
+            "ℹ️ [GeminiTTS] ffplay not found; using sounddevice (no FFmpeg required)."
+        )
     _stop_event.clear()
+    _ensure_player_thread()
     t = threading.Thread(target=_gemini_tts_worker, daemon=True, name="GeminiTTSWorker")
     t.start()
+    # Warm the filler cache off-thread so the first P1 interrupt is gap-free.
+    threading.Thread(target=prime_filler, daemon=True, name="GeminiTTSFillerPrime").start()
     _tts_threads_started = True
     logging.info("[GeminiTTS] TTS system started")
 
 def stop_tts_system() -> None:
     global _tts_threads_started
     _stop_event.set()
-    with _current_proc_lock:
-        proc = _current_proc
-    if proc:
-        proc.terminate()
+    clear_audio_queue()
     _tts_threads_started = False
 
 def enqueue_tts_text(
@@ -467,6 +868,8 @@ def enqueue_tts_text(
     drop_outdated: bool = True,
     priority: int = 5,
     start_t: float = 0.0,
+    stop_t: float = 0.0,
+    log_meta: Optional[dict] = None,
 ) -> None:
     if not contains_meaningful_text(text):
         return
@@ -476,14 +879,26 @@ def enqueue_tts_text(
         # Routine commentary: bounded FIFO so continuous broadcast doesn't
         # silently lose every item to the next arrival before it's spoken.
         _trim_text_queue(_MAX_QUEUE_DEPTH)
-    _text_queue.put((text, ref_ts, start_t, priority))
+    ts = ref_ts if ref_ts > 0 else time.time()
+    _text_queue.put((text, ts, start_t, stop_t, priority, log_meta or {}))
+
+def soft_interrupt_tts() -> None:
+    """Drop pending utterances without cutting current playback.
+
+    Used for Gemini Fast-Blade P1: hard interrupt would silence audio for 2–4s
+    while broadcaster+TTS regenerate, so we only flush the pending queue and
+    cancel any prefetched next utterance.
+    """
+    clear_text_queue()
+    _prefetch_cancel.set()
+    logging.info("[GeminiTTS] soft_interrupt: pending queue cleared (current audio continues)")
+
 
 def interrupt_tts() -> None:
-    """Signal interrupt: gracefully stops the current ffplay process (see
-    _soft_stop_proc) and clears the pending text queue."""
+    """Hard interrupt: drop pending audio, flush audience buffers, clear pending text."""
     clear_text_queue()
-    with _current_proc_lock:
-        proc = _current_proc
-    if proc:
-        _soft_stop_proc(proc)
+    clear_audio_queue()
+    _prefetch_cancel.set()
+    _perf_stats["last_text_sent_ts"] = 0.0
+    _perf_stats["current_ref_ts"] = 0.0
     _interrupt_event.set()
