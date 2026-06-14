@@ -45,8 +45,6 @@ miss_keywords: &miss_keywords
   - "沒中"
   - "未中"
   - "打鐵"
-  - "打铁"
-  - "鐵框"
   - "彈框"
   - "打框"
   - "擦框"
@@ -73,25 +71,25 @@ events:
     keywords: *score_keywords
 
   - id: evt_03
-    label: "選手運球，籃球投籃得分"
+    label: "選手運球，投籃沒進"
     t_start: 6.0
     t_end: 10.0
-    keywords: *score_keywords
+    keywords: *miss_keywords
 
   - id: evt_04
-    label: "選手運球，籃球投籃沒進"
+    label: "選手運球，投籃沒進"
     t_start: 10.0
     t_end: 14.0
     keywords: *miss_keywords
 
   - id: evt_05
-    label: "選手運球，籃球投籃沒進"
+    label: "選手運球，投籃沒進"
     t_start: 14.0
     t_end: 18.0
     keywords: *miss_keywords
 
   - id: evt_06
-    label: "選手運球，籃球投籃沒進"
+    label: "選手運球，投籃沒進"
     t_start: 18.0
     t_end: 22.0
     keywords: *miss_keywords
@@ -109,7 +107,7 @@ events:
     keywords: *score_keywords
 
   - id: evt_09
-    label: "選手投籃得分"
+    label: "選手投籃沒進"
     t_start: 30.0
     t_end: 35.0
     keywords: *score_keywords
