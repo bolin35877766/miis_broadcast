@@ -102,9 +102,11 @@ _perf_stats = {
     "e2e_latencies": [],    # Vision-to-audio end-to-end samples
     "e2e_latencies_seg": [],  # [延遲][語音][段落] — frame-anchored (small start_t)
     "e2e_latencies_bg": [],   # [延遲][語音][背景] — Gemini background narration (epoch start_t)
+    "e2e_latencies_interrupt": [],  # [延遲][語音][中斷] — P1/P2 fast-blade interrupts
     "last_text_sent_ts": 0.0,
     "current_ref_ts": 0.0,  # Reference timestamp for current utterance (vision side)
     "current_start_t": 0.0,    # video timestamp of segment being spoken
+    "current_priority": 5,      # priority of segment being spoken
 }
 
 
@@ -135,6 +137,7 @@ def print_tts_stats() -> None:
     _perf_stats["e2e_latencies"].clear()
     _perf_stats["e2e_latencies_seg"].clear()
     _perf_stats["e2e_latencies_bg"].clear()
+    _perf_stats["e2e_latencies_interrupt"].clear()
     _perf_stats["last_text_sent_ts"] = 0.0
     _perf_stats["current_ref_ts"] = 0.0
     _perf_stats["current_start_t"] = 0.0
@@ -454,13 +457,15 @@ async def _openai_realtime_worker():
                             target_text = None
                             ref_ts = 0.0
 
-                            # 從 Queue 取出 (text, ts, start_t)
+                            # 從 Queue 取出 (text, ts, start_t, priority)
+                            priority = 5
                             while not _text_queue.empty():
                                 item = _text_queue.get_nowait()
                                 if isinstance(item, tuple):
                                     target_text = item[0]
                                     ref_ts = item[1] if len(item) > 1 else 0.0
                                     start_t = item[2] if len(item) > 2 else 0.0
+                                    priority = item[3] if len(item) > 3 else 5
                                 else:
                                     target_text, ref_ts, start_t = item, 0.0, 0.0
 
@@ -470,13 +475,14 @@ async def _openai_realtime_worker():
                                     await websocket.send(json.dumps({"type": "response.cancel"}))
                                     awaiting_cancel_ack = True
                                     clear_audio_queue()  # 同步清空已緩衝的音訊，避免舊內容繼續播
-                                    _text_queue.put((target_text, ref_ts, start_t))
+                                    _text_queue.put((target_text, ref_ts, start_t, priority))
                                     continue  # 跳出本次循環，去聽事件 (D)
 
                                 # 確定沒有 active response，才發送
                                 _perf_stats["last_text_sent_ts"] = time.time()
                                 _perf_stats["current_ref_ts"] = ref_ts
                                 _perf_stats["current_start_t"] = start_t
+                                _perf_stats["current_priority"] = priority
 
                                 await websocket.send(json.dumps({
                                     "type": "conversation.item.create",
@@ -561,11 +567,14 @@ def _apply_audio_chunk_latency_stats() -> None:
     if _perf_stats["current_ref_ts"] > 0:
         e2e_latency = time.time() - _perf_stats["current_ref_ts"]
         _perf_stats["e2e_latencies"].append(e2e_latency)
-        is_bg = _perf_stats["current_start_t"] > 1e6
-        bucket_key = "e2e_latencies_bg" if is_bg else "e2e_latencies_seg"
+        if _perf_stats["current_priority"] <= 2:
+            bucket_key, tag = "e2e_latencies_interrupt", "中斷"
+        elif _perf_stats["current_start_t"] > 1e6:
+            bucket_key, tag = "e2e_latencies_bg", "背景"
+        else:
+            bucket_key, tag = "e2e_latencies_seg", "段落"
         bucket = _perf_stats[bucket_key]
         bucket.append(e2e_latency)
-        tag = "背景" if is_bg else "段落"
         logging.info(
             "[延遲][語音][%s] latency=%.2fs (平均=%.2fs, n=%d)",
             tag, e2e_latency, sum(bucket) / len(bucket), len(bucket),
@@ -766,7 +775,7 @@ def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True,
 
         # ref_ts=0 means caller did not attach a vision timestamp; use wall clock
         ts = ref_ts if ref_ts > 0 else time.time()
-        _text_queue.put((text, ts, start_t))
+        _text_queue.put((text, ts, start_t, priority))
 
         if _DRY_RUN:
             preview = text[:60] + ("…" if len(text) > 60 else "")

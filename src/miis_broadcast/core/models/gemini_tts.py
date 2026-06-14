@@ -66,12 +66,20 @@ _stop_event = threading.Event()
 _interrupt_event = threading.Event()
 _tts_threads_started = False
 
-# [延遲][語音] Stage 3 running averages, split by origin:
-# - "_background"-tagged items carry an epoch start_t (>1e6) — Gemini's own
+# [延遲][語音] running averages, split by origin:
+# - priority<=2 (P1/P2 fast-blade): "中斷" — dimension 2, frame -> sound for interrupts.
+# - "_background"-tagged items carry an epoch start_t (>1e6): "背景" — Gemini's own
 #   continuous narration, no LiveCC frame anchor.
-# - everything else carries a small video-relative start_t — frame-anchored.
+# - everything else carries a small video-relative start_t: "段落" — dimension 1,
+#   normal frame -> spoken latency for Gemini-enriched commentary.
 _voice_latencies_seg: list = []
 _voice_latencies_bg: list = []
+_voice_latencies_interrupt: list = []
+
+# [延遲][語音][段間]: dead-air between one utterance's playback ending and the
+# next one's audio becoming ready (queue-wait + generation-wait). Diagnoses
+# "gap between consecutive voice clips" independent of per-utterance latency.
+_voice_gaps: list = []
 
 # Bounded depth for routine commentary (drop_outdated=False): keeps speech
 # continuous (always something queued up next) without unbounded backlog drift.
@@ -270,6 +278,7 @@ def _gemini_tts_worker() -> None:
     client = _get_client()
     _first_success = [True]
     prefetch: Optional[tuple] = None  # (Future, item) for the next utterance
+    prev_play_end: float = 0.0  # wall-clock time the previous utterance's playback ended
 
     while not _stop_event.is_set():
         # Drain any pending interrupt before picking next item
@@ -281,19 +290,24 @@ def _gemini_tts_worker() -> None:
         if prefetch is not None:
             future, item = prefetch
             prefetch = None
+            prefetch_hit = True
         else:
             try:
                 item = _text_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
             future = None
+            prefetch_hit = False
+
+        t_dequeue = time.time()
 
         if isinstance(item, tuple):
             text = item[0]
             ref_ts = item[1] if len(item) > 1 else 0.0
             start_t = item[2] if len(item) > 2 else 0.0
+            priority = item[3] if len(item) > 3 else 5
         else:
-            text, ref_ts, start_t = item, 0.0, 0.0
+            text, ref_ts, start_t, priority = item, 0.0, 0.0, 5
 
         if future is None and not contains_meaningful_text(text):
             continue
@@ -305,6 +319,7 @@ def _gemini_tts_worker() -> None:
             audio_bytes, sample_rate = (
                 future.result() if future is not None else _generate_audio(client, cfg, text)
             )
+            t_ready = time.time()
 
             # Check interrupt immediately after the (blocking or prefetched) call returns
             if _interrupt_event.is_set():
@@ -316,18 +331,32 @@ def _gemini_tts_worker() -> None:
                     _first_success[0] = False
                 if ref_ts > 0:
                     latency = time.time() - ref_ts
-                    is_bg = start_t > 1e6
-                    bucket = _voice_latencies_bg if is_bg else _voice_latencies_seg
+                    if priority <= 2:
+                        bucket, tag = _voice_latencies_interrupt, "中斷"
+                    elif start_t > 1e6:
+                        bucket, tag = _voice_latencies_bg, "背景"
+                    else:
+                        bucket, tag = _voice_latencies_seg, "段落"
                     bucket.append(latency)
                     avg = sum(bucket) / len(bucket)
-                    tag = "背景" if is_bg else "段落"
                     logging.info(
                         "[延遲][語音][%s] latency=%.2fs (平均=%.2fs, n=%d)",
                         tag, latency, avg, len(bucket),
                     )
 
-                # Kick off generation for the next queued utterance now, so its
-                # audio is ready (or nearly ready) by the time this one finishes.
+                if prev_play_end > 0:
+                    queue_wait = max(0.0, t_dequeue - prev_play_end)
+                    gen_wait = max(0.0, t_ready - t_dequeue)
+                    total_gap = max(0.0, t_ready - prev_play_end)
+                    _voice_gaps.append(total_gap)
+                    logging.info(
+                        "[延遲][語音][段間] gap=%.2fs (排隊=%.2fs, 生成=%.2fs, prefetch=%s, 平均=%.2fs, n=%d)",
+                        total_gap, queue_wait, gen_wait,
+                        "命中" if prefetch_hit else "未命中",
+                        sum(_voice_gaps) / len(_voice_gaps), len(_voice_gaps),
+                    )
+
+                # Phase 1: immediate prefetch — grab item already in queue.
                 while True:
                     try:
                         next_item = _text_queue.get_nowait()
@@ -341,7 +370,53 @@ def _gemini_tts_worker() -> None:
                         )
                         break
 
+                # Phase 2: deferred prefetch — if queue was empty, watch for the
+                # next item to arrive *during* current playback so its generation
+                # overlaps with the audio playing instead of blocking after it.
+                # A cancel event prevents the watcher from stealing items on interrupt.
+                _deferred_slot: list = [None]
+                _deferred_event = threading.Event()
+                _watch_cancel = threading.Event()
+                _watcher_active = False
+                if prefetch is None:
+                    _play_dur = len(audio_bytes) / (sample_rate * 2)
+                    _cli, _cfg_snap = client, cfg
+                    def _watch_deferred(
+                        _slot=_deferred_slot, _ev=_deferred_event,
+                        _cancel=_watch_cancel,
+                        _cli=_cli, _cfg=_cfg_snap, _dur=_play_dur,
+                    ) -> None:
+                        deadline = time.time() + max(0.1, _dur - 0.3)
+                        while time.time() < deadline:
+                            if _cancel.is_set():
+                                break
+                            try:
+                                item = _text_queue.get(timeout=0.1)
+                            except queue.Empty:
+                                continue
+                            _txt = item[0] if isinstance(item, tuple) else item
+                            if contains_meaningful_text(_txt):
+                                _slot[0] = (
+                                    _tts_executor.submit(_generate_audio, _cli, _cfg, _txt),
+                                    item,
+                                )
+                            _ev.set()
+                            return
+                        _ev.set()
+                    threading.Thread(
+                        target=_watch_deferred, daemon=True, name="GeminiTTSPrefetchWatch"
+                    ).start()
+                    _watcher_active = True
+
                 interrupted = _play_pcm(audio_bytes, sample_rate)
+                prev_play_end = time.time()
+                if interrupted:
+                    _watch_cancel.set()  # abort watcher before it can steal post-interrupt items
+                if _watcher_active:
+                    _deferred_event.wait(timeout=0.15)
+                if prefetch is None and not interrupted and _deferred_slot[0] is not None:
+                    prefetch = _deferred_slot[0]
+                    logging.info("[GeminiTTS] Deferred prefetch acquired — generation overlapping next play")
                 if interrupted:
                     _interrupt_event.clear()
 
@@ -401,7 +476,7 @@ def enqueue_tts_text(
         # Routine commentary: bounded FIFO so continuous broadcast doesn't
         # silently lose every item to the next arrival before it's spoken.
         _trim_text_queue(_MAX_QUEUE_DEPTH)
-    _text_queue.put((text, ref_ts, start_t))
+    _text_queue.put((text, ref_ts, start_t, priority))
 
 def interrupt_tts() -> None:
     """Signal interrupt: gracefully stops the current ffplay process (see

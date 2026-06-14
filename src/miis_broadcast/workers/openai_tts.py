@@ -29,8 +29,7 @@ class OpenAITTSWorker(QtCore.QObject):
 
         self._queue_remaining_lock = threading.Lock()
         self._queue_remaining_sec: float = 0.0
-        self._speak_start_wall: float = 0.0
-        self._speak_est_duration: float = 0.0
+        self._last_decay_wall: float = 0.0
 
     @staticmethod
     def _estimate_tts_duration(text: str, speed: float) -> float:
@@ -49,20 +48,27 @@ class OpenAITTSWorker(QtCore.QObject):
         estimated = (cjk_count / 4.0 + other_words / 2.5) / max(speed, 0.1)
         return max(estimated, 0.5)  # floor at 0.5s to prevent instant re-fire
 
+    def _decay_locked(self) -> None:
+        """Drain the tracked backlog by real elapsed time — playback proceeds
+        1:1 with the wall clock, so this models the queue draining even though
+        we don't track each item's playback individually."""
+        now = time.time()
+        if self._last_decay_wall > 0.0:
+            elapsed = now - self._last_decay_wall
+            self._queue_remaining_sec = max(0.0, self._queue_remaining_sec - elapsed)
+        self._last_decay_wall = now
+
     def get_queue_remaining_sec(self) -> float:
-        """Thread-safe remaining TTS time estimate for GeminiBackgroundWorker backpressure."""
+        """Thread-safe estimate of total queued+playing audio for
+        GeminiBackgroundWorker backpressure. Sums across the bounded FIFO
+        (not just the most-recently-enqueued item), so long sentences and a
+        non-empty backlog are both reflected."""
         with self._queue_remaining_lock:
-            est = self._queue_remaining_sec
-        if est <= 0.0 or self._speak_start_wall <= 0.0:
-            return 0.0
-        elapsed = time.time() - self._speak_start_wall
-        return max(0.0, est - elapsed)
+            self._decay_locked()
+            return self._queue_remaining_sec
 
     def _on_core_tts_complete(self) -> None:
         """Called from the core TTS thread on natural completion."""
-        with self._queue_remaining_lock:
-            self._queue_remaining_sec = 0.0
-        self._speak_start_wall = 0.0
         if not self._interrupted:
             self.signal_tts_done.emit()
         self._interrupted = False
@@ -93,8 +99,14 @@ class OpenAITTSWorker(QtCore.QObject):
             speed = _tts_cfg.get("speed", 1.0)
         est = self._estimate_tts_duration(text, speed)
         with self._queue_remaining_lock:
-            self._queue_remaining_sec = est
-        self._speak_start_wall = time.time()
+            self._decay_locked()
+            if priority <= 2:
+                # P1/P2: queue gets replaced (drop_outdated below) — backlog
+                # becomes just this one urgent utterance.
+                self._queue_remaining_sec = est
+            else:
+                # P3-P5: bounded FIFO — this utterance adds to the existing backlog.
+                self._queue_remaining_sec += est
         # P1/P2 (urgent): replace queue immediately. P3-P5 (routine commentary):
         # bounded FIFO so continuous Gemini-driven broadcast keeps flowing to TTS
         # instead of being discarded by the next arrival before it's ever spoken.
@@ -105,7 +117,7 @@ class OpenAITTSWorker(QtCore.QObject):
         self._interrupted = True
         with self._queue_remaining_lock:
             self._queue_remaining_sec = 0.0
-        self._speak_start_wall = 0.0
+            self._last_decay_wall = 0.0
         interrupt_tts()
 
     @QtCore.Slot()

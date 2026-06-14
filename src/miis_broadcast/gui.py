@@ -1653,7 +1653,9 @@ class MainWindow(QtWidgets.QMainWindow):
         raw = scan_raw
 
         # [延遲][LiveCC] Stage 1: time from "frame appeared" (stop_t on the shared
-        # wall-clock anchor) to LiveCC emitting this segment.
+        # wall-clock anchor) to LiveCC emitting this segment. frame_wall_ts also
+        # anchors [延遲][語音][中斷] below (dimension 2: frame -> sound for P1/P2).
+        frame_wall_ts = 0.0
         if self.mode == "file" and self._livecc_start_wall > 0:
             frame_wall_ts = self._livecc_start_wall + stop_t
             latency = time.time() - frame_wall_ts
@@ -1665,6 +1667,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "[延遲][LiveCC] 段落 %.1f-%.1fs → LiveCC 輸出 latency=%.2fs (平均=%.2fs, n=%d)",
                 start_t, stop_t, latency, avg, len(self._livecc_latencies),
             )
+        tts_ref_ts = frame_wall_ts if frame_wall_ts > 0 else time.time()
 
         if fast_priority == 1:
             logging.info("[FastBlade] P1 hit: %r", raw[:80])
@@ -1698,9 +1701,9 @@ class MainWindow(QtWidgets.QMainWindow):
                         spoken_text = "Oh wait! " + tts_text
                     self._register_tts_priority(1)
                     if self.tts_mode == "gemini":
-                        self.signal_gemini_tts_speak.emit(spoken_text, 1, time.time(), start_t)
+                        self.signal_gemini_tts_speak.emit(spoken_text, 1, tts_ref_ts, start_t)
                     else:
-                        self.signal_tts_speak.emit(spoken_text, 1, time.time(), start_t)
+                        self.signal_tts_speak.emit(spoken_text, 1, tts_ref_ts, start_t)
                     label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
                     self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} {spoken_text}")
             self.signal_p1_confirmed.emit()
@@ -1715,9 +1718,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._last_tts_raw_text = tts_text
                 self._last_tts_emit_ts = time.time()
                 if self.tts_mode == "gemini":
-                    self.signal_gemini_tts_speak.emit(tts_text, 2, time.time(), start_t)
+                    self.signal_gemini_tts_speak.emit(tts_text, 2, tts_ref_ts, start_t)
                 else:
-                    self.signal_tts_speak.emit(tts_text, 2, time.time(), start_t)
+                    self.signal_tts_speak.emit(tts_text, 2, tts_ref_ts, start_t)
                 self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P2] {tts_text}")
 
         else:
