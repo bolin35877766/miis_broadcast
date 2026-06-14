@@ -7,7 +7,8 @@ event annotations in a collage test video.
 Metrics
 -------
 - R@1, IoU=0.5   : Temporal hit rate (best matching segment has t-IoU >= 0.5)
-- Semantic Hit Rate : At least one GT keyword found in the matched segment text
+- Semantic Hit Rate : Matched segment contains at least one outcome keyword
+                      (e.g. 得分/沒進 — not action words like 投籃/出手)
 - Joint Hit Rate    : Both temporal AND semantic conditions satisfied (main score)
 
 Usage
