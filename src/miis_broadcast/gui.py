@@ -1150,7 +1150,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
 
         self._playback_sec: float = 0.0
-        self._broadcast_playback_sec: float = 0.0  # video timeline; 0 = admin Start pressed
+        self._broadcast_playback_sec: float = 0.0  # timeline sec since admin Start
+        self._broadcast_start_wall: float = 0.0    # wall-clock anchor at admin Start (all modes)
         self._pending_segments = deque()  # items: (start_t, stop_t, text)
 
         self._subtitle_timer = QtCore.QTimer(self)
@@ -2313,7 +2314,6 @@ class MainWindow(QtWidgets.QMainWindow):
         cam_idx = find_physical_camera_index()
         print(f"[Camera] Using physical camera index {cam_idx}")
 
-        self.camera_start_time = time.time()
         self.camera_thread = CameraThread(camera_index=cam_idx)
         self.camera_thread.signal_frame.connect(self.on_camera_frame)
         self.camera_thread.signal_error.connect(self.on_error)
@@ -2371,7 +2371,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.set_status("Mode: OBS Virtual Camera")
         self.append_text("Switched to OBS stream mode - ensure OBS Virtual Camera is active")
         self._stop_all_source_threads()
-        self.camera_start_time = time.time()
         self.obs_thread = OBSCameraThread()
         self.obs_thread.signal_frame.connect(self.on_camera_frame)
         self.obs_thread.signal_error.connect(self.on_error)
@@ -2409,7 +2408,6 @@ class MainWindow(QtWidgets.QMainWindow):
         print(f"[CameraTrack] Using physical camera index {cam_idx}")
         print(f"[CameraTrack] 使用實體攝影機 index {cam_idx}")
 
-        self.camera_start_time = time.time()
         self.obs_bytetrack_thread = CameraByteTrackThread(
             ckpt_path              = ckpt_path,
             exp_file               = exp_file,
@@ -2448,7 +2446,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text("已切換至雙路同步模式 (Webcam + VR 左右拼接)")
         self._stop_all_source_threads()
 
-        self.camera_start_time = time.time()
         self.dual_sync_thread = DualSourceCameraThread(cam_idx=0, vr_idx=5)
         self.dual_sync_thread.signal_frame.connect(self.on_camera_frame)
         self.dual_sync_thread.signal_error.connect(self.on_error)
@@ -2517,7 +2514,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text(f"[FreeSwitch] 初始來源：{initial_source}  (兩組攝影機同時開啟)")
         self._stop_all_source_threads()
 
-        self.camera_start_time = time.time()
         self.free_switch_thread = FreeSwitchCameraThread(
             initial_source=initial_source,
             cam_idx=0,
@@ -2777,6 +2773,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.signal_tts_warmup.emit()
 
         self.is_inference_running = True
+        self._reset_broadcast_timeline()
 
         # Start audio recording only when user has opted in via checkbox
         if hasattr(self.control_panel, "chk_record") and self.control_panel.chk_record.isChecked():
@@ -2818,11 +2815,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_pending_segments"):
                 self._pending_segments.clear()
             self._playback_sec = 0.0
-            self._broadcast_playback_sec = 0.0
-            # Anchor for 3-stage latency logging: LiveCC's start_t/stop_t are seconds
-            # since its own inference loop began, so this wall-clock timestamp lets us
-            # convert them back to "when did this frame actually appear".
-            self._livecc_start_wall = time.time()
+            # _livecc_start_wall aligns LiveCC segment latency stats with the same anchor.
+            self._livecc_start_wall = self._broadcast_start_wall
 
         if self.mode == "file":
             if self.video_thread:
@@ -2887,6 +2881,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._pending_segments.clear()
             self._pending_livecc_fragment = None
             self._livecc_start_wall = 0.0
+            self._broadcast_start_wall = 0.0
             self._broadcast_playback_sec = 0.0
             if self.tts_mode == "openai":
                 try: self.signal_tts_interrupt.emit()
@@ -2994,7 +2989,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-        t_relative = time.time() - self.camera_start_time
+        t_relative = self._broadcast_timeline_sec()
 
         if self._socket_runner is not None:
             self._socket_runner.send_frame(frame_bgr, t_relative)
@@ -3017,7 +3012,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         fixed = cv2.resize(subject_crop_rgb, (640, 480))
         subject_bgr = cv2.cvtColor(fixed, cv2.COLOR_RGB2BGR)
-        t_relative = time.time() - self.camera_start_time
+        t_relative = self._broadcast_timeline_sec()
 
         if self._socket_runner is not None:
             self._socket_runner.send_frame(subject_bgr, t_relative)
@@ -3411,14 +3406,25 @@ class MainWindow(QtWidgets.QMainWindow):
             "is_background": is_bg,
         }
 
-    def _video_playback_sec_for_log(self) -> float:
-        """Seconds on the video timeline since admin Start (file mode)."""
-        if self.mode == "file" and self.is_inference_running:
+    def _reset_broadcast_timeline(self) -> None:
+        """Reset timeline anchor to admin Start — used by all modes."""
+        self._broadcast_start_wall = time.time()
+        self._broadcast_playback_sec = 0.0
+
+    def _broadcast_timeline_sec(self) -> float:
+        """Elapsed seconds on the broadcast timeline since admin Start."""
+        if not self.is_inference_running:
+            return 0.0
+        if self.mode == "file":
             return float(getattr(self, "_broadcast_playback_sec", 0.0))
-        if self.mode in ("camera", "obs", "obs_track", "dual_sync", "free_switch"):
-            if hasattr(self, "camera_start_time"):
-                return max(0.0, time.time() - float(self.camera_start_time))
+        wall = float(getattr(self, "_broadcast_start_wall", 0.0))
+        if wall > 0:
+            return max(0.0, time.time() - wall)
         return 0.0
+
+    def _video_playback_sec_for_log(self) -> float:
+        """Seconds since admin Start (file: frame index; live modes: wall clock)."""
+        return self._broadcast_timeline_sec()
 
     @QtCore.Slot(object)
     def _on_tts_playback_log(self, meta: object) -> None:
