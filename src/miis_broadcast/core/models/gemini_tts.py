@@ -85,7 +85,44 @@ _perf_stats = {
     "last_text_sent_ts": 0.0,
     "current_ref_ts": 0.0,
     "current_start_t": 0.0,
+    "current_stop_t": 0.0,
+    "current_text": "",
+    "current_log_meta": {},
+    "playback_start_fired": False,
 }
+
+
+def _unpack_queue_item(item) -> tuple[str, float, float, float, dict]:
+    if not isinstance(item, tuple):
+        return str(item), 0.0, 0.0, 0.0, {}
+    log_meta = item[4] if len(item) > 4 else {}
+    if not isinstance(log_meta, dict):
+        log_meta = {}
+    return (
+        item[0],
+        item[1] if len(item) > 1 else 0.0,
+        item[2] if len(item) > 2 else 0.0,
+        item[3] if len(item) > 3 else 0.0,
+        log_meta,
+    )
+
+
+def _arm_utterance_playback(
+    text: str,
+    ref_ts: float,
+    start_t: float,
+    stop_t: float,
+    log_meta: dict,
+    sent_ts: float | None = None,
+) -> None:
+    ts = ref_ts if ref_ts > 0 else time.time()
+    _perf_stats["last_text_sent_ts"] = sent_ts if sent_ts is not None else time.time()
+    _perf_stats["current_ref_ts"] = ts
+    _perf_stats["current_start_t"] = start_t
+    _perf_stats["current_stop_t"] = stop_t
+    _perf_stats["current_text"] = text
+    _perf_stats["current_log_meta"] = log_meta
+    _perf_stats["playback_start_fired"] = False
 
 
 def _log_tts_latency(value: float) -> None:
@@ -119,18 +156,20 @@ def print_tts_stats() -> None:
     _perf_stats["last_text_sent_ts"] = 0.0
     _perf_stats["current_ref_ts"] = 0.0
     _perf_stats["current_start_t"] = 0.0
+    _perf_stats["current_stop_t"] = 0.0
+    _perf_stats["current_text"] = ""
+    _perf_stats["current_log_meta"] = {}
+    _perf_stats["playback_start_fired"] = False
 
 
 def _mark_utterance_sent(ref_ts: float, start_t: float, sent_ts: float | None = None) -> None:
-    """Mirror openai_tts: mark anchors when text enters the TTS API."""
-    ts = ref_ts if ref_ts > 0 else time.time()
-    _perf_stats["last_text_sent_ts"] = sent_ts if sent_ts is not None else time.time()
-    _perf_stats["current_ref_ts"] = ts
-    _perf_stats["current_start_t"] = start_t
+    """Legacy helper — prefer _arm_utterance_playback for new code paths."""
+    _arm_utterance_playback("", ref_ts, start_t, 0.0, {}, sent_ts=sent_ts)
 
 
 def _apply_audio_chunk_latency_stats() -> None:
     """First audio chunk per utterance: record TTS and E2E latency stats."""
+    _fire_playback_start_if_needed()
     if _perf_stats["last_text_sent_ts"] > 0:
         latency = time.time() - _perf_stats["last_text_sent_ts"]
         _log_tts_latency(latency)
@@ -193,6 +232,42 @@ def _fire_natural_completion() -> None:
             cb()
         except Exception:
             pass
+
+
+_playback_start_callback: Optional[Callable] = None
+_playback_start_lock = threading.Lock()
+
+
+def set_playback_start_callback(cb: Optional[Callable]) -> None:
+    global _playback_start_callback
+    with _playback_start_lock:
+        _playback_start_callback = cb
+
+
+def _fire_playback_start(payload: dict) -> None:
+    with _playback_start_lock:
+        cb = _playback_start_callback
+    if cb is not None:
+        try:
+            cb(payload)
+        except Exception:
+            logging.exception("[GeminiTTS] playback start callback failed")
+
+
+def _fire_playback_start_if_needed() -> None:
+    if _perf_stats.get("playback_start_fired"):
+        return
+    meta = _perf_stats.get("current_log_meta") or {}
+    if not meta.get("log"):
+        _perf_stats["playback_start_fired"] = True
+        return
+    _perf_stats["playback_start_fired"] = True
+    payload = dict(meta)
+    payload["text"] = _perf_stats.get("current_text", "")
+    payload["seg_start_t"] = _perf_stats.get("current_start_t", 0.0)
+    payload["seg_stop_t"] = _perf_stats.get("current_stop_t", 0.0)
+    _fire_playback_start(payload)
+
 
 # ==========================================
 # Recording sink — receives raw PCM bytes for WAV capture
@@ -578,11 +653,9 @@ def _gemini_tts_worker() -> None:
             future = None
 
         if isinstance(item, tuple):
-            text = item[0]
-            ref_ts = item[1] if len(item) > 1 else 0.0
-            start_t = item[2] if len(item) > 2 else 0.0
+            text, ref_ts, start_t, stop_t, log_meta = _unpack_queue_item(item)
         else:
-            text, ref_ts, start_t = item, 0.0, 0.0
+            text, ref_ts, start_t, stop_t, log_meta = str(item), 0.0, 0.0, 0.0, {}
 
         if future is None and not contains_meaningful_text(text):
             continue
@@ -592,11 +665,11 @@ def _gemini_tts_worker() -> None:
 
         try:
             if future is None:
-                _mark_utterance_sent(ref_ts, start_t)
+                _arm_utterance_playback(text, ref_ts, start_t, stop_t, log_meta)
                 audio_bytes, sample_rate = _generate_audio(client, cfg, text)
             else:
                 # Prefetch started the API call earlier — anchor TTS latency there.
-                _mark_utterance_sent(ref_ts, start_t, gen_start_ts)
+                _arm_utterance_playback(text, ref_ts, start_t, stop_t, log_meta, sent_ts=gen_start_ts)
                 audio_bytes, sample_rate = future.result()
 
             # Check interrupt immediately after the (blocking or prefetched) call returns
@@ -684,6 +757,8 @@ def enqueue_tts_text(
     drop_outdated: bool = True,
     priority: int = 5,
     start_t: float = 0.0,
+    stop_t: float = 0.0,
+    log_meta: Optional[dict] = None,
 ) -> None:
     if not contains_meaningful_text(text):
         return
@@ -695,7 +770,7 @@ def enqueue_tts_text(
         _trim_text_queue(_MAX_QUEUE_DEPTH)
     # ref_ts=0 means caller did not attach a vision timestamp; use wall clock
     ts = ref_ts if ref_ts > 0 else time.time()
-    _text_queue.put((text, ts, start_t))
+    _text_queue.put((text, ts, start_t, stop_t, log_meta or {}))
 
 def soft_interrupt_tts() -> None:
     """Drop pending utterances without cutting current playback.

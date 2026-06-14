@@ -1,178 +1,111 @@
 # =============================================================================
-# Ground-Truth Annotation for Collage Test Video
+# Collage 測試影片 Ground-Truth 標註
 # =============================================================================
 #
-# Fields:
-#   video_id  : Identifier for this test video
-#   events    : List of annotated events
+# 欄位：
+#   video_id  : 測試影片識別碼
+#   events    : 事件列表
 #
-# Per event:
-#   id        : Unique event ID (alphanumeric)
-#   label     : Human-readable event description
-#   t_start   : Event start time in the video (seconds)
-#   t_end     : Event end time in the video (seconds)
-#   keywords  : Outcome synonyms (semantic hit if ANY one appears in broadcast text)
-#               - List result words only (score / miss), NOT action words
-#                 like "shot" or "shoots" (those do not distinguish make vs miss)
-#               - Empty list [] always passes semantic check
+# 每個 event：
+#   id        : 唯一事件 ID
+#   label     : 事件描述（供人閱讀）
+#   t_start   : 影片中的開始時間（秒）
+#   t_end     : 影片中的結束時間（秒）
+#   keywords  : 結果同義詞（播報文字含任一個即 semantic hit）
+#               - 只列「結果詞」（得分 / 沒進），不要列動作詞如「投籃」「出手」
+#               - 空列表 [] 表示 semantic 一律通過
+#
+# 時間窗口：原始事件時間 ± buffer（t_start -0.5s，t_end +1.0s），
+# 容許 LiveCC / Gemini / TTS 延遲與 combination_output.log 播出時間戳。
 #
 # =============================================================================
 
 video_id: test
 
+# 共用 keyword 錨點
+score_keywords: &score_keywords
+  - "進球"
+  - "得分"
+  - "入網"
+  - "命中"
+  - "空心入網"
+  - "穿過籃網"
+  - "落入籃網"
+  - "完成得分"
+  - "有效得分"
+  - "投進"
+  - "打進"
+
+miss_keywords: &miss_keywords
+  - "沒進"
+  - "未進"
+  - "沒有進"
+  - "沒能進"
+  - "未能進"
+  - "沒中"
+  - "未中"
+  - "彈出"
+  - "彈飛"
+  - "擦框"
+  - "打框"
+  - "打铁"
+  - "三不沾"
+  - "沒能順利"
+
 events:
 
-  # ─── Broadcast events ─────────────────────────────────────────
+  # ─── 播報事件（原始 0-3s → 0-4s）────────────────────────────
 
   - id: evt_01
-    label: "Player shot missed"
+    label: "球員投籃未進"
     t_start: 0.0
-    t_end: 3.0
-    keywords:
-      - "miss"
-      - "missed"
-      - "misses"
-      - "no good"
-      - "off the rim"
-      - "rattles"
-      - "clanks"
-      - "brick"
-      - "airball"
-      - "bounces out"
-      - "bounces away"
+    t_end: 4.0
+    keywords: *miss_keywords
 
   - id: evt_02
-    label: "Player shot scored"
-    t_start: 3.0
-    t_end: 6.0
-    keywords:
-      - "score"
-      - "scores"
-      - "scored"
-      - "bucket"
-      - "buckets"
-      - "swish"
-      - "goes in"
-      - "drops in"
-      - "makes it"
-      - "good shot"
-      - "count it"
+    label: "球員投籃得分"
+    t_start: 2.5
+    t_end: 7.0
+    keywords: *score_keywords
 
   - id: evt_03
-    label: "Player dribbles, shot scored"
-    t_start: 6.9
-    t_end: 10.0
-    keywords:
-      - "score"
-      - "scores"
-      - "scored"
-      - "bucket"
-      - "buckets"
-      - "swish"
-      - "goes in"
-      - "drops in"
-      - "makes it"
-      - "good shot"
-      - "count it"
+    label: "運球後投籃得分"
+    t_start: 6.4
+    t_end: 11.0
+    keywords: *score_keywords
 
   - id: evt_04
-    label: "Player dribbles, shot missed"
-    t_start: 10.0
-    t_end: 14.0
-    keywords:
-      - "miss"
-      - "missed"
-      - "misses"
-      - "no good"
-      - "off the rim"
-      - "rattles"
-      - "clanks"
-      - "brick"
-      - "airball"
-      - "bounces out"
-      - "bounces away"
+    label: "運球後投籃未進"
+    t_start: 9.5
+    t_end: 15.0
+    keywords: *miss_keywords
 
   - id: evt_05
-    label: "Player dribbles, shot missed"
-    t_start: 14.0
-    t_end: 18.0
-    keywords:
-      - "miss"
-      - "missed"
-      - "misses"
-      - "no good"
-      - "off the rim"
-      - "rattles"
-      - "clanks"
-      - "brick"
-      - "airball"
-      - "bounces out"
-      - "bounces away"
+    label: "運球後投籃未進"
+    t_start: 13.5
+    t_end: 19.0
+    keywords: *miss_keywords
 
   - id: evt_06
-    label: "Player dribbles, shot missed"
-    t_start: 18.0
-    t_end: 22.0
-    keywords:
-      - "miss"
-      - "missed"
-      - "misses"
-      - "no good"
-      - "off the rim"
-      - "rattles"
-      - "clanks"
-      - "brick"
-      - "airball"
-      - "bounces out"
-      - "bounces away"
+    label: "運球後投籃未進"
+    t_start: 17.5
+    t_end: 23.0
+    keywords: *miss_keywords
 
   - id: evt_07
-    label: "Player shot missed"
-    t_start: 22.0
-    t_end: 26.0
-    keywords:
-      - "miss"
-      - "missed"
-      - "misses"
-      - "no good"
-      - "off the rim"
-      - "rattles"
-      - "clanks"
-      - "brick"
-      - "airball"
-      - "bounces out"
-      - "bounces away"
+    label: "球員投籃未進"
+    t_start: 21.5
+    t_end: 27.0
+    keywords: *miss_keywords
 
   - id: evt_08
-    label: "Player shot scored"
-    t_start: 26.0
-    t_end: 30.0
-    keywords:
-      - "score"
-      - "scores"
-      - "scored"
-      - "bucket"
-      - "buckets"
-      - "swish"
-      - "goes in"
-      - "drops in"
-      - "makes it"
-      - "good shot"
-      - "count it"
+    label: "球員投籃得分"
+    t_start: 25.5
+    t_end: 31.0
+    keywords: *score_keywords
 
   - id: evt_09
-    label: "Player shot scored"
-    t_start: 30.0
-    t_end: 35.0
-    keywords:
-      - "score"
-      - "scores"
-      - "scored"
-      - "bucket"
-      - "buckets"
-      - "swish"
-      - "goes in"
-      - "drops in"
-      - "makes it"
-      - "good shot"
-      - "count it"
+    label: "球員投籃得分"
+    t_start: 29.5
+    t_end: 36.0
+    keywords: *score_keywords

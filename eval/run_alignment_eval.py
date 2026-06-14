@@ -29,6 +29,9 @@ Log format expected (combination_output.log)
 --------------------------------------------
     [YYYY-MM-DD HH:MM:SS] [MM:SS.ss-MM:SS.ss] broadcast text here
 
+    Timestamps in brackets are video playback time when TTS audio starts
+    (written at playback start, not when Gemini produces text).
+
 GT YAML format
 --------------
     See eval/collage_gt_example.yaml

@@ -105,7 +105,37 @@ _perf_stats = {
     "last_text_sent_ts": 0.0,
     "current_ref_ts": 0.0,  # Reference timestamp for current utterance (vision side)
     "current_start_t": 0.0,    # video timestamp of segment being spoken
+    "current_stop_t": 0.0,
+    "current_text": "",
+    "current_log_meta": {},
+    "playback_start_fired": False,
 }
+
+
+def _unpack_queue_item(item) -> tuple[str, float, float, float, dict]:
+    if not isinstance(item, tuple):
+        return str(item), 0.0, 0.0, 0.0, {}
+    log_meta = item[4] if len(item) > 4 else {}
+    if not isinstance(log_meta, dict):
+        log_meta = {}
+    return (
+        item[0],
+        item[1] if len(item) > 1 else 0.0,
+        item[2] if len(item) > 2 else 0.0,
+        item[3] if len(item) > 3 else 0.0,
+        log_meta,
+    )
+
+
+def _arm_utterance_playback(
+    text: str, ref_ts: float, start_t: float, stop_t: float, log_meta: dict
+) -> None:
+    _perf_stats["current_text"] = text
+    _perf_stats["current_ref_ts"] = ref_ts
+    _perf_stats["current_start_t"] = start_t
+    _perf_stats["current_stop_t"] = stop_t
+    _perf_stats["current_log_meta"] = log_meta
+    _perf_stats["playback_start_fired"] = False
 
 
 def _log_tts_latency(value: float) -> None:
@@ -138,6 +168,10 @@ def print_tts_stats() -> None:
     _perf_stats["last_text_sent_ts"] = 0.0
     _perf_stats["current_ref_ts"] = 0.0
     _perf_stats["current_start_t"] = 0.0
+    _perf_stats["current_stop_t"] = 0.0
+    _perf_stats["current_text"] = ""
+    _perf_stats["current_log_meta"] = {}
+    _perf_stats["playback_start_fired"] = False
 
 
 # ==========================================
@@ -319,6 +353,42 @@ def _fire_natural_completion() -> None:
             pass
 
 
+_playback_start_callback = None
+_playback_start_lock = threading.Lock()
+
+
+def set_playback_start_callback(cb) -> None:
+    """Register a callable fired when the first audio chunk of an utterance plays."""
+    global _playback_start_callback
+    with _playback_start_lock:
+        _playback_start_callback = cb
+
+
+def _fire_playback_start(payload: dict) -> None:
+    with _playback_start_lock:
+        cb = _playback_start_callback
+    if cb is not None:
+        try:
+            cb(payload)
+        except Exception:
+            logging.exception("[TTS] playback start callback failed")
+
+
+def _fire_playback_start_if_needed() -> None:
+    if _perf_stats.get("playback_start_fired"):
+        return
+    meta = _perf_stats.get("current_log_meta") or {}
+    if not meta.get("log"):
+        _perf_stats["playback_start_fired"] = True
+        return
+    _perf_stats["playback_start_fired"] = True
+    payload = dict(meta)
+    payload["text"] = _perf_stats.get("current_text", "")
+    payload["seg_start_t"] = _perf_stats.get("current_start_t", 0.0)
+    payload["seg_stop_t"] = _perf_stats.get("current_stop_t", 0.0)
+    _fire_playback_start(payload)
+
+
 # ==========================================
 # 🧪 Mock TTS Worker（Dry-Run 模式）
 # ==========================================
@@ -455,14 +525,15 @@ async def _openai_realtime_worker():
                             ref_ts = 0.0
 
                             # 從 Queue 取出 (text, ts, start_t)
+                            target_text = None
+                            ref_ts = 0.0
+                            start_t = 0.0
+                            stop_t = 0.0
+                            log_meta: dict = {}
                             while not _text_queue.empty():
-                                item = _text_queue.get_nowait()
-                                if isinstance(item, tuple):
-                                    target_text = item[0]
-                                    ref_ts = item[1] if len(item) > 1 else 0.0
-                                    start_t = item[2] if len(item) > 2 else 0.0
-                                else:
-                                    target_text, ref_ts, start_t = item, 0.0, 0.0
+                                target_text, ref_ts, start_t, stop_t, log_meta = _unpack_queue_item(
+                                    _text_queue.get_nowait()
+                                )
 
                             if target_text and contains_meaningful_text(target_text):
                                 # 如果目前有在說話，先發送取消並等待確認
@@ -470,13 +541,12 @@ async def _openai_realtime_worker():
                                     await websocket.send(json.dumps({"type": "response.cancel"}))
                                     awaiting_cancel_ack = True
                                     clear_audio_queue()  # 同步清空已緩衝的音訊，避免舊內容繼續播
-                                    _text_queue.put((target_text, ref_ts, start_t))
+                                    _text_queue.put((target_text, ref_ts, start_t, stop_t, log_meta))
                                     continue  # 跳出本次循環，去聽事件 (D)
 
                                 # 確定沒有 active response，才發送
                                 _perf_stats["last_text_sent_ts"] = time.time()
-                                _perf_stats["current_ref_ts"] = ref_ts
-                                _perf_stats["current_start_t"] = start_t
+                                _arm_utterance_playback(target_text, ref_ts, start_t, stop_t, log_meta)
 
                                 await websocket.send(json.dumps({
                                     "type": "conversation.item.create",
@@ -554,6 +624,7 @@ async def _openai_realtime_worker():
 # ==========================================
 def _apply_audio_chunk_latency_stats() -> None:
     """First audio chunk per utterance: record TTS and E2E latency stats."""
+    _fire_playback_start_if_needed()
     if _perf_stats["last_text_sent_ts"] > 0:
         latency = time.time() - _perf_stats["last_text_sent_ts"]
         _log_tts_latency(latency)
@@ -750,7 +821,15 @@ def _is_silence_token(text: str) -> bool:
     when the input is empty, so we intercept it here and skip TTS entirely."""
     return text.strip().lower() == "silence"
 
-def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True, priority: int = 5, start_t: float = 0.0) -> None:
+def enqueue_tts_text(
+    text: str,
+    ref_ts: float = 0.0,
+    drop_outdated: bool = True,
+    priority: int = 5,
+    start_t: float = 0.0,
+    stop_t: float = 0.0,
+    log_meta: Optional[dict] = None,
+) -> None:
     if _is_silence_token(text):
         return  # model signalled silence — do not play anything
     if contains_meaningful_text(text):
@@ -766,7 +845,7 @@ def enqueue_tts_text(text: str, ref_ts: float = 0.0, drop_outdated: bool = True,
 
         # ref_ts=0 means caller did not attach a vision timestamp; use wall clock
         ts = ref_ts if ref_ts > 0 else time.time()
-        _text_queue.put((text, ts, start_t))
+        _text_queue.put((text, ts, start_t, stop_t, log_meta or {}))
 
         if _DRY_RUN:
             preview = text[:60] + ("…" if len(text) > 60 else "")
