@@ -1764,17 +1764,15 @@ class MainWindow(QtWidgets.QMainWindow):
                     )
 
         else:
-            # P3: feed into GeminiWorker for direct commentary + update context pool.
+            # P3: feed the slow-blade context pool only. GeminiBackgroundWorker is
+            # the single continuous-commentary source — it polls the pool and fires
+            # under its own backpressure/interval. Previously P3 ALSO went to the
+            # foreground GeminiWorker (_signal_to_gemini), so the same description
+            # was voiced twice (foreground + background), doubling utterances,
+            # fighting over the TTS queue, and stalling the opening seconds.
             description = raw.strip()
             if description:
                 self.signal_livecc_context.emit(description)
-                # Backpressure: only hand off to GeminiWorker for spoken commentary
-                # while there's little TTS backlog left, mirroring
-                # GeminiBackgroundWorker's watermark. Otherwise generated lines pile
-                # up behind _MAX_QUEUE_DEPTH and get trimmed before ever being
-                # spoken, each on a different topic ("不斷轉變論述").
-                if self._get_active_tts_remaining_sec() <= self._P3_BACKPRESSURE_WATERMARK_SEC:
-                    self._signal_to_gemini.emit(start_t, stop_t, data)
 
     # ---------------- Remote Socket ----------------
 
@@ -3076,15 +3074,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 gemini_priority_jump = seg_priority <= 2
                 self._register_tts_priority(seg_priority)
 
-        # MatchTracker scoring — triggered by Gemini action_label
+        # MatchTracker scoring — only when dual-team match mode is enabled
         if isinstance(data, dict) and "action_label" in data:
             action_label = data["action_label"] or ""
             if action_label.startswith("score_"):
-                team = action_label[len("score_"):]  # "red" or "blue"
-                match_tracker.add_score(team)
-                match_tracker.set_last_event(action_label)
-                red, blue = match_tracker.get_scores()
-                logging.info("[MatchTracker] %s scored → Red %d : Blue %d", team, red, blue)
+                from .core.models.gemini_broadcaster import match_tracking_enabled
+                if match_tracking_enabled():
+                    team = action_label[len("score_"):]  # "red" or "blue"
+                    match_tracker.add_score(team)
+                    match_tracker.set_last_event(action_label)
+                    red, blue = match_tracker.get_scores()
+                    logging.info("[MatchTracker] %s scored → Red %d : Blue %d", team, red, blue)
 
         # Camera mode：沒有播放器時間軸可排程，所以直接顯示/唸
         if self.mode != "file":

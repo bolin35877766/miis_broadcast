@@ -184,10 +184,29 @@ def _get_context_for_query(visual: str) -> str:
     return _retriever.retrieve(visual)
 
 
+def match_tracking_enabled() -> bool:
+    """True when red/blue MatchTracker state should be injected and updated."""
+    return bool(_gemini_cfg.get("inject_match_state", False))
+
+
 def _get_match_state() -> str:
-    """Return current match state string from MatchTracker, or empty string."""
+    """Return match state for Gemini prompt injection, or empty string.
+
+    Disabled by default (``gemini.inject_match_state: false``) for solo VR /
+    practice footage where there is no red-vs-blue team game. When disabled,
+    the prompt rule "If [Match state] is not provided, do not mention scores"
+    applies and the model should describe the action only.
+
+    When enabled, we still suppress the opening 0:0 placeholder so Gemini
+    does not recite "零比零" before any real score event.
+    """
+    if not _gemini_cfg.get("inject_match_state", False):
+        return ""
     try:
         from miis_broadcast.core.match_tracker import match_tracker
+        red, blue = match_tracker.get_scores()
+        if red == 0 and blue == 0 and not match_tracker.last_event:
+            return ""
         return match_tracker.get_state_string()
     except Exception:
         return ""

@@ -84,6 +84,11 @@ gemini_broadcaster:
     - Any score numbers you mention in broadcast text MUST come from [Match state]. Never invent or calculate scores yourself.
     - If [Match state] is not provided, do not mention any score numbers.
 
+    SOLO / PRACTICE VR (typical when [Match state] is absent):
+    - The feed may be a single player in VR or practice (no team game). Do NOT mention 雙方、比數、紅隊、藍隊、比分.
+    - Describe only what you see: shot made/missed, dribble, jump shot, practice drill.
+    - Use labels like shot_made, shot_miss, dribble, practice, rebound — not score_red/score_blue unless [Match state] is provided.
+
     Output ONLY these 2 lines. No markdown, no explanation, no extra text.
 
     Examples:
@@ -141,6 +146,11 @@ gemini_broadcaster:
     - Score numbers in broadcast text MUST come from [Match state]. Never invent or calculate scores.
     - If [Match state] is not provided, do not mention any score numbers.
 
+    SOLO / PRACTICE VR (typical when [Match state] is absent):
+    - The feed may be a single player in VR or practice (no team game). Do NOT mention 雙方、比數、紅隊、藍隊、比分.
+    - Describe only what you see: shot made/missed, dribble, jump shot, practice drill.
+    - Use labels like shot_made, shot_miss, dribble, practice, rebound — not score_red/score_blue unless [Match state] is provided.
+
     Every word should feel like a punch. Use exclamation marks. Make it FEEL big.
     Output ONLY these 2 lines. No markdown, no explanation, no extra text.
 
@@ -195,6 +205,11 @@ gemini_broadcaster:
     - Score numbers in broadcast text MUST come from [Match state]. Never invent or calculate scores.
     - If [Match state] is not provided, do not mention any score numbers.
 
+    SOLO / PRACTICE VR (typical when [Match state] is absent):
+    - The feed may be a single player in VR or practice (no team game). Do NOT mention 雙方、比數、紅隊、藍隊、比分.
+    - Describe only what you see: shot made/missed, dribble, jump shot, practice drill.
+    - Use labels like shot_made, shot_miss, dribble, practice, rebound — not score_red/score_blue unless [Match state] is provided.
+
     No exclamations. No hype. Just sharp, accurate observation.
     Output ONLY these 2 lines. No markdown, no explanation, no extra text.
 
@@ -248,6 +263,11 @@ gemini_broadcaster:
     MANDATORY SCORE RULES:
     - Score numbers in broadcast text MUST come from [Match state]. Never invent or calculate scores.
     - If [Match state] is not provided, do not mention any score numbers.
+
+    SOLO / PRACTICE VR (typical when [Match state] is absent):
+    - The feed may be a single player in VR or practice (no team game). Do NOT mention 雙方、比數、紅隊、藍隊、比分.
+    - Describe only what you see: shot made/missed, dribble, jump shot, practice drill.
+    - Use labels like shot_made, shot_miss, dribble, practice, rebound — not score_red/score_blue unless [Match state] is provided.
 
     ROAST the ACTION, never the person. Punchy and fun.
     Output ONLY these 2 lines. No markdown, no explanation, no extra text.
