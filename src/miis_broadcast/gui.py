@@ -1703,6 +1703,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         self.signal_tts_speak.emit(spoken_text, 1, time.time(), start_t)
                     label = "[P1]" if already_p1 else "[⚡ INTERRUPT]"
                     self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {label} {spoken_text}")
+                    self._write_log(self.combination_log_file, f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {spoken_text}")
             self.signal_p1_confirmed.emit()
 
         elif fast_priority == 2:
@@ -1719,6 +1720,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 else:
                     self.signal_tts_speak.emit(tts_text, 2, time.time(), start_t)
                 self._append_ui(f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P2] {tts_text}")
+                self._write_log(self.combination_log_file, f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {tts_text}")
 
         else:
             # P3: feed into GeminiWorker for direct commentary + update context pool.
@@ -2978,6 +2980,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"[Gemini] [{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] [P{priority}] {broadcast_text}",
             )
 
+        # Combination log: one unified ordered log for evaluation (skip background — no reliable video timestamp)
+        if not (isinstance(data, dict) and data.get("_background")):
+            self._ensure_log_dir()
+            if self._use_gemini and isinstance(data, dict) and data.get("broadcast_text"):
+                combo_text = data.get("broadcast_text", "")
+            else:
+                combo_text = display_text
+            if combo_text.strip():
+                self._write_log(
+                    self.combination_log_file,
+                    f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {combo_text}",
+                )
+
         # Resolve priority for this segment (Gemini dict has it; fallback to 5).
         # Gemini-originated content (carries _enqueue_ts) is time-decayed and
         # clamped against the active protection window — this only affects its
@@ -3121,6 +3136,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.log_dir.mkdir(parents=True, exist_ok=True)
             self.livecc_log_file = self.log_dir / "livecc_output.log"
             self.gemini_log_file = self.log_dir / "gemini_output.log"
+            self.combination_log_file = self.log_dir / "combination_output.log"
 
     def _write_log(self, filepath: "Path", msg: str) -> None:
         try:
