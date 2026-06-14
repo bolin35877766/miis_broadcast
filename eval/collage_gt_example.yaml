@@ -74,7 +74,7 @@ events:
 
   - id: evt_03
     label: "選手運球，籃球投籃得分"
-    t_start: 6.9
+    t_start: 6.0
     t_end: 10.0
     keywords: *score_keywords
 
