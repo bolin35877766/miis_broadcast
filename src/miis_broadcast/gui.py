@@ -139,9 +139,10 @@ class VideoThread(QtCore.QThread):
         if fps is None or fps <= 0:
             fps = 30.0
 
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.signal_video_loaded.emit(frame_count, fps)
         delay_sec = 1.0 / fps
-        frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        frame_idx = 0
         last_time = time.time()
 
         while not self._stop_requested:
@@ -1149,6 +1150,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(500, self._preload_bytetrack_model)
 
         self._playback_sec: float = 0.0
+        self._broadcast_playback_sec: float = 0.0  # video timeline; 0 = admin Start pressed
         self._pending_segments = deque()  # items: (start_t, stop_t, text)
 
         self._subtitle_timer = QtCore.QTimer(self)
@@ -2215,8 +2217,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_pending_segments"):
             self._pending_segments.clear()
         self._playback_sec = 0.0
-
-        self._stop_all_source_threads()
+        self._broadcast_playback_sec = 0.0
 
         self.current_video_path = path
         self.control_panel.set_status(f"File: {os.path.basename(path)}")
@@ -2807,6 +2808,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_pending_segments"):
                 self._pending_segments.clear()
             self._playback_sec = 0.0
+            self._broadcast_playback_sec = 0.0
             # Anchor for 3-stage latency logging: LiveCC's start_t/stop_t are seconds
             # since its own inference loop began, so this wall-clock timestamp lets us
             # convert them back to "when did this frame actually appear".
@@ -2875,6 +2877,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._pending_segments.clear()
             self._pending_livecc_fragment = None
             self._livecc_start_wall = 0.0
+            self._broadcast_playback_sec = 0.0
             if self.tts_mode == "openai":
                 try: self.signal_tts_interrupt.emit()
                 except Exception: pass
@@ -2960,7 +2963,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.video_panel.set_position(frame_idx, fps)
 
         if self.mode == "file" and fps and fps > 0:
-            self._playback_sec = float(frame_idx) / float(fps)
+            sec = float(frame_idx) / float(fps)
+            self._playback_sec = sec
+            if self.is_inference_running:
+                self._broadcast_playback_sec = sec
 
         # Stream video frames to remote server for file-mode inference
         if self.mode == "file" and self.is_inference_running and self._socket_runner is not None:
@@ -3363,22 +3369,33 @@ class MainWindow(QtWidgets.QMainWindow):
             "is_background": is_bg,
         }
 
+    def _video_playback_sec_for_log(self) -> float:
+        """Seconds on the video timeline since admin Start (file mode)."""
+        if self.mode == "file" and self.is_inference_running:
+            return float(getattr(self, "_broadcast_playback_sec", 0.0))
+        if self.mode in ("camera", "obs", "obs_track", "dual_sync", "free_switch"):
+            if hasattr(self, "camera_start_time"):
+                return max(0.0, time.time() - float(self.camera_start_time))
+        return 0.0
+
     @QtCore.Slot(object)
     def _on_tts_playback_log(self, meta: object) -> None:
         """Write LiveCC / Gemini / combination logs at TTS playback start."""
         if not isinstance(meta, dict) or not meta.get("log"):
             return
+        if not self.is_inference_running:
+            return
         self._ensure_log_dir()
 
-        play_t = float(getattr(self, "_playback_sec", 0.0))
+        play_t = self._video_playback_sec_for_log()
         spoken = (meta.get("text") or meta.get("combination_text") or "").strip()
         est = self._estimate_playback_duration(spoken)
-        if self.mode == "file" and play_t >= 0.0:
-            log_start, log_end = play_t, play_t + est
-        else:
-            log_start = float(meta.get("seg_start_t", 0.0))
-            log_end = log_start + est
+        log_start, log_end = play_t, play_t + est
         ts = f"{self._fmt_time(log_start)}-{self._fmt_time(log_end)}"
+        logging.info(
+            "[Log][TTS playback] video_t=%.2fs text=%r",
+            play_t, spoken[:48],
+        )
 
         if meta.get("log_livecc") and meta.get("livecc_text"):
             self._write_log(
