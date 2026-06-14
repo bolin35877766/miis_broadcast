@@ -1702,12 +1702,22 @@ class MainWindow(QtWidgets.QMainWindow):
         flush: bool,
         p2: bool = False,
     ) -> None:
-        """Send LiveCC text to GeminiBroadcaster; UI shows LiveCC preview (all TTS modes)."""
+        """Send LiveCC text to GeminiBroadcaster; UI shows LiveCC preview (all TTS modes).
+
+        When already_p1 is True AND the filler is still armed, it means Gemini has
+        not yet returned a translation for the first P1 event — skip enqueue_front so
+        we don't stack up duplicate Gemini requests that would each produce an utterance.
+        """
         gem_event = self._fast_blade_gemini_event(raw, data)
         if flush and not already_p1 and hasattr(self, "gemini_worker"):
             self.gemini_worker.flush_and_abort()
         if hasattr(self, "gemini_worker"):
-            self.gemini_worker.enqueue_front(start_t, stop_t, gem_event)
+            # Don't add another Gemini request while filler is still playing (first
+            # P1 translation not yet returned). This prevents cascaded duplicate P1s.
+            if already_p1 and self._p1_filler_armed:
+                logging.info("[FastBlade] P1 already queued to Gemini (filler armed), skipping enqueue_front")
+            else:
+                self.gemini_worker.enqueue_front(start_t, stop_t, gem_event)
         livecc_preview = self._preview_text(raw)
         if p2:
             tag, hint = "[LiveCC→P2]", "（等 Gemini 中文稿）"
@@ -3187,6 +3197,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.tts_mode == "openai":
                 if seg_priority <= 1:
                     self._post_p1_pending = True
+                    self._arm_p1_fallback_timer()
                 self._emit_openai_tts_speak(
                     tts_text, seg_priority, ref_ts, start_t, stop_t,
                     cut_current=(seg_priority <= 1), log_meta=log_meta,
@@ -3194,6 +3205,7 @@ class MainWindow(QtWidgets.QMainWindow):
             elif self.tts_mode == "gemini":
                 if seg_priority <= 1:
                     self._post_p1_pending = True
+                    self._arm_p1_fallback_timer()
                 self._emit_gemini_tts_speak(
                     tts_text, seg_priority, ref_ts, start_t, stop_t,
                     cut_current=(seg_priority <= 1), log_meta=log_meta,
@@ -3235,6 +3247,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.tts_mode == "openai":
             if seg_priority <= 1:
                 self._post_p1_pending = True
+                self._arm_p1_fallback_timer()
             self._emit_openai_tts_speak(
                 tts_text, seg_priority, ref_ts, start_t, stop_t,
                 cut_current=(seg_priority <= 1), log_meta=log_meta,
@@ -3242,6 +3255,7 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self.tts_mode == "gemini":
             if seg_priority <= 1:
                 self._post_p1_pending = True
+                self._arm_p1_fallback_timer()
             self._emit_gemini_tts_speak(
                 tts_text, seg_priority, ref_ts, start_t, stop_t,
                 cut_current=(seg_priority <= 1), log_meta=log_meta,
@@ -3260,8 +3274,31 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_tts_done(self) -> None:
         if self._post_p1_pending:
             self._post_p1_pending = False
+            if hasattr(self, "_p1_fallback_timer") and self._p1_fallback_timer is not None:
+                self._p1_fallback_timer.stop()
+                self._p1_fallback_timer = None
             QtCore.QTimer.singleShot(1000, self._resume_gemini_background)
             logging.info("[P1 Silence] TTS done naturally, scheduling 1.0s before Gemini resumes")
+
+    def _arm_p1_fallback_timer(self) -> None:
+        """Start a 12s safety timer that force-resumes background if signal_tts_done never fires
+        (e.g. P1 was interrupted before natural completion)."""
+        if hasattr(self, "_p1_fallback_timer") and self._p1_fallback_timer is not None:
+            self._p1_fallback_timer.stop()
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(12000)
+        timer.timeout.connect(self._p1_fallback_resume)
+        timer.start()
+        self._p1_fallback_timer = timer
+
+    @QtCore.Slot()
+    def _p1_fallback_resume(self) -> None:
+        self._p1_fallback_timer = None
+        if self._post_p1_pending:
+            self._post_p1_pending = False
+            logging.warning("[P1 Fallback] signal_tts_done never fired after 12s — force-resuming background")
+            self._resume_gemini_background()
 
     def _resume_gemini_background(self) -> None:
         if hasattr(self, "gemini_bg_worker") and self.is_inference_running:
@@ -3380,7 +3417,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(object)
     def _on_tts_playback_log(self, meta: object) -> None:
-        """Write LiveCC / Gemini / combination logs at TTS playback start."""
+        """Write LiveCC / Gemini / combination logs at TTS playback start.
+        Also re-arms the P1 protection window the moment audio actually starts,
+        so the window covers the full spoken duration regardless of generation latency."""
         if not isinstance(meta, dict) or not meta.get("log"):
             return
         if not self.is_inference_running:
@@ -3396,6 +3435,15 @@ class MainWindow(QtWidgets.QMainWindow):
             "[Log][TTS playback] video_t=%.2fs text=%r",
             play_t, spoken[:48],
         )
+
+        # Re-arm P1 protection window when audio actually starts to avoid it
+        # expiring mid-sentence (Gemini generation latency is not accounted for
+        # in the initial window set at interrupt time).
+        if int(meta.get("gemini_priority", 5)) <= 1:
+            self._tts_protected_priority = 1
+            self._tts_protect_until = time.time() + est + 1.5
+            self._p1_filler_armed = False
+            logging.info("[P1 Guard] re-armed protect window: %.1fs + 1.5s buffer", est)
 
         if meta.get("log_livecc") and meta.get("livecc_text"):
             self._write_log(
