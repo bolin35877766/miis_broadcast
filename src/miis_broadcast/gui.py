@@ -18,6 +18,7 @@ from .widgets.text_output import TextOutputWidget
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.gemini import GeminiWorker
 from .workers.openai_tts import OpenAITTSWorker
+from .core.models.gemini_tts import DEFAULT_FILLER as _GEMINI_DEFAULT_FILLER
 from .workers.obs_input import OBSCameraThread
 from .workers.camera_bytetrack import CameraByteTrackThread
 from .workers.dual_source import DualSourceCameraThread
@@ -1550,7 +1551,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _PRIORITY_DECAY_INTERVAL_SEC = 2.0          # every N sec of staleness, priority worsens by 1
     _TTS_PROTECT_WINDOW_SEC = {1: 6.0, 2: 3.0}  # after sending P1/P2, shield queue position this long
     _FAST_BLADE_DEDUP_WINDOW_S = 5.0            # suppress repeated P1/P2 triggers for the same event
-    _GEMINI_P1_FILLER = "等等！"                 # instant zh-TW cue after hard interrupt (avoids silence gap)
+    _GEMINI_P1_FILLER = _GEMINI_DEFAULT_FILLER  # instant zh-TW cue after hard interrupt (avoids silence gap)
     _P3_BACKPRESSURE_WATERMARK_SEC = 2.0        # only feed GeminiWorker while TTS backlog is below this
 
     @QtCore.Slot(float, float, int, bool)
@@ -1723,11 +1724,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     if self.tts_mode == "openai":
                         self.signal_tts_interrupt.emit()
                     elif self.tts_mode == "gemini":
+                        # Hard cut, then instantly play the cached filler cue so the
+                        # interrupt never leaves dead air while the real P1 line generates.
                         self.signal_gemini_tts_interrupt.emit()
-                        if tts_remaining > 0.0:
-                            self.signal_gemini_tts_speak.emit(
-                                self._GEMINI_P1_FILLER, 1, time.time(), start_t
-                            )
+                        self.signal_gemini_tts_speak.emit(
+                            self._GEMINI_P1_FILLER, 1, time.time(), start_t
+                        )
                     elif self.tts_mode == "local":
                         self.signal_local_tts_interrupt.emit()
                 if tts_text:
@@ -3130,7 +3132,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 return  # model silence sentinel — skip TTS
             if self.tts_mode == "gemini" and not self._gemini_tts_allowed(data):
                 return
-            if self._is_duplicate_tts(tts_text):
+            # P1 scoring plays must always be voiced; only dedup routine commentary.
+            if seg_priority > 1 and self._is_duplicate_tts(tts_text):
                 return
             now = time.time()
             self._last_tts_raw_text = tts_text
@@ -3169,7 +3172,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return  # model silence sentinel — skip TTS
         if self.tts_mode == "gemini" and not self._gemini_tts_allowed(data):
             return
-        if self._is_duplicate_tts(tts_text):
+        # P1 scoring plays must always be voiced; only dedup routine commentary.
+        if seg_priority > 1 and self._is_duplicate_tts(tts_text):
             return
         now = time.time()
         self._last_tts_raw_text = tts_text

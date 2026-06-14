@@ -496,8 +496,35 @@ _tts_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="GeminiTTSGen"
 )
 
+# Short zh-TW cue spoken instantly after a P1 hard interrupt so the cut never
+# leaves dead air while the real broadcast line is generated.
+DEFAULT_FILLER = "等等！"
+_filler_cache: dict = {}
+
+
+def prime_filler(text: str = DEFAULT_FILLER) -> None:
+    """Pre-synthesize and cache a filler phrase so it can play with zero latency."""
+    if not text or text in _filler_cache:
+        return
+    try:
+        client = _get_client()
+        cfg = _get_cfg()
+        _filler_cache[text] = _generate_audio(client, cfg, text)
+        logging.info("[GeminiTTS] filler primed: %r", text)
+    except Exception:
+        logging.exception("[GeminiTTS] filler prime failed")
+
 def _generate_audio(client, cfg: dict, text: str) -> tuple:
-    """Blocking call: generate_content + fade. Returns (audio_bytes, sample_rate)."""
+    """Blocking call: generate_content + fade. Returns (audio_bytes, sample_rate).
+
+    Filler phrases (e.g. "等等！") are served from a pre-synthesized cache so a
+    P1 interrupt can play an instant cue while the real broadcast line is still
+    being generated — no extra API round-trip, no silence gap.
+    """
+    cached = _filler_cache.get(text)
+    if cached is not None:
+        return cached
+
     response = client.models.generate_content(
         model=cfg["model"],
         contents=text,
@@ -640,6 +667,8 @@ def start_tts_system() -> None:
     _ensure_player_thread()
     t = threading.Thread(target=_gemini_tts_worker, daemon=True, name="GeminiTTSWorker")
     t.start()
+    # Warm the filler cache off-thread so the first P1 interrupt is gap-free.
+    threading.Thread(target=prime_filler, daemon=True, name="GeminiTTSFillerPrime").start()
     _tts_threads_started = True
     logging.info("[GeminiTTS] TTS system started")
 
