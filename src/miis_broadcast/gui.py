@@ -3007,7 +3007,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if not self.is_inference_running:
                 return
             interrupt_prefix = "[⚡ PRIORITY] " if gemini_priority_jump else ""
-            line = f"[{self._fmt_time(start_t)}] {interrupt_prefix}{display_text}"
+            line = f"[{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {interrupt_prefix}{display_text}"
             self._append_ui(line)
 
             if not tts_text.strip():
@@ -3036,7 +3036,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if isinstance(data, dict) and data.get("_background"):
             # epoch start_t would wedge at the head of _pending_segments forever
             cur = float(getattr(self, "_playback_sec", 0.0))
-            line = f"[{self._fmt_time(cur)}] {interrupt_prefix}{display_text}"
+            line = f"[{self._fmt_time(cur)}-{self._fmt_time(cur)}] {interrupt_prefix}{display_text}"
             self._append_ui(line)
         else:
             # Tag segment so the playback-time consumer can show the priority-jump marker
