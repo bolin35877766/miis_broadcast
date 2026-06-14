@@ -16,6 +16,7 @@ from ..core.models.gemini_tts import (
     stop_tts_system,
     enqueue_tts_text,
     interrupt_tts,
+    soft_interrupt_tts,
     set_tts_voice,
     set_natural_completion_callback,
     print_tts_stats,
@@ -93,6 +94,11 @@ class GeminiTTSWorker(QtCore.QObject):
             self._queue_remaining_sec = 0.0
         self._speak_start_wall = 0.0
         interrupt_tts()
+
+    @QtCore.Slot()
+    def soft_interrupt(self) -> None:
+        """P1 priority bump: drop pending TTS, keep current sentence playing."""
+        soft_interrupt_tts()
 
     @QtCore.Slot()
     def stop(self) -> None:

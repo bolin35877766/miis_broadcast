@@ -71,6 +71,7 @@ def _get_client():
 _text_queue: "queue.Queue[tuple]" = queue.Queue()
 _stop_event = threading.Event()
 _interrupt_event = threading.Event()
+_prefetch_cancel = threading.Event()
 _tts_threads_started = False
 
 # ==========================================
@@ -534,6 +535,10 @@ def _gemini_tts_worker() -> None:
             prefetch = None
             continue
 
+        if _prefetch_cancel.is_set():
+            _prefetch_cancel.clear()
+            prefetch = None
+
         gen_start_ts = 0.0
         if prefetch is not None:
             future, item, gen_start_ts = prefetch
@@ -663,10 +668,23 @@ def enqueue_tts_text(
     ts = ref_ts if ref_ts > 0 else time.time()
     _text_queue.put((text, ts, start_t))
 
+def soft_interrupt_tts() -> None:
+    """Drop pending utterances without cutting current playback.
+
+    Used for Gemini Fast-Blade P1: hard interrupt would silence audio for 2–4s
+    while broadcaster+TTS regenerate, so we only flush the pending queue and
+    cancel any prefetched next utterance.
+    """
+    clear_text_queue()
+    _prefetch_cancel.set()
+    logging.info("[GeminiTTS] soft_interrupt: pending queue cleared (current audio continues)")
+
+
 def interrupt_tts() -> None:
     """Hard interrupt: drop pending audio, flush audience buffers, clear pending text."""
     clear_text_queue()
     clear_audio_queue()
+    _prefetch_cancel.set()
     _perf_stats["last_text_sent_ts"] = 0.0
     _perf_stats["current_ref_ts"] = 0.0
     _interrupt_event.set()
