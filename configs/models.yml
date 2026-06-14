@@ -5,7 +5,6 @@ classifiers:
     # auto | flash_attention_2 | sdpa | eager — auto uses flash_attn when installed
     attn_implementation: auto
     device_id: 0
-    input_crop: right
     suppress_numbers: false
     fps: 3.0
     initial_fps_frames: 4

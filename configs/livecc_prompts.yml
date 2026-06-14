@@ -1,14 +1,16 @@
 # configs/livecc_prompts.yml
 version: 3
 
-# Primary prompt — assumes frames are CROPPED to the RIGHT half (the first-person
-# VR game view) before reaching LiveCC. That half contains the hoop, ball, shot and
-# all on-court action; the left half (a real person filmed in a room) is out of
-# distribution for LiveCC and is dropped. See examples/vr_test/stream_test_vr_frank.py.
+# Primary prompt — frames now reach LiveCC WHOLE (no right/left crop): the real person
+# wearing the VR headset and their first-person basketball-game view are both visible in
+# the same frame. State that pairing as a given fact so the model calls the action instead
+# of guessing at — and hallucinating about — what the two halves are and how they relate.
 livecc_query: |-
-  A basketball player is practicing shots at a hoop. In ONE short present-tense sentence,
-  describe only what the ball and the player are doing right now: the shot going up, the
-  ball dropping through the net, bouncing off the rim, or being dribbled and reset.
+  A real person wearing a VR headset is shown alongside the first-person view of the
+  basketball game they are playing — they are the player practicing shots at a hoop.
+  In ONE short present-tense sentence, describe only what the ball and the player are
+  doing right now: the shot going up, the ball dropping through the net, bouncing off
+  the rim, or being dribbled and reset.
   Use third person ("the player", "the ball"). Do NOT use "I" or "you", do NOT talk about
   the video, the camera or the viewer, and do NOT read scoreboard text. Plain words only.
 
