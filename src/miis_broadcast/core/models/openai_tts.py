@@ -805,6 +805,26 @@ def _audio_player_worker() -> None:
     print(
         "❌ [TTS] no audio backend: install sounddevice (pip) or add ffplay (FFmpeg) to PATH"
     )
+    # Headless / no-audio fallback: drain _audio_output_queue at real-time pace so
+    # _apply_audio_chunk_latency_stats() still fires and TTS latency is measurable.
+    while not _stop_event.is_set():
+        try:
+            audio_chunk = _audio_output_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        _apply_audio_chunk_latency_stats()
+        if _pcm_sink is not None and audio_chunk is not None:
+            try:
+                _pcm_sink(np.ascontiguousarray(audio_chunk, dtype=np.int16))
+            except Exception:
+                pass
+        if _recording_sink is not None and audio_chunk is not None:
+            try:
+                _recording_sink(np.ascontiguousarray(audio_chunk, dtype=np.int16))
+            except Exception:
+                pass
+        if audio_chunk is not None and getattr(audio_chunk, "size", 0) > 0:
+            time.sleep(len(audio_chunk) / 24000.0)
 
 
 # ==========================================

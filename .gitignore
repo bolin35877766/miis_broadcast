@@ -1,25 +1,24 @@
 # Ignore large video files
 examples/*.mp4
 examples/
+*.txt
 
 # Environment variables
 .env
 
-<<<<<<< HEAD
-.pyc
-
-.log
-=======
 # Logs
 logs/
+log/
+*.log
 
 # Python cache
 __pycache__/
 *.pyc
+
+
 
 # Package build artifacts
 *.egg-info/
 
 # Virtual environment
 .venv/
->>>>>>> Multi-API

@@ -1802,6 +1802,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         raw = scan_raw
 
+        p_label = {1: "P1", 2: "P2"}.get(fast_priority, "P3")
+        self._write_log(
+            self.livecc_log_file,
+            f"[LiveCC] [{p_label}] [{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {raw.strip()}",
+        )
+
         # [延遲][LiveCC] Stage 1: time from "frame appeared" (stop_t on the shared
         # wall-clock anchor) to LiveCC emitting this segment. frame_wall_ts also
         # anchors [延遲][語音][中斷] below (dimension 2: frame -> sound for P1/P2).
@@ -3317,14 +3323,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
 
         is_bg = isinstance(data, dict) and bool(data.get("_background"))
-        livecc_raw = ""
-        if isinstance(data, dict):
-            livecc_raw = data.get("metadata", {}).get("raw", "") or ""
-            event = data.get("event", "")
-            if not livecc_raw and event and event != "raw_description":
-                livecc_raw = event.replace("_", " ")
-        elif isinstance(data, str):
-            livecc_raw = data
 
         gemini_text = ""
         base_p = seg_priority
@@ -3336,10 +3334,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return {
             "log": True,
-            "log_livecc": bool(livecc_raw.strip()) and not is_bg,
             "log_gemini": bool(self._use_gemini and gemini_text),
             "log_combination": bool(combination_text.strip()) and not is_bg,
-            "livecc_text": livecc_raw.strip(),
             "gemini_priority": base_p,
             "gemini_text": gemini_text,
             "combination_text": combination_text.strip(),
@@ -3398,11 +3394,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._tts_protect_until = time.time() + est + 1.5
             logging.info("[P%d Guard] re-armed protect window: %.1fs + 1.5s buffer", gemini_pri, est)
 
-        if meta.get("log_livecc") and meta.get("livecc_text"):
-            self._write_log(
-                self.livecc_log_file,
-                f"[LiveCC] [{ts}] {meta['livecc_text']}",
-            )
         if meta.get("log_gemini") and meta.get("gemini_text"):
             priority = meta.get("gemini_priority", "?")
             self._write_log(
