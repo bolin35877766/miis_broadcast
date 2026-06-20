@@ -123,7 +123,7 @@ class OpenAITTSWorker(QtCore.QObject):
         enqueue_tts_text(
             text,
             ref_ts=ref_ts,
-            drop_outdated=(priority <= 1),
+            drop_outdated=(priority <= 2),
             priority=priority,
             start_t=start_t,
             stop_t=stop_t,
