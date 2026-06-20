@@ -1118,7 +1118,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_tts_emit_ts: float = 0.0    # wall-clock time of last TTS emit (dedup)
         self._tts_protect_until: float = 0.0   # wall-clock deadline: block lower-priority below this time
         self._tts_protected_priority: int = 5  # priority being protected until _tts_protect_until
-        self._p1_filler_armed: bool = False    # True while zh-TW filler is playing (safe to hard-cut)
         self._post_p1_pending: bool = False     # True while waiting for 1.0s post-P1 silence
         self._pending_livecc_fragment: Optional[tuple] = None  # truncated "..." fragment awaiting stitching
         self._livecc_start_wall: float = 0.0   # wall-clock anchor for file-mode "frame appeared" latency (== LiveCC inference start)
@@ -1569,13 +1568,6 @@ class MainWindow(QtWidgets.QMainWindow):
     _PRIORITY_DECAY_INTERVAL_SEC = 2.0          # every N sec of staleness, priority worsens by 1
     _TTS_PROTECT_WINDOW_SEC = {1: 6.0, 2: 3.0}  # after sending P1/P2, shield queue position this long
     _FAST_BLADE_DEDUP_WINDOW_S = 5.0            # suppress repeated P1/P2 triggers for the same event
-    _P1_FILLER_EN = "Hold on!"          # English interrupt cue
-    _P1_FILLER_ZH = "等等！"            # zh-TW interrupt cue
-    _P1_FILLER = _P1_FILLER_EN          # active filler, updated by _apply_tts_settings_before_start
-
-    def _is_p1_filler_text(self, text: str) -> bool:
-        t = (text or "").strip()
-        return t in (self._P1_FILLER_EN, self._P1_FILLER_ZH, self._P1_FILLER)
     _P3_BACKPRESSURE_WATERMARK_SEC = 2.0        # only feed GeminiWorker while TTS backlog is below this
 
     def _format_segment_ui_line(self, start_t: float, stop_t: float, tag: str, body: str) -> str:
@@ -1590,7 +1582,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return text[:limit] + "…"
 
     def _gemini_ui_display(self, data: dict) -> str:
-        """Human-readable Gemini line — distinct from LiveCC / interrupt filler."""
+        """Human-readable Gemini line — distinct from LiveCC preview."""
         priority = data.get("priority", "?")
         broadcast = (data.get("broadcast_text") or "").strip()
         if data.get("_background"):
@@ -1638,9 +1630,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._tts_protect_until = time.time() + window + extra
 
     def _is_p1_audio_active(self) -> bool:
-        """True while P1 filler or broadcast is playing — block another P1 interrupt."""
-        if self._p1_filler_armed:
-            return True
+        """True while P1 broadcast is playing — block another P1 interrupt."""
         if time.time() < self._tts_protect_until and self._tts_protected_priority == 1:
             return True
         if self._tts_protected_priority == 1 and self._get_active_tts_remaining_sec() > 0.3:
@@ -1658,9 +1648,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return False
 
     def _should_hard_cut_for_p1(self) -> bool:
-        """Only hard-cut for P1 when replacing filler or non-P1 audio — never cut active P1."""
-        if self._p1_filler_armed:
-            return True
+        """Only hard-cut for P1 when not replacing active P1 audio."""
         return not self._is_p1_audio_active()
 
     def _get_active_tts_remaining_sec(self) -> float:
@@ -1700,17 +1688,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         return bool(data.get("should_speak", True)) or bool(data.get("_background"))
 
-    def _p1_hard_interrupt_with_filler(self, start_t: float, already_p1: bool) -> None:
-        """Hard-cut current audio and play the interrupt filler via OpenAI TTS."""
+    def _p1_hard_interrupt(self, already_p1: bool) -> None:
+        """Hard-cut current TTS so P1 Gemini commentary can play next."""
         if already_p1:
             return
-        self._p1_filler_armed = True
         self._register_tts_priority(1)
         if self.tts_mode == "openai":
             self.signal_tts_interrupt.emit()
-            self.signal_tts_speak.emit(self._P1_FILLER, 1, time.time(), start_t, start_t, {})
-            # Filler bypasses on_segment — arm post-P1 tracking here so background
-            # Gemini resumes after the interrupt sequence finishes.
             self._post_p1_pending = True
             self._arm_p1_fallback_timer()
         elif self.tts_mode == "local":
@@ -1730,19 +1714,16 @@ class MainWindow(QtWidgets.QMainWindow):
     ) -> None:
         """Send LiveCC text to GeminiBroadcaster; UI shows LiveCC preview (all TTS modes).
 
-        When already_p1 is True AND the filler is still armed, it means Gemini has
-        not yet returned a translation for the first P1 event — skip enqueue_front so
-        we don't stack up duplicate Gemini requests that would each produce an utterance.
+        When already_p1 is True, skip enqueue_front to avoid stacking duplicate P1
+        Gemini requests while a P1 utterance is in flight.
         When already_p2 is True, skip duplicate P2 Gemini requests while P2 is playing.
         """
         gem_event = self._fast_blade_gemini_event(raw, data)
         if flush and not already_p1 and hasattr(self, "gemini_worker"):
             self.gemini_worker.flush_and_abort()
         if hasattr(self, "gemini_worker"):
-            # Don't add another Gemini request while filler is still playing (first
-            # P1 translation not yet returned). This prevents cascaded duplicate P1s.
-            if already_p1 and self._p1_filler_armed:
-                logging.info("[FastBlade] P1 already queued to Gemini (filler armed), skipping enqueue_front")
+            if already_p1:
+                logging.info("[FastBlade] P1 already active, skipping enqueue_front")
             elif already_p2 and p2:
                 logging.info("[FastBlade] P2 already active, skipping enqueue_front")
             else:
@@ -1750,12 +1731,11 @@ class MainWindow(QtWidgets.QMainWindow):
         livecc_preview = self._preview_text(raw)
         if p2:
             tag = "[LiveCC·排隊]" if already_p2 else "[LiveCC→P2]"
-            hint = "" if already_p2 else "（等 Gemini 中文稿）"
+            hint = "" if already_p2 else "（等 Gemini 稿）"
         elif already_p1:
             tag, hint = "[LiveCC·排隊]", ""
         else:
-            tag = "[LiveCC→INT]"
-            hint = f"（口播「{self._P1_FILLER}」→ 等 Gemini 中文稿）"
+            tag, hint = "[LiveCC→P1]", "（等 Gemini 稿）"
         body = f"{livecc_preview}  {hint}".strip() if hint else livecc_preview
         self._append_ui(self._format_segment_ui_line(start_t, stop_t, tag, body))
 
@@ -1773,11 +1753,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if cut_current and priority <= 1:
             if self._should_hard_cut_for_p1():
                 self.signal_tts_interrupt.emit()
-            self._p1_filler_armed = False
-        elif not self._is_p1_filler_text(text):
-            # Gemini may return P2+ for a P1 LiveCC trigger — disarm filler so
-            # subsequent P1 events are not stuck in [LiveCC·排隊] forever.
-            self._p1_filler_armed = False
         self.signal_tts_speak.emit(
             text, priority, ref_ts, start_t, stop_t, log_meta or {}
         )
@@ -1853,7 +1828,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if hasattr(self, "gemini_bg_worker"):
                     self.gemini_bg_worker.pause()
                 already_p1 = self._is_p1_audio_active()
-                self._p1_hard_interrupt_with_filler(start_t, already_p1)
+                self._p1_hard_interrupt(already_p1)
                 if tts_text:
                     self._fast_blade_enqueue_gemini(
                         start_t, stop_t, raw, data,
@@ -2713,9 +2688,6 @@ class MainWindow(QtWidgets.QMainWindow):
             _gb_set_lang(lang)
             _tts_set_lang(lang)
 
-            # Sync P1 interrupt filler with selected language
-            self._P1_FILLER = self._P1_FILLER_ZH if lang == "zh" else self._P1_FILLER_EN
-
             self.signal_tts_apply_settings.emit(voice, float(speed))
 
         elif self.tts_mode == "local":
@@ -3244,7 +3216,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_tts_done(self) -> None:
         if self._post_p1_pending:
             self._post_p1_pending = False
-            self._p1_filler_armed = False
             if hasattr(self, "_p1_fallback_timer") and self._p1_fallback_timer is not None:
                 self._p1_fallback_timer.stop()
                 self._p1_fallback_timer = None
@@ -3268,7 +3239,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._p1_fallback_timer = None
         if self._post_p1_pending:
             self._post_p1_pending = False
-            self._p1_filler_armed = False
             logging.warning("[P1 Fallback] signal_tts_done never fired after 12s — force-resuming background")
             self._resume_gemini_background()
 
@@ -3343,7 +3313,7 @@ class MainWindow(QtWidgets.QMainWindow):
     ) -> Optional[dict]:
         """Build log payload written when TTS audio actually starts playing."""
         text = (tts_text or "").strip()
-        if not text or text.lower() == "silence" or self._is_p1_filler_text(text):
+        if not text or text.lower() == "silence":
             return None
 
         is_bg = isinstance(data, dict) and bool(data.get("_background"))
@@ -3426,8 +3396,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if gemini_pri <= 2:
             self._tts_protected_priority = gemini_pri
             self._tts_protect_until = time.time() + est + 1.5
-            if gemini_pri <= 1:
-                self._p1_filler_armed = False
             logging.info("[P%d Guard] re-armed protect window: %.1fs + 1.5s buffer", gemini_pri, est)
 
         if meta.get("log_livecc") and meta.get("livecc_text"):

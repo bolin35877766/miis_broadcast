@@ -25,7 +25,7 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - 嘴砲型實況主 (Trash-talk / Roast)
   - 熱血沸騰型主播 (High-energy Hype)
   - 冷靜分析型 (Calm & Analytical)
-- **Fast–slow blade**: LiveCC keyword hits (P1/P2) can hard-cut TTS with a zh-TW filler; P3 descriptions feed **Gemini** (per-segment + background worker) for richer Chinese copy before TTS.
+- **Fast–slow blade**: LiveCC keyword hits (P1/P2) hard-cut lower-priority TTS; P3 descriptions feed **Gemini** (per-segment + background worker) for richer broadcast copy before TTS.
 - **Text-to-Speech** (GUI dropdown):
   - **不啟用 (Mute)** — subtitles only
   - **OpenAI TTS** (default) — Realtime WebSocket, cloud, used for audience `narration` when enabled
