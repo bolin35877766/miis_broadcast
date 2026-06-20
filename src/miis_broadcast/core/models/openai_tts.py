@@ -559,13 +559,22 @@ async def _openai_realtime_worker():
                                 )
 
                             if target_text and contains_meaningful_text(target_text):
-                                # 如果目前有在說話，先發送取消並等待確認
+                                # Only preempt active playback when incoming priority is
+                                # strictly higher (lower number) than what's playing.
                                 if is_response_active:
+                                    cur_pri = int(_perf_stats.get("current_priority", 5))
+                                    if int(priority) >= cur_pri:
+                                        _text_queue.put(
+                                            (target_text, ref_ts, start_t, stop_t, priority, log_meta)
+                                        )
+                                        continue
                                     await websocket.send(json.dumps({"type": "response.cancel"}))
                                     awaiting_cancel_ack = True
-                                    clear_audio_queue()  # 同步清空已緩衝的音訊，避免舊內容繼續播
-                                    _text_queue.put((target_text, ref_ts, start_t, stop_t, priority, log_meta))
-                                    continue  # 跳出本次循環，去聽事件 (D)
+                                    clear_audio_queue()
+                                    _text_queue.put(
+                                        (target_text, ref_ts, start_t, stop_t, priority, log_meta)
+                                    )
+                                    continue
 
                                 # 確定沒有 active response，才發送
                                 _perf_stats["last_text_sent_ts"] = time.time()
