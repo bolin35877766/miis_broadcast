@@ -699,6 +699,15 @@ class ControlPanel(QtWidgets.QWidget):
             self.cmb_voice.addItem(v, userData=v)
         self.cmb_voice.setCurrentText("coral")
 
+        # --- OpenAI: Language (English / Traditional Chinese) ---
+        self.l_tts_lang = _make_lbl("Language:")
+        self.cmb_tts_lang = QtWidgets.QComboBox()
+        _fix_combo_behavior(self.cmb_tts_lang)
+        self.cmb_tts_lang.addItem("English", userData="en")
+        self.cmb_tts_lang.addItem("繁體中文", userData="zh")
+        self.cmb_tts_lang.setCurrentIndex(0)
+        self.cmb_tts_lang.setStyleSheet(combo_style)
+
         # --- OpenAI: Speed slider ---
         self.l_speed = _make_lbl("Speed:")
         self.slider_speed = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -735,6 +744,7 @@ class ControlPanel(QtWidgets.QWidget):
         _settings_row_combo("tts", self.l_tts, self.cmb_tts)
         _settings_row_combo("style", self.l_style, self.cmb_style)
         _settings_row_combo("voice", self.l_voice, self.cmb_voice)
+        _settings_row_combo("tts_lang", self.l_tts_lang, self.cmb_tts_lang)
         _settings_row_slider("speed", self.l_speed, self.slider_speed, self.lbl_speed_val)
         _settings_row_slider("exag", self.l_exag, self.slider_exag, self.lbl_exag_val)
         _settings_row_slider("cfg", self.l_cfg, self.slider_cfg, self.lbl_cfg_val)
@@ -941,12 +951,15 @@ class ControlPanel(QtWidgets.QWidget):
         rows = getattr(self, "_settings_rows", {})
         if rows:
             rows["voice"].setVisible(show_openai)
+            rows["tts_lang"].setVisible(show_openai)
             rows["speed"].setVisible(show_openai)
             rows["exag"].setVisible(show_local)
             rows["cfg"].setVisible(show_local)
             return
 
-        for w in (self.l_voice, self.cmb_voice, self.l_speed, self.slider_speed, self.lbl_speed_val):
+        for w in (self.l_voice, self.cmb_voice,
+                  self.l_tts_lang, self.cmb_tts_lang,
+                  self.l_speed, self.slider_speed, self.lbl_speed_val):
             w.setVisible(show_openai)
         for w in (
             self.l_exag,
@@ -964,6 +977,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_style.setEnabled(enabled)
 
         self.cmb_voice.setEnabled(enabled)
+        self.cmb_tts_lang.setEnabled(enabled)
         self.slider_speed.setEnabled(enabled)
 
         self.slider_exag.setEnabled(enabled)
@@ -981,6 +995,11 @@ class ControlPanel(QtWidgets.QWidget):
     def get_openai_voice(self) -> str:
         v = self.cmb_voice.currentData()
         return str(v) if v is not None else "coral"
+
+    def get_tts_language(self) -> str:
+        """Return 'en' or 'zh' based on the language combo selection."""
+        v = self.cmb_tts_lang.currentData()
+        return str(v) if v in ("en", "zh") else "en"
 
     def get_openai_speed(self) -> float:
         return float(self.slider_speed.value()) / 100.0
@@ -1550,7 +1569,9 @@ class MainWindow(QtWidgets.QMainWindow):
     _PRIORITY_DECAY_INTERVAL_SEC = 2.0          # every N sec of staleness, priority worsens by 1
     _TTS_PROTECT_WINDOW_SEC = {1: 6.0, 2: 3.0}  # after sending P1/P2, shield queue position this long
     _FAST_BLADE_DEDUP_WINDOW_S = 5.0            # suppress repeated P1/P2 triggers for the same event
-    _P1_FILLER = "等等！"  # zh-TW interrupt cue for OpenAI TTS
+    _P1_FILLER_EN = "Hold on!"          # English interrupt cue
+    _P1_FILLER_ZH = "等等！"            # zh-TW interrupt cue
+    _P1_FILLER = _P1_FILLER_EN          # active filler, updated by _apply_tts_settings_before_start
     _P3_BACKPRESSURE_WATERMARK_SEC = 2.0        # only feed GeminiWorker while TTS backlog is below this
 
     def _format_segment_ui_line(self, start_t: float, stop_t: float, tag: str, body: str) -> str:
@@ -2656,6 +2677,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.tts_mode == "openai":
             voice = self.control_panel.get_openai_voice()
             speed = self.control_panel.get_openai_speed()
+            lang = self.control_panel.get_tts_language()
+
+            # Apply language to both Gemini broadcaster and OpenAI TTS
+            from .core.models.gemini_broadcaster import set_language as _gb_set_lang
+            from .core.models.openai_tts import set_tts_language as _tts_set_lang
+            _gb_set_lang(lang)
+            _tts_set_lang(lang)
+
+            # Sync P1 interrupt filler with selected language
+            self._P1_FILLER = self._P1_FILLER_ZH if lang == "zh" else self._P1_FILLER_EN
+
             self.signal_tts_apply_settings.emit(voice, float(speed))
 
         elif self.tts_mode == "local":
@@ -3281,7 +3313,7 @@ class MainWindow(QtWidgets.QMainWindow):
     ) -> Optional[dict]:
         """Build log payload written when TTS audio actually starts playing."""
         text = (tts_text or "").strip()
-        if not text or text.lower() == "silence" or text == self._GEMINI_P1_FILLER:
+        if not text or text.lower() == "silence" or text == self._P1_FILLER:
             return None
 
         is_bg = isinstance(data, dict) and bool(data.get("_background"))

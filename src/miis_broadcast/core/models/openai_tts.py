@@ -65,7 +65,25 @@ TTS_MODEL_URL: str = _app_cfg.get("model_url", "wss://api.openai.com/v1/realtime
 TTS_HEADERS = {
     "Authorization": f"Bearer {MY_API_KEY}",
 }
-SYSTEM_INSTRUCTIONS: str = _prompts_cfg.get("openai_tts", "")
+
+_SYSTEM_INSTRUCTIONS_EN: str = _prompts_cfg.get("openai_tts", "")
+_SYSTEM_INSTRUCTIONS_ZH: str = _prompts_cfg.get("openai_tts_zh", "")
+# Active instructions — switched at runtime via set_tts_language()
+SYSTEM_INSTRUCTIONS: str = _SYSTEM_INSTRUCTIONS_EN
+_tts_lang: str = "en"  # "en" | "zh"
+
+
+def set_tts_language(lang: str) -> None:
+    """Switch the TTS system instructions between English and Traditional Chinese.
+
+    lang: 'en' (default) or 'zh'.
+    """
+    import logging as _log
+    global SYSTEM_INSTRUCTIONS, _tts_lang
+    lang = lang if lang in ("en", "zh") else "en"
+    _tts_lang = lang
+    SYSTEM_INSTRUCTIONS = _SYSTEM_INSTRUCTIONS_ZH if lang == "zh" else _SYSTEM_INSTRUCTIONS_EN
+    _log.info("[OpenAITTS] Language switched to '%s' (%d chars)", lang, len(SYSTEM_INSTRUCTIONS))
 
 # ==========================================
 # 🧪 Dry-Run 模擬模式（不連 OpenAI，不播音）

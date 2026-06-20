@@ -118,13 +118,27 @@ class _ContextRetriever:
             return None
         return vec / norm
 
-_GEMINI_STYLES: Dict[str, str] = _prompts_cfg.get("gemini_broadcaster", {})
+_GEMINI_STYLES_EN: Dict[str, str] = _prompts_cfg.get("gemini_broadcaster", {})
+_GEMINI_STYLES_ZH: Dict[str, str] = _prompts_cfg.get("gemini_broadcaster_zh", {})
+# Backward-compat alias used elsewhere
+_GEMINI_STYLES = _GEMINI_STYLES_EN
+
 _DEFAULT_STYLE: str = "objective"
-_SYSTEM_PROMPT: str = (
-    _GEMINI_STYLES.get(_DEFAULT_STYLE, "")
-    if isinstance(_GEMINI_STYLES, dict)
-    else str(_GEMINI_STYLES)
-)
+_current_style_key: str = _DEFAULT_STYLE
+_current_lang: str = "en"  # "en" | "zh"
+
+def _resolve_prompt(style_key: str, lang: str) -> str:
+    """Return the system prompt for the given style + language combination."""
+    styles = _GEMINI_STYLES_ZH if lang == "zh" else _GEMINI_STYLES_EN
+    if not isinstance(styles, dict):
+        return ""
+    prompt = styles.get(style_key, "")
+    if not prompt and lang == "zh":
+        # Fallback to English if zh variant missing
+        prompt = (_GEMINI_STYLES_EN or {}).get(style_key, "")
+    return prompt.strip()
+
+_SYSTEM_PROMPT: str = _resolve_prompt(_DEFAULT_STYLE, _current_lang)
 
 _client: "genai.Client | None" = None
 _client_lock = threading.Lock()
@@ -132,16 +146,27 @@ _client_lock = threading.Lock()
 
 def set_style(style_key: str) -> None:
     """Switch Gemini broadcaster style at runtime. style_key must match a key in system_prompts.yml."""
-    global _SYSTEM_PROMPT
-    if not isinstance(_GEMINI_STYLES, dict):
-        logging.warning("[GeminiBroadcaster] gemini_broadcaster in config is not a dict, cannot switch style")
-        return
-    prompt = _GEMINI_STYLES.get(style_key, "")
+    global _SYSTEM_PROMPT, _current_style_key
+    prompt = _resolve_prompt(style_key, _current_lang)
     if not prompt:
-        logging.warning("[GeminiBroadcaster] Style '%s' not found, keeping current prompt", style_key)
+        logging.warning("[GeminiBroadcaster] Style '%s' not found for lang='%s', keeping current prompt",
+                        style_key, _current_lang)
         return
-    _SYSTEM_PROMPT = prompt.strip()
-    logging.info("[GeminiBroadcaster] Style switched to '%s' (%d chars)", style_key, len(_SYSTEM_PROMPT))
+    _current_style_key = style_key
+    _SYSTEM_PROMPT = prompt
+    logging.info("[GeminiBroadcaster] Style='%s' lang='%s' (%d chars)", style_key, _current_lang, len(_SYSTEM_PROMPT))
+
+
+def set_language(lang: str) -> None:
+    """Switch output language. lang must be 'en' (English) or 'zh' (Traditional Chinese)."""
+    global _SYSTEM_PROMPT, _current_lang
+    lang = lang if lang in ("en", "zh") else "en"
+    _current_lang = lang
+    prompt = _resolve_prompt(_current_style_key, lang)
+    if prompt:
+        _SYSTEM_PROMPT = prompt
+    logging.info("[GeminiBroadcaster] Language switched to '%s', style='%s' (%d chars)",
+                 lang, _current_style_key, len(_SYSTEM_PROMPT))
 _retriever: _ContextRetriever = _ContextRetriever(top_k=3)
 _raw_context: str = ""
 _RAG_THRESHOLD: int = int(_gemini_cfg.get("rag_threshold", 600))
