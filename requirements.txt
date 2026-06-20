@@ -38,7 +38,7 @@ websockets>=13,<17
 sounddevice>=0.5
 httpx>=0.27
 
-# --- Google Gemini (integration branch: commentary + Gemini TTS) ---
+# --- Google Gemini (commentary / translation) ---
 google-genai>=1.74,<2
 
 # --- Audience second screen (LiveKit + token HTTP server) ---

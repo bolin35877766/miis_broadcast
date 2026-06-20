@@ -33,7 +33,6 @@ miis_broadcast/
 │   │   ├── livecc.py            # LiveCCWorker (file mode), LiveCCCameraWorker (camera mode)
 │   │   ├── gemini.py            # GeminiWorker + GeminiBackgroundWorker
 │   │   ├── openai_tts.py        # OpenAITTSWorker — WebSocket to gpt-realtime
-│   │   ├── gemini_tts.py        # GeminiTTSWorker — Gemini AUDIO modality TTS via ffplay
 │   │   ├── chatterbox_tts.py    # ChatterboxTTSWorker — local Chatterbox TTS (lazy-loaded)
 │   │   ├── obs_input.py         # OBSCameraThread — OBS Virtual Camera source
 │   │   ├── camera_bytetrack.py  # CameraByteTrackThread — webcam + YOLOX+ByteTrack tracking
@@ -46,7 +45,6 @@ miis_broadcast/
 │   │   │   ├── livecc_transformers.py   # LiveCCInfer: Qwen2VL inference, KV cache, hallucination filter
 │   │   │   ├── gemini_broadcaster.py    # Gemini API calls, RAG retriever, stream parsing
 │   │   │   ├── openai_tts.py            # TTS queue, enqueue_tts_text(), recording sink
-│   │   │   ├── gemini_tts.py            # Gemini TTS singleton: enqueue, interrupt, ffplay playback
 │   │   │   ├── chatterbox_tts.py        # Chatterbox model wrapper
 │   │   │   └── bytetrack_tracker.py     # ByteTrackWrapper (YOLOX+ByteTrack person tracking)
 │   │   ├── io/
@@ -221,7 +219,6 @@ Remote segments skip `_route_segment()` (no Gemini enrichment, no fast-slow blad
 | `gemini_thread` | `GeminiWorker` | Blocks on HTTP; P3 per-segment enrichment |
 | `gemini_bg_thread` | `GeminiBackgroundWorker` | Continuous background commentary; polls TTS backlog |
 | `tts_thread` | `OpenAITTSWorker` | WebSocket to gpt-realtime; eager-started |
-| `gemini_tts_thread` | `GeminiTTSWorker` | Gemini AUDIO API + ffplay; lazy-started |
 | `local_tts_thread` | `ChatterboxTTSWorker` | Local model; lazy-loaded on first "local" selection |
 | `video_thread` | `VideoThread` | cv2 decode loop; file mode |
 | `obs_thread` | `OBSCameraThread` | OBS Virtual Camera; camera "obs" mode |
@@ -235,9 +232,7 @@ Remote segments skip `_route_segment()` (no Gemini enrichment, no fast-slow blad
 
 **Signal safety rule**: Workers only receive data via Qt Signals (QueuedConnection). P1/P2 fast-path calls (`flush_and_abort`, `enqueue_front`) are CPython-GIL-safe deque ops — no explicit lock needed.
 
-**Gemini TTS core threads** (inside `core/models/gemini_tts.py`):
-- `GeminiTTSWorker` thread: drain `_text_queue`, call `generate_content`, prefetch next utterance via `ThreadPoolExecutor(max_workers=2)`, play via `ffplay`
-- `_frame_sender_loop` inside `SocketClientRunner`: daemon thread draining JPEG queue → `sendall()`
+**Remote frame sender**: `_frame_sender_loop` inside `SocketClientRunner` is a daemon thread draining the JPEG queue → `sendall()`.
 
 ---
 
@@ -312,9 +307,6 @@ openai_tts:
   default_speed: 1.5
   temperature: 0.7
 
-gemini_tts:
-  model_name: models/gemini-3.1-flash-tts-preview
-  voice: Kore
 
 chatterbox_tts:
   audio_prompt_path: ...        # reference WAV for voice cloning
@@ -532,14 +524,6 @@ Both `GeminiBackgroundWorker` (watermark 1.0s) and `_route_segment` P3 gate (wat
 - Sends text → receives base64 audio delta chunks → plays via sounddevice
 - **Warm-up**: `warmup_connection()` opens WebSocket before first segment (called on Start click) to eliminate first-utterance latency
 - `register_pcm_sink(callback, mute_local, flush_callback)`: optional PCM tap for audience second-screen + recording
-
-### Gemini TTS (`workers/gemini_tts.py`, `core/models/gemini_tts.py`)
-
-- Protocol: `google.genai` `generate_content` with `response_modalities=["AUDIO"]`
-- Playback: raw PCM16 streamed to `ffplay` subprocess (1:1 wall clock, interruptible via `_soft_stop_proc`)
-- **Prefetch**: `_tts_executor (ThreadPoolExecutor, max_workers=2)` generates next utterance's audio while current plays, eliminating the generate→play gap
-- **Fade**: 15ms linear fade-in/out on every utterance via NumPy (prevents click/pop at ffplay process boundaries)
-- `register_recording_sink(callback)`: PCM bytes forwarded to `AudioRecorder.write_chunk()`
 
 ### Chatterbox (local) TTS (`workers/chatterbox_tts.py`)
 

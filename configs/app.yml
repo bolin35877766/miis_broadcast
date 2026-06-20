@@ -19,10 +19,6 @@ chatterbox_tts:
   cfg_weight: 1.0
   chunk_size: 25
 
-gemini_tts:
-  model_name: "models/gemini-3.1-flash-tts-preview"
-  voice: Kore
-
 gemini:
   model_name: gemini-3.1-flash-lite-preview
   rag_threshold: 600

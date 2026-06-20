@@ -36,9 +36,7 @@ def main():
     # CUDA runtime threads and httpx threads race on the system allocator.
     try:
         from .core.models.gemini_broadcaster import _get_client as _gcb
-        from .core.models.gemini_tts import _get_client as _gct
         _gcb()
-        _gct()
     except Exception:
         pass  # Missing API key or network error — workers will retry
 

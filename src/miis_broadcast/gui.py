@@ -18,7 +18,6 @@ from .widgets.text_output import TextOutputWidget
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.gemini import GeminiWorker
 from .workers.openai_tts import OpenAITTSWorker
-from .core.models.gemini_tts import DEFAULT_FILLER as _GEMINI_DEFAULT_FILLER
 from .workers.obs_input import OBSCameraThread
 from .workers.camera_bytetrack import CameraByteTrackThread
 from .workers.dual_source import DualSourceCameraThread
@@ -681,9 +680,8 @@ class ControlPanel(QtWidgets.QWidget):
         _fix_combo_behavior(self.cmb_tts)
         self.cmb_tts.addItem("不啟用 (Mute)", userData="none")
         self.cmb_tts.addItem("OpenAI TTS", userData="openai")
-        self.cmb_tts.addItem("Gemini TTS", userData="gemini")
         self.cmb_tts.addItem("Local TTS", userData="local")
-        self.cmb_tts.setCurrentIndex(2)
+        self.cmb_tts.setCurrentIndex(1)
         self.cmb_tts.setStyleSheet(combo_style)
 
         # --- LiveCC style ---
@@ -1050,9 +1048,6 @@ class MainWindow(QtWidgets.QMainWindow):
     signal_local_tts_speak = QtCore.Signal(str)
     signal_local_tts_interrupt = QtCore.Signal()
     signal_local_tts_stop = QtCore.Signal()
-    signal_gemini_tts_speak = QtCore.Signal(str, int, float, float, float, object)
-    signal_gemini_tts_interrupt = QtCore.Signal()
-    signal_gemini_tts_stop = QtCore.Signal()
     _signal_to_gemini = QtCore.Signal(float, float, object)
     # Fires when Gemini confirms a P1 event — used to reset LiveCC KV cache
     signal_p1_confirmed = QtCore.Signal()
@@ -1543,11 +1538,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gemini_bg_thread.started.connect(self.gemini_bg_worker.initialize)
         self.gemini_bg_thread.start()
 
-        # signal_tts_done → P1 post-interrupt silence handler (all TTS workers)
+        # signal_tts_done → P1 post-interrupt silence handler
         self.tts_worker.signal_tts_done.connect(self._on_tts_done)
-        self.gemini_tts_worker.signal_tts_done.connect(self._on_tts_done)
         self.tts_worker.signal_playback_start.connect(self._on_tts_playback_log)
-        self.gemini_tts_worker.signal_playback_start.connect(self._on_tts_playback_log)
 
     # Time-aware Gemini priority: Gemini-originated content never interrupts
     # TTS playback directly (only LiveCC's fast-blade P1 in _route_segment may
@@ -1557,7 +1550,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _PRIORITY_DECAY_INTERVAL_SEC = 2.0          # every N sec of staleness, priority worsens by 1
     _TTS_PROTECT_WINDOW_SEC = {1: 6.0, 2: 3.0}  # after sending P1/P2, shield queue position this long
     _FAST_BLADE_DEDUP_WINDOW_S = 5.0            # suppress repeated P1/P2 triggers for the same event
-    _GEMINI_P1_FILLER = _GEMINI_DEFAULT_FILLER  # zh-TW interrupt cue (OpenAI + Gemini TTS)
+    _P1_FILLER = "等等！"  # zh-TW interrupt cue for OpenAI TTS
     _P3_BACKPRESSURE_WATERMARK_SEC = 2.0        # only feed GeminiWorker while TTS backlog is below this
 
     def _format_segment_ui_line(self, start_t: float, stop_t: float, tag: str, body: str) -> str:
@@ -1645,8 +1638,6 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         if self.tts_mode == "openai" and hasattr(self, "tts_worker"):
             return self.tts_worker.get_queue_remaining_sec()
-        elif self.tts_mode == "gemini" and hasattr(self, "gemini_tts_worker"):
-            return self.gemini_tts_worker.get_queue_remaining_sec()
         return 0.0
 
     @staticmethod
@@ -1674,21 +1665,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         return bool(data.get("should_speak", True)) or bool(data.get("_background"))
 
-    def _gemini_tts_allowed(self, data: object) -> bool:
-        return self._broadcast_tts_allowed(data)
-
     def _p1_hard_interrupt_with_filler(self, start_t: float, already_p1: bool) -> None:
-        """Hard-cut current audio and play the zh-TW filler (same for OpenAI / Gemini TTS)."""
+        """Hard-cut current audio and play the zh-TW filler via OpenAI TTS."""
         if already_p1:
             return
         self._p1_filler_armed = True
         self._register_tts_priority(1)
         if self.tts_mode == "openai":
             self.signal_tts_interrupt.emit()
-            self.signal_tts_speak.emit(self._GEMINI_P1_FILLER, 1, time.time(), start_t, start_t, {})
-        elif self.tts_mode == "gemini":
-            self.signal_gemini_tts_interrupt.emit()
-            self.signal_gemini_tts_speak.emit(self._GEMINI_P1_FILLER, 1, time.time(), start_t, start_t, {})
+            self.signal_tts_speak.emit(self._P1_FILLER, 1, time.time(), start_t, start_t, {})
         elif self.tts_mode == "local":
             self.signal_local_tts_interrupt.emit()
 
@@ -1726,7 +1711,7 @@ class MainWindow(QtWidgets.QMainWindow):
             tag, hint = "[LiveCC·排隊]", ""
         else:
             tag = "[LiveCC→INT]"
-            hint = f"（口播「{self._GEMINI_P1_FILLER}」→ 等 Gemini 中文稿）"
+            hint = f"（口播「{self._P1_FILLER}」→ 等 Gemini 中文稿）"
         body = f"{livecc_preview}  {hint}".strip() if hint else livecc_preview
         self._append_ui(self._format_segment_ui_line(start_t, stop_t, tag, body))
 
@@ -1746,26 +1731,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.signal_tts_interrupt.emit()
             self._p1_filler_armed = False
         self.signal_tts_speak.emit(
-            text, priority, ref_ts, start_t, stop_t, log_meta or {}
-        )
-
-    def _emit_gemini_tts_speak(
-        self,
-        text: str,
-        priority: int,
-        ref_ts: float,
-        start_t: float,
-        stop_t: float,
-        *,
-        cut_current: bool = False,
-        log_meta: Optional[dict] = None,
-    ) -> None:
-        """Enqueue Gemini TTS; hard-cut only filler or non-P1 audio — never an active P1 line."""
-        if cut_current and priority <= 1:
-            if self._should_hard_cut_for_p1():
-                self.signal_gemini_tts_interrupt.emit()
-            self._p1_filler_armed = False
-        self.signal_gemini_tts_speak.emit(
             text, priority, ref_ts, start_t, stop_t, log_meta or {}
         )
 
@@ -2132,27 +2097,10 @@ class MainWindow(QtWidgets.QMainWindow):
             # 🔥 [修改點 1] 註解掉或刪除原本的直接啟動，改為 Lazy Load
             # self.local_tts_thread.start() 
 
-            # ==========================================
-            # 3. Gemini TTS Worker  [lazy-started like Chatterbox]
-            # ==========================================
-            # Thread is set up here but NOT started at launch.
-            # It starts the first time the user selects "gemini" TTS mode
-            # (see _on_tts_mode_changed), avoiding a startup race between
-            # httpx's DNS/SSL threads and PyTorch's CUDA runtime threads.
-            from .workers.gemini_tts import GeminiTTSWorker
-            self.gemini_tts_thread = QtCore.QThread(self)
-            self.gemini_tts_worker = GeminiTTSWorker()
-            self.gemini_tts_worker.moveToThread(self.gemini_tts_thread)
-            self.gemini_tts_thread.started.connect(self.gemini_tts_worker.start)
-            self.signal_gemini_tts_speak.connect(self.gemini_tts_worker.speak, QtCore.Qt.QueuedConnection)
-            self.signal_gemini_tts_interrupt.connect(self.gemini_tts_worker.interrupt, QtCore.Qt.QueuedConnection)
-            self.signal_gemini_tts_stop.connect(self.gemini_tts_worker.stop, QtCore.Qt.QueuedConnection)
-            # gemini_tts_thread.start() is called lazily in _on_tts_mode_changed()
-
             # 🔥 監聽下拉選單變化（需在所有 worker 建立完後再 connect）
             self.control_panel.cmb_tts.currentIndexChanged.connect(self._on_tts_mode_changed)
 
-            # 初始化時根據預設模式啟動對應 worker（例如 Gemini 為預設時立即啟動）
+            # 初始化時根據預設模式啟動對應 worker
             self._on_tts_mode_changed()
 
     # ---------------- Slots ----------------
@@ -2200,8 +2148,6 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def _on_tts_mode_changed(self) -> None:
         mode = self.control_panel.get_tts_mode() if hasattr(self, "control_panel") else None
-        if mode == "gemini" and not self.gemini_tts_thread.isRunning():
-            self.gemini_tts_thread.start()
         self.tts_mode = mode or getattr(self, "tts_mode", "none")
         if self._audience_publisher is not None:
             self._clear_all_pcm_sinks()
@@ -2571,18 +2517,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def _clear_all_pcm_sinks(self) -> None:
         """Clear audience PCM sinks on every TTS backend that supports them."""
         from .core.models import openai_tts as _oai_tts_mod
-        from .core.models import gemini_tts as _gem_tts_mod
         _oai_tts_mod.register_pcm_sink(None, mute_local=False)
-        _gem_tts_mod.register_pcm_sink(None, mute_local=False)
 
     def _audience_pcm_tts_module(self):
-        """Core TTS module for the active dropdown mode (OpenAI or Gemini only)."""
+        """Core TTS module for the active dropdown mode (OpenAI only)."""
         mode = getattr(self, "tts_mode", "none")
         if mode == "openai":
             from .core.models import openai_tts as mod
-            return mod
-        if mode == "gemini":
-            from .core.models import gemini_tts as mod
             return mod
         return None
 
@@ -2717,9 +2658,6 @@ class MainWindow(QtWidgets.QMainWindow):
             speed = self.control_panel.get_openai_speed()
             self.signal_tts_apply_settings.emit(voice, float(speed))
 
-        elif self.tts_mode == "gemini":
-            pass  # voice set via app.yml; no UI controls needed
-
         elif self.tts_mode == "local":
             exag = self.control_panel.get_local_exaggeration()
             cfg = self.control_panel.get_local_cfg()
@@ -2785,9 +2723,6 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.tts_mode == "openai":
                 from .core.models import openai_tts as _oai_tts_mod
                 _oai_tts_mod.register_recording_sink(self._audio_recorder.write_chunk)
-            elif self.tts_mode == "gemini":
-                from .core.models import gemini_tts as _gem_tts_mod
-                _gem_tts_mod.register_recording_sink(self._audio_recorder.write_chunk)
             elif self.tts_mode == "local":
                 from .core.models import chatterbox_tts as _local_tts_mod
                 _local_tts_mod.register_recording_sink(self._audio_recorder.write_chunk)
@@ -2889,9 +2824,6 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.tts_mode == "openai":
                 try: self.signal_tts_interrupt.emit()
                 except Exception: pass
-            elif self.tts_mode == "gemini":
-                try: self.signal_gemini_tts_interrupt.emit()
-                except Exception: pass
             elif self.tts_mode == "local":
                 try: self.signal_local_tts_interrupt.emit()
                 except Exception: pass
@@ -2941,16 +2873,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.tts_mode == "openai":
                 from .core.models.openai_tts import print_tts_stats as _print_tts_stats
                 _print_tts_stats()
-            elif self.tts_mode == "gemini":
-                from .core.models.gemini_tts import print_tts_stats as _print_tts_stats
-                _print_tts_stats()
 
             # Stop audio recording and clear recording sinks
             from .core.models import openai_tts as _oai_tts_mod
-            from .core.models import gemini_tts as _gem_tts_mod
             from .core.models import chatterbox_tts as _local_tts_mod
             _oai_tts_mod.clear_recording_sink()
-            _gem_tts_mod.clear_recording_sink()
             _local_tts_mod.clear_recording_sink()
             if self._audio_recorder.is_recording:
                 rec_path = self._audio_recorder.stop()
@@ -3086,7 +3013,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.session_logger.log_commentary(text)
         try:
             # Same Fast-Slow Blade path as local LiveCC — never send raw English
-            # captions directly to Gemini TTS (only Gemini broadcast_text is spoken).
+            # captions directly to TTS (only Gemini broadcast_text is spoken).
             self._route_segment(start_t, stop_t, self._livecc_event_dict(text))
         except Exception:
             logging.exception("[on_remote_segment] unhandled exception")
@@ -3186,8 +3113,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             if tts_text.strip().lower() == "silence":
                 return  # model silence sentinel — skip TTS
-            if self.tts_mode == "gemini" and not self._broadcast_tts_allowed(data):
-                return
             if self.tts_mode == "openai" and self._use_gemini and not self._broadcast_tts_allowed(data):
                 return
             # P1 scoring plays must always be voiced; only dedup routine commentary.
@@ -3202,14 +3127,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._post_p1_pending = True
                     self._arm_p1_fallback_timer()
                 self._emit_openai_tts_speak(
-                    tts_text, seg_priority, ref_ts, start_t, stop_t,
-                    cut_current=(seg_priority <= 1), log_meta=log_meta,
-                )
-            elif self.tts_mode == "gemini":
-                if seg_priority <= 1:
-                    self._post_p1_pending = True
-                    self._arm_p1_fallback_timer()
-                self._emit_gemini_tts_speak(
                     tts_text, seg_priority, ref_ts, start_t, stop_t,
                     cut_current=(seg_priority <= 1), log_meta=log_meta,
                 )
@@ -3236,8 +3153,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if tts_text.strip().lower() == "silence":
             return  # model silence sentinel — skip TTS
-        if self.tts_mode == "gemini" and not self._broadcast_tts_allowed(data):
-            return
         if self.tts_mode == "openai" and self._use_gemini and not self._broadcast_tts_allowed(data):
             return
         # P1 scoring plays must always be voiced; only dedup routine commentary.
@@ -3252,14 +3167,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._post_p1_pending = True
                 self._arm_p1_fallback_timer()
             self._emit_openai_tts_speak(
-                tts_text, seg_priority, ref_ts, start_t, stop_t,
-                cut_current=(seg_priority <= 1), log_meta=log_meta,
-            )
-        elif self.tts_mode == "gemini":
-            if seg_priority <= 1:
-                self._post_p1_pending = True
-                self._arm_p1_fallback_timer()
-            self._emit_gemini_tts_speak(
                 tts_text, seg_priority, ref_ts, start_t, stop_t,
                 cut_current=(seg_priority <= 1), log_meta=log_meta,
             )
@@ -3663,12 +3570,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.local_tts_thread.quit()
             self.local_tts_thread.wait(2000)
 
-        try:
-            self.signal_gemini_tts_stop.emit()
-        except Exception: pass
-        if hasattr(self, "gemini_tts_thread") and self.gemini_tts_thread:
-            self.gemini_tts_thread.quit()
-            self.gemini_tts_thread.wait(2000)
         if hasattr(self, "_stop_audience_publisher_only"):
             self._stop_audience_publisher_only()
         if hasattr(self, "_stop_audience_token_server"):
