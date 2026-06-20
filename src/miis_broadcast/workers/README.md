@@ -1,6 +1,6 @@
 # Input Source Workers
 
-This directory contains all `QThread` worker classes responsible for ingesting video frames and forwarding them to the LiveCC inference pipeline (local or remote).
+This directory contains `QThread` worker classes for **live** camera/OBS/dual/free-switch capture and ByteTrack. **File playback** (`VideoThread`) and the plain **webcam** worker (`CameraThread`) live in [`gui.py`](../gui.py) because they are wired directly to the main window.
 
 ---
 
@@ -8,8 +8,8 @@ This directory contains all `QThread` worker classes responsible for ingesting v
 
 | Mode string | Worker Class | File |
 |---|---|---|
-| `"file"` | `VideoThread` | `input.py` |
-| `"camera"` | `CameraThread` | `input.py` |
+| `"file"` | `VideoThread` | `gui.py` |
+| `"camera"` | `CameraThread` | `gui.py` |
 | `"obs_track"` | `CameraByteTrackThread` | `camera_bytetrack.py` |
 | `"obs"` | `OBSCameraThread` | `obs_input.py` |
 | `"dual_sync"` | `DualSourceCameraThread` | `dual_source.py` |
@@ -61,7 +61,15 @@ on_camera_frame / on_video_frame
         |                                       |-- TCP --> server LiveCC
         |-- local model?      --> cam_worker.push_frame() / signal_start_livecc
                                         |-- local LiveCC GPU inference
+                                        |
+                                        v (all paths, local or remote English text)
+                              on_segment / on_remote_segment
+                                        |
+                                        v
+                              _route_segment → GeminiWorker (client) → TTS
 ```
+
+**Remote note:** the headless server returns **English** LiveCC text via `MSG_SEGMENT`. The GUI always runs **Gemini translation on the client** (`on_remote_segment` → `_route_segment`), then sends **zh-TW** `broadcast_text` to OpenAI TTS when that mode is selected.
 
 `obs_track` **always** runs ByteTrack on the **local (client) machine**, regardless of whether
 a remote server is connected:
@@ -189,7 +197,7 @@ Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_sw
 
 ### Audience second screen (LiveKit)
 
-When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** carries the **full-resolution OBS/VR** line for **`broadcast_video`** (typically **`1920×1080`** — **pure VR**, not chroma-keyed with a mascot in this process), while **`signal_frame`** stays on **`640×480` / `1280×480`** for the GUI and LiveCC. Viewer-side mascot layers are documented under **Browser mascot overlay** in the audience README. TTS PCM is registered as a sink so viewers hear narration without duplicating the operator preview audio (see pacing notes in code). 👉 Full setup, **flowcharts**, executor notes, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log tables: **[../audience/README.md](../audience/README.md)**.
+When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** carries the **full-resolution OBS/VR** line for **`broadcast_video`** (typically **`1920×1080`** — **pure VR**, not chroma-keyed with a mascot in this process), while **`signal_frame`** stays on **`640×480` / `1280×480`** for the GUI and LiveCC. **`narration`** PCM is tapped from **OpenAI TTS** only. Viewer-side mascot layers are documented under **Browser mascot overlay** in the audience README. 👉 Full setup: **[../audience/README.md](../audience/README.md)**.
 
 ---
 

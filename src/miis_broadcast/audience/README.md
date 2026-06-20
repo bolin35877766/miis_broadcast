@@ -1,6 +1,6 @@
 # Audience second screen (LiveKit)
 
-This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC. **`broadcast_video`** carries **only the VR / OBS feed** (no mascot burned in): `AudiencePublisher` scales to **`1920×1080`** when `VIDEO_W`/`VIDEO_H` match and the capture pipeline delivers that resolution. The **mascot / anchor character** is drawn **in the browser** (`static/index.html`): a hidden MP4 is chroma-keyed on a `<canvas>` (auto backdrop colour from the frame border) and an optional mouth PNG follows `narration` volume—**not** via OpenCV in Python. The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**; **no narration is meant to play on the first screen** when the audience pipeline is active (`mute_local=True`).
+This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC. **`broadcast_video`** carries **only the VR / OBS feed** (no mascot burned in): `AudiencePublisher` scales to **`1920×1080`** when `VIDEO_W`/`VIDEO_H` match and the capture pipeline delivers that resolution. The **mascot / anchor character** is drawn **in the browser** (`static/index.html`): a hidden MP4 is chroma-keyed on a `<canvas>` (auto backdrop colour from the frame border) and an optional mouth PNG follows `narration` volume—**not** via OpenCV in Python. The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**. When the audience PCM sink is active, **OpenAI TTS** uses `mute_local=True` so narration goes to LiveKit while the operator preview stays silent (timing preserved via zero PCM to the local device).
 
 | Topic | Behavior |
 |-------|----------|
@@ -19,8 +19,9 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 | Condition | Behavior |
 |-----------|----------|
 | `audience.enabled: true` in [configs/app.yml](../../../configs/app.yml) | HTTP token server may start with the GUI (`GET /audience`, `POST /api/audience/join`). |
-| Operator chooses **Online ▾ → Free Switch** | **LiveKit publisher** starts: publishes `broadcast_video` + `narration`. |
+| Operator chooses **Online ▾ → Free Switch** | **LiveKit publisher** starts: publishes `broadcast_video` + `narration` (when TTS is **OpenAI TTS**). |
 | Operator leaves Free Switch / switches mode | Publisher stops; HTTP server keeps running until the app exits (if enabled). |
+| TTS set to **Mute** or **Local TTS** | Video track may still publish; **`narration`** PCM sink is not registered (no audience audio). |
 
 ---
 

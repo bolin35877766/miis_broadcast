@@ -1,6 +1,6 @@
 # MIIS Broadcast
 
-A real-time AI sports broadcasting commentary system with a desktop GUI. It ingests video from a file or live camera, generates commentary using the **LiveCC-7B** streaming video captioner, and reads it aloud via a TTS engine — all with sub-second end-to-end latency.
+A real-time AI sports broadcasting commentary system with a desktop GUI. It ingests video from a file or live camera, generates short **English** scene descriptions with the **LiveCC-7B** streaming video captioner, enriches them into **Traditional Chinese** broadcast lines via **Gemini**, and reads them aloud through **OpenAI Realtime TTS** — with a fast–slow blade for priority events (scores, misses) and sub-second latency on the hot path.
 
 ---
 
@@ -20,13 +20,16 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean source switching vs Stop Broadcasting**: **Changing the input** from the Source menu (`_stop_all_source_threads`) fully stops the old worker with **`QThread.wait(~6s)` + `terminate()`** so a stuck DirectShow `cap.read()` cannot leak threads — the window **may hitch briefly** while joining. **Stop Broadcasting** only ends the **inference session** (`MSG_STOP`, `is_inference_running = false`); in **Webcam + Tracking**, **`CameraByteTrackThread` stays alive** and the **annotated preview keeps updating** (subject crops to the server stop as soon as Stop is pressed).
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
-- **Multiple commentary styles** switchable at runtime:
+- **Multiple commentary styles** switchable at runtime (Gemini broadcast tone; LiveCC vision prompt is shared):
+  - 標準播報型 (Objective / professional)
   - 嘴砲型實況主 (Trash-talk / Roast)
   - 熱血沸騰型主播 (High-energy Hype)
   - 冷靜分析型 (Calm & Analytical)
-- **Text-to-Speech** with two backend options:
-  - OpenAI Realtime API (low-latency streaming, cloud)
-  - ChatterBox TTS (local, voice-cloning)
+- **Fast–slow blade**: LiveCC keyword hits (P1/P2) can hard-cut TTS with a zh-TW filler; P3 descriptions feed **Gemini** (per-segment + background worker) for richer Chinese copy before TTS.
+- **Text-to-Speech** (GUI dropdown):
+  - **不啟用 (Mute)** — subtitles only
+  - **OpenAI TTS** (default) — Realtime WebSocket, cloud, used for audience `narration` when enabled
+  - **Local TTS** — Chatterbox voice-cloning (lazy-loaded; may be unavailable in some environments)
 - **Latency monitoring** — tracks LiveCC inference time, TTS latency, and end-to-end (vision → audio) latency
 - **OpenAI TTS live queue**: Incoming commentary lines enqueue **FIFO** in `core/models/openai_tts.py` (bounded by **`_MAX_PENDING_UTTERANCES`**; exceeding drops **oldest** backlog). **`drop_outdated=True`** (optional API) still clears pending text explicitly.
 - **PySide6 GUI** with dark theme, video seek bar, and live transcript panel
@@ -53,12 +56,15 @@ CameraByteTrackThread  ──  YOLOX + BYTETracker
         ▼
 LiveCCWorker / LiveCCCameraWorker
   (LiveCC-7B-Instruct, GPU, local)
-        │ commentary text
+        │ English scene text
         ▼
-TTS Engine (OpenAI Realtime WebSocket or ChatterBox local)
+GeminiWorker + GeminiBackgroundWorker  (gemini_broadcaster.py)
+        │ zh-TW broadcast_text + priority
+        ▼
+TTS (OpenAI Realtime WebSocket, or Chatterbox local, or mute)
         │ PCM 24 kHz
         ▼
-sounddevice or ffplay (audio output)
+sounddevice (ffplay fallback if sounddevice unavailable)
 ```
 
 ### Remote inference (online / thin-client)
@@ -75,9 +81,9 @@ SocketClientRunner._frame_queue
 _frame_sender_loop (background thread)
         │  TCP sendall  ─────────────────────────────────────────────►  Remote server
         │                                                               │
-        │  ◄── MSG_SEGMENT (text) ◄── LiveCC inference (GPU)  ◄────────┘
+        │  ◄── MSG_SEGMENT (English text) ◄── LiveCC inference (GPU)  ◄────────┘
         ▼
-on_segment → text panel + OpenAI TTS (local audio)
+on_remote_segment → _route_segment → Gemini (client) → OpenAI TTS (local audio)
 
 
 Webcam + Tracking (obs_track) — always local ByteTrack:
@@ -94,7 +100,7 @@ CameraByteTrackThread (local)
                                       │
                           LiveCC inference (GPU, no ByteTrack on server)
                                       │
-                          MSG_SEGMENT ─────────────────────────────────► text panel + TTS
+                          MSG_SEGMENT ─────────────────────────────────► _route_segment → Gemini → TTS
 ```
 
 #### Why the frame sender is in a dedicated thread
@@ -138,6 +144,8 @@ Key modules:
 | [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME → JPEG decode → LiveCC buffer (**no** ByteTrack or `PREVIEW` on the server; tracking overlay stays on the client) |
 | [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — **Free Switch** source bar (`切換輸入源`); `obs_track` shows local ByteTrack annotated preview |
 | [src/miis_broadcast/workers/free_switch.py](src/miis_broadcast/workers/free_switch.py) | `FreeSwitchCameraThread` — dual always-on captures; VR at **1080p** for audience `signal_vr_frame`; **640×480** / **1280×480** on `signal_frame` for LiveCC |
+| [src/miis_broadcast/workers/gemini.py](src/miis_broadcast/workers/gemini.py) | `GeminiWorker` + `GeminiBackgroundWorker` — zh-TW broadcast from LiveCC text |
+| [src/miis_broadcast/core/models/gemini_broadcaster.py](src/miis_broadcast/core/models/gemini_broadcaster.py) | Gemini API, RAG, stream parsing, style prompts |
 | [src/miis_broadcast/workers/livecc.py](src/miis_broadcast/workers/livecc.py) | QThread workers for LiveCC inference (file & camera) |
 | [src/miis_broadcast/workers/camera_bytetrack.py](src/miis_broadcast/workers/camera_bytetrack.py) | Physical webcam + YOLOX/BYTETracker subject tracking worker (`CameraByteTrackThread`) |
 | [src/miis_broadcast/core/models/bytetrack_tracker.py](src/miis_broadcast/core/models/bytetrack_tracker.py) | ByteTrackWrapper — YOLOX inference, BYTETracker association, subject crop extraction |
@@ -205,17 +213,18 @@ Create a `.env` file at the project root:
 
 ```env
 OPENAI_API_KEY=sk-...
+GEMINI_API_KEY=...    # required for Gemini zh-TW broadcast (always used on Start)
 ```
 
-This is required for the OpenAI Realtime TTS backend.
+`OPENAI_API_KEY` is required when TTS is **OpenAI TTS**. `GEMINI_API_KEY` is required for the Gemini translation layer (runs on the GUI machine even in remote LiveCC mode).
 
 ### App config ([configs/app.yml](configs/app.yml))
 
 ```yaml
 gui_window:
-  title: MISLAB
-  min_width: 1200
-  min_height: 500
+  title: MIISLAB
+  min_width: 900
+  min_height: 480
   default_open_dir: ./
 model:
   classifier_name: livecc_7b   # must match a key in configs/models.yml
@@ -285,15 +294,16 @@ python -m miis_broadcast
 
 1. **Select input** — two buttons in the Source panel:
    - **📁 Offline** — open a local video file
-   - **🌐 Online ▾** — four live sources:
+   - **🌐 Online ▾** — five live sources:
      - **📷 Webcam** — physical webcam, plain stream (auto-skips OBS Virtual Camera)
      - **🎯 Webcam + Tracking** — ByteTrack always runs locally (`CameraByteTrackThread`); only the subject crop is forwarded to the server for LiveCC
      - **🥽 VR (OBS Virtual Camera)** — e.g. Quest Link / capture into OBS, then use OBS Virtual Camera as the device
      - **🎮 VR & Webcam (Sync)** — `1280×480` side-by-side: webcam + OBS Virtual Camera
-2. **Choose a commentary style** from the dropdown
-3. **Select TTS backend** — OpenAI Realtime or ChatterBox Local (Note: ChatterBox may be disabled in some environments)
+     - **🔀 Free Switch** — both cameras always-on; switch Webcam / VR / dual without reconnecting (audience second-screen when enabled)
+2. **Choose a commentary style** from the dropdown (affects Gemini broadcast tone)
+3. **Select TTS** — **OpenAI TTS** (default), **Local TTS** (Chatterbox), or **不啟用 (Mute)**. Audience `narration` requires **OpenAI TTS**.
 4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s on first local use). ByteTrack (YOLOX) preloads in the background so **Webcam + Tracking** is ready without a long stall (local path only).
-5. Commentary text appears in the transcript panel and is read aloud in real time
+5. Commentary text appears in the transcript panel and is read aloud in real time (when TTS is not muted)
 6. **Click Stop Broadcasting** to end inference (server + client **`[SESSION AVG]`** lines as above; latency stats may still print per your build). In **Webcam + Tracking**, the **camera + ByteTrack overlay keep running** until you pick another input source.
 
 #### Subject Tracking behavior
@@ -405,7 +415,7 @@ logs/sessions/{mode}_{YYYYMMDD_HHMMSS}.log
 ```
 
 where `{mode}` is the active input source (`camera`, `obs`, `obs_track`, `file`,
-`dual_sync`).
+`dual_sync`, `free_switch`).
 
 ### File format
 
@@ -426,7 +436,7 @@ Inference: remote
 |-----------|---------|
 | `[GUI] [INFO]` | System events from the GUI (start, stop, remote connection changes, errors) |
 | `[Memory] [INFO]` | **Remote inference only:** sender PC metrics (same as server stdout **`[Client]`**), including **`GPU_VRAM`** when CUDA is available on the sender — written to the **session file** only, not the GUI console. Server RSS and server GPU stay on the host **`[Server]`** lines. |
-| `[COMMENTARY]` | Every segment of AI commentary as it arrives from LiveCC (remote or local) |
+| `[COMMENTARY]` | Every segment of AI commentary as it arrives (English from remote/local LiveCC, or zh-TW after Gemini on the client) |
 | `Inference: remote` | LiveCC ran on the remote server (thin-client mode) |
 | `Inference: local` | LiveCC ran on the local GPU |
 
@@ -470,16 +480,26 @@ miis_broadcast/
 │   │   └── session.py        # ClientSession — per-connection handler
 │   ├── core/
 │   │   ├── io/               # Input helpers (camera, OBS virtual camera)
-│   │   ├── models/           # LiveCC, OpenAI TTS, ChatterBox TTS, ByteTrackWrapper
+│   │   ├── models/           # LiveCC, Gemini broadcaster, OpenAI TTS, Chatterbox, ByteTrack
 │   │   ├── prompt/           # Prompt management
-│   │   └── utils/            # Config, session_logger, latency monitor
+│   │   └── utils/            # Config, session_logger, latency monitor, gpu_telemetry
+│   ├── workers/              # LiveCC, Gemini, TTS, camera/OBS/dual/free_switch, ByteTrack
 │   ├── widgets/              # Custom Qt widgets
-│   ├── audience/             # Second-screen: LiveKit publisher (VR-only video), token server (+ /assets), viewer HTML (+ README)
-│   └── workers/              # QThread workers (LiveCC, TTS, input, OBS+ByteTrack, DualSync)
+│   └── audience/             # LiveKit publisher, token server, browser viewer
 ├── requirements.txt
 ├── environment.yml
 └── pyproject.toml
 ```
+
+---
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [README.md](README.md) (this file) | Install, usage, remote server, configuration |
+| [src/miis_broadcast/workers/README.md](src/miis_broadcast/workers/README.md) | Input sources, frame signals, server log reference |
+| [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md) | LiveKit second-screen setup and troubleshooting |
 
 ---
 
