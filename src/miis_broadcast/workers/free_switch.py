@@ -20,6 +20,7 @@ The change takes effect within the next grab/retrieve cycle (~1 frame @ 30 fps).
 
 import threading
 import time
+import platform
 from typing import Optional
 
 import cv2
@@ -205,7 +206,11 @@ class FreeSwitchCameraThread(QtCore.QThread):
         silently snap to the nearest supported mode (e.g. OBS Virtual Camera
         will honour 1920×1080 when OBS is running at that resolution).
         """
-        for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY):
+        if platform.system() == "Windows":
+            backends = (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY)
+        else:
+            backends = (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY)
+        for backend in backends:
             cap = cv2.VideoCapture(idx, backend)
             if cap.isOpened():
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  width)

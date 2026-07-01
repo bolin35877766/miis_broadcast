@@ -2425,7 +2425,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text("已切換至雙路同步模式 (Webcam + VR 左右拼接)")
         self._stop_all_source_threads()
 
-        self.dual_sync_thread = DualSourceCameraThread(cam_idx=0, vr_idx=5)
+        from .core.io.obs_input import find_physical_camera_index, find_obs_camera_index
+        cam_idx = find_physical_camera_index()
+        vr_idx = find_obs_camera_index()
+        if vr_idx < 0:
+            self.on_error(
+                "DualSource: 找不到 OBS Virtual Camera。"
+                "請確認 OBS 已啟動並已按下「啟動虛擬攝影機」。"
+            )
+            return
+        print(f"[DualSource] cam_idx={cam_idx}, vr_idx={vr_idx}")
+
+        self.dual_sync_thread = DualSourceCameraThread(cam_idx=cam_idx, vr_idx=vr_idx)
         self.dual_sync_thread.signal_frame.connect(self.on_camera_frame)
         self.dual_sync_thread.signal_error.connect(self.on_error)
         self.dual_sync_thread.start()
@@ -2493,10 +2504,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text(f"[FreeSwitch] 初始來源：{initial_source}  (兩組攝影機同時開啟)")
         self._stop_all_source_threads()
 
+        from .core.io.obs_input import find_physical_camera_index, find_obs_camera_index
+        cam_idx = find_physical_camera_index()
+        vr_idx = find_obs_camera_index()
+        if vr_idx < 0:
+            self.on_error(
+                "FreeSwitchCamera: 找不到 OBS Virtual Camera。"
+                "請確認 OBS 已啟動並已按下「啟動虛擬攝影機」。"
+            )
+            return
+        print(f"[FreeSwitch] cam_idx={cam_idx}, vr_idx={vr_idx}")
+
         self.free_switch_thread = FreeSwitchCameraThread(
             initial_source=initial_source,
-            cam_idx=0,
-            vr_idx=5,
+            cam_idx=cam_idx,
+            vr_idx=vr_idx,
         )
         self.free_switch_thread.signal_frame.connect(self.on_camera_frame)
         self.free_switch_thread.signal_error.connect(self.on_error)
