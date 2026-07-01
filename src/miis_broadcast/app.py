@@ -22,6 +22,7 @@ MODEL_CONFIG_PATH = "./configs/models.yml"
 
 
 def main():
+    os.makedirs("logs", exist_ok=True)
     logging.basicConfig(filename="logs/app_error.log", level=logging.INFO)
     # Load .env from project root (OPENAI_API_KEY, GEMINI_API_KEY, etc.)
     load_dotenv(find_dotenv(usecwd=True, raise_error_if_not_found=False))
