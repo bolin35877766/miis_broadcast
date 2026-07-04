@@ -70,7 +70,7 @@ accelerate>=1.0
 safetensors>=0.4
 peft>=0.18
 livecc-utils==0.0.2
-qwen-vl-utils>=0.0.11
+qwen-vl-utils==0.0.11
 # decord: used by livecc_utils for video; Linux server only (conflicts with Qt libxcb on some X11 setups)
 decord>=0.6.0; platform_system == "Linux"
 
