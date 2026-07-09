@@ -1429,7 +1429,7 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             project_root = _find_project_root(Path(__file__))
             cfg_path = project_root / "configs" / "livecc_prompts.yml"
-            self.prompt_manager = PromptManager(cfg_path)
+            self.prompt_manager = PromptManager(cfg_path, sport=self.configs.get("prompt_sport"))
 
             self.control_panel.cmb_style.blockSignals(True)
             self.control_panel.cmb_style.clear()

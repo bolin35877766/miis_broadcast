@@ -1,36 +1,82 @@
 # configs/livecc_prompts.yml
-version: 3
+version: 4
 
-# Primary prompt — frames now reach LiveCC WHOLE (no right/left crop): the real person
-# wearing the VR headset and their first-person basketball-game view are both visible in
-# the same frame. State that pairing as a given fact so the model calls the action instead
-# of guessing at — and hallucinating about — what the two halves are and how they relate.
-livecc_query: |-
-  A real person wearing a VR headset is shown alongside the first-person view of the
-  basketball game they are playing — they are the player practicing shots at a hoop.
-  In ONE short present-tense sentence, describe only what the ball and the player are
-  doing right now: the shot going up, the ball dropping through the net, bouncing off
-  the rim, or being dribbled and reset.
-  Use third person ("the player", "the ball"). Do NOT use "I" or "you", do NOT talk about
-  the video, the camera or the viewer, and do NOT read scoreboard text. Plain words only.
+# 用啟動參數 --sport 選擇要載入哪一組 prompt（basketball / boxing）。
+default_sport: basketball
 
-# Fallback prompt for the UN-cropped left-right split frame (no OpenCV crop).
-# NOTE: left/right are now labelled correctly (the previous version had them reversed).
-livecc_query_splitscreen: |-
-  The screen is a LEFT-RIGHT split:
-  - LEFT half: a real person wearing a VR headset, filmed in a room — body and shooting
-    motion only. There is no real ball or hoop here; ignore the room.
-  - RIGHT half: the player's first-person VR game view — this holds the hoop, net, ball
-    and all the actual basketball action. Base your commentary on THIS half.
+sports:
+  basketball:
+    label: "籃球"
+    # Primary prompt — frames now reach LiveCC WHOLE (no right/left crop): the real people
+    # wearing VR headsets and the first-person basketball-game view are both visible in the
+    # same frame. State that pairing as a given fact so the model calls the action instead
+    # of guessing at — and hallucinating about — what the two halves are and how they relate.
+    livecc_query: |-
+      Real people wearing VR headsets are shown alongside the first-person view of a
+      one-on-one basketball game they are playing against each other — one player attacks
+      while the other defends.
+      In ONE short present-tense sentence, describe only what the ball and the players are
+      doing right now: a player driving or dribbling, the shot going up over the defender,
+      the ball dropping through the net, bouncing off the rim, or a defender stealing or
+      blocking and taking possession.
+      Use third person ("the player", "the defender", "the ball"). Do NOT use "I" or "you",
+      do NOT talk about the video, the camera or the viewer, and do NOT read scoreboard text.
+      Plain words only.
 
-  Call the live action in one short, present-tense spoken sentence, like a play-by-play
-  commentator, focusing on the ball and the hoop in the RIGHT half.
+    # Fallback prompt for the UN-cropped left-right split frame (no OpenCV crop).
+    # NOTE: left/right are now labelled correctly (the previous version had them reversed).
+    livecc_query_splitscreen: |-
+      The screen is a LEFT-RIGHT split:
+      - LEFT half: real people wearing VR headsets, filmed in a room — bodies and shooting
+        or defending motion only. There is no real ball or hoop here; ignore the room.
+      - RIGHT half: the first-person VR game view of a one-on-one match — this holds the hoop,
+        net, ball, the attacker and the defender, and all the actual basketball action. Base
+        your commentary on THIS half.
 
-  If a clear event happens (shot, make, miss off the rim, dribble), say it plainly.
-  If nothing decisive is happening, give a short neutral filler line and vary the wording.
+      Call the live action in one short, present-tense spoken sentence, like a play-by-play
+      commentator, focusing on the ball, the hoop and the matchup in the RIGHT half.
 
-  Ignore any on-screen scoreboard text. Speak only plain natural sentences — no JSON,
-  no markdown, no special symbols.
+      If a clear event happens (drive, shot, make, miss off the rim, steal, block, dribble),
+      say it plainly.
+      If nothing decisive is happening, give a short neutral filler line and vary the wording.
+
+      Ignore any on-screen scoreboard text. Speak only plain natural sentences — no JSON,
+      no markdown, no special symbols.
+
+  boxing:
+    label: "拳擊"
+    # Primary prompt — the whole frame shows the real people wearing VR headsets together
+    # with the first-person view of the boxing match they are fighting. State that pairing
+    # as a given fact so the model calls the action instead of hallucinating about the halves.
+    livecc_query: |-
+      Real people wearing VR headsets are shown alongside the first-person view of a
+      one-on-one boxing match they are fighting against each other — one boxer attacks
+      while the other defends.
+      In ONE short present-tense sentence, describe only what the boxers and their fists are
+      doing right now: a boxer throwing a jab, cross, hook or uppercut, a punch landing,
+      the opponent slipping, blocking or ducking, backing away, or countering.
+      Use third person ("the boxer", "the opponent", "the fist"). Do NOT use "I" or "you",
+      do NOT talk about the video, the camera or the viewer, and do NOT read scoreboard text.
+      Plain words only.
+
+    # Fallback prompt for the UN-cropped left-right split frame (no OpenCV crop).
+    livecc_query_splitscreen: |-
+      The screen is a LEFT-RIGHT split:
+      - LEFT half: real people wearing VR headsets, filmed in a room — bodies and punching
+        or blocking motion only. Ignore the room.
+      - RIGHT half: the first-person VR game view of a one-on-one boxing match — this holds
+        the gloves, both fighters and all the actual boxing action. Base your commentary on
+        THIS half.
+
+      Call the live action in one short, present-tense spoken sentence, like a play-by-play
+      commentator, focusing on the punches, the guard and the matchup in the RIGHT half.
+
+      If a clear event happens (jab, cross, hook, uppercut, punch landing, slip, block, duck,
+      counter), say it plainly.
+      If nothing decisive is happening, give a short neutral filler line and vary the wording.
+
+      Ignore any on-screen scoreboard text. Speak only plain natural sentences — no JSON,
+      no markdown, no special symbols.
 
 livecc_response_prefix: ""
 

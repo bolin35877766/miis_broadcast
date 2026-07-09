@@ -15,14 +15,17 @@ class StyleItem:
 
 
 class PromptManager:
-    def __init__(self, config_path: str | Path):
+    def __init__(self, config_path: str | Path, sport: str | None = None):
         self.config_path = Path(config_path)
         self._raw: Dict[str, Any] = {}
         self._styles: Dict[str, StyleItem] = {}
         self._default_style: str = ""
-        self._livecc_query: str = ""
+        self._sports: Dict[str, Dict[str, str]] = {}
+        self._default_sport: str = ""
+        self._sport: str = ""
         self._livecc_response_prefix: str = ""
         self.reload()
+        self.set_sport(sport or self._default_sport)
 
     def reload(self) -> None:
         if not self.config_path.exists():
@@ -32,8 +35,30 @@ class PromptManager:
         self._raw = data
 
         self._default_style = (data.get("default_style") or "").strip()
-        self._livecc_query = (data.get("livecc_query") or "").strip()
         self._livecc_response_prefix = (data.get("livecc_response_prefix") or "").strip()
+
+        # 解析各運動的 prompt。向後相容：若沒有 sports 區塊，就把頂層的
+        # livecc_query / livecc_query_splitscreen 當成單一 default 運動。
+        sports = data.get("sports") or {}
+        parsed_sports: Dict[str, Dict[str, str]] = {}
+        for key, v in sports.items():
+            v = v or {}
+            parsed_sports[str(key)] = {
+                "label": str(v.get("label", key)),
+                "livecc_query": (v.get("livecc_query") or "").strip(),
+                "livecc_query_splitscreen": (v.get("livecc_query_splitscreen") or "").strip(),
+            }
+        if not parsed_sports:
+            parsed_sports["default"] = {
+                "label": "Default",
+                "livecc_query": (data.get("livecc_query") or "").strip(),
+                "livecc_query_splitscreen": (data.get("livecc_query_splitscreen") or "").strip(),
+            }
+        self._sports = parsed_sports
+
+        self._default_sport = (data.get("default_sport") or "").strip()
+        if self._default_sport not in self._sports:
+            self._default_sport = next(iter(self._sports.keys()))
 
         styles = data.get("styles") or {}
         parsed: Dict[str, StyleItem] = {}
@@ -48,6 +73,19 @@ class PromptManager:
         if self._default_style not in self._styles and self._styles:
             self._default_style = next(iter(self._styles.keys()))
 
+    def set_sport(self, sport: str | None) -> None:
+        """選擇要使用哪一組運動 prompt；未知的名稱會退回 default。"""
+        if sport and sport in self._sports:
+            self._sport = sport
+        else:
+            self._sport = self._default_sport
+
+    def current_sport(self) -> str:
+        return self._sport
+
+    def list_sports(self) -> Tuple[str, ...]:
+        return tuple(self._sports.keys())
+
     def list_styles(self) -> Tuple[StyleItem, ...]:
         return tuple(self._styles.values())
 
@@ -55,8 +93,12 @@ class PromptManager:
         return self._default_style
 
     def livecc_query(self) -> str:
-        """Return the fixed LiveCC objective description query."""
-        return self._livecc_query
+        """Return the fixed LiveCC objective description query for the selected sport."""
+        return self._sports.get(self._sport, {}).get("livecc_query", "")
+
+    def livecc_query_splitscreen(self) -> str:
+        """Return the split-screen fallback query for the selected sport."""
+        return self._sports.get(self._sport, {}).get("livecc_query_splitscreen", "")
 
     def livecc_response_prefix(self) -> str:
         """Forced opening stem for every LiveCC line (e.g. 'The player'). Keeps the

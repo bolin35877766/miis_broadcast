@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import sys
@@ -23,6 +24,17 @@ MODEL_CONFIG_PATH = "./configs/models.yml"
 
 def main():
     os.makedirs("logs", exist_ok=True)
+
+    parser = argparse.ArgumentParser(prog="miis_broadcast")
+    parser.add_argument(
+        "--sport",
+        choices=["basketball", "boxing"],
+        default=None,
+        help="選擇要使用的 LiveCC prompt（basketball 籃球 / boxing 拳擊）。"
+             "未指定時使用 configs/livecc_prompts.yml 的 default_sport。",
+    )
+    args, _ = parser.parse_known_args()
+
     logging.basicConfig(filename="logs/app_error.log", level=logging.INFO)
     # Load .env from project root (OPENAI_API_KEY, GEMINI_API_KEY, etc.)
     load_dotenv(find_dotenv(usecwd=True, raise_error_if_not_found=False))
@@ -67,6 +79,7 @@ def main():
         sys.exit()
 
     configs["bytetrack"] = model_configs.get("bytetrack", {})
+    configs["prompt_sport"] = args.sport
 
     mw = MainWindow(configs=configs)
     mw.show()
