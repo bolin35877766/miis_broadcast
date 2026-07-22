@@ -45,8 +45,20 @@ class AudienceTokenServer:
         self._lan_hint_host = (lan_hint_host or "").strip() or None
         self._server: Optional[Any] = None  # uvicorn.Server, imported lazily
         self._thread: Optional[threading.Thread] = None
+        # When False ("維持原聲"), audience page must hide the cat avatar.
+        self._narration_enabled = True
+        self._state_lock = threading.Lock()
 
     # ── Public API ────────────────────────────────────────────────────────
+
+    def set_narration_enabled(self, enabled: bool) -> None:
+        """Operator toggle: AI narration on → avatar shown; off → avatar hidden."""
+        with self._state_lock:
+            self._narration_enabled = bool(enabled)
+
+    def get_narration_enabled(self) -> bool:
+        with self._state_lock:
+            return self._narration_enabled
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -126,7 +138,20 @@ class AudienceTokenServer:
                 .to_jwt()
             )
             print(f"{_ts()} | [AUDIENCE] join id={identity} room={self._room_name}")
-            return JSONResponse({"url": self._livekit_url, "token": token})
+            return JSONResponse(
+                {
+                    "url": self._livekit_url,
+                    "token": token,
+                    "narration_enabled": self.get_narration_enabled(),
+                }
+            )
+
+        @app.get("/api/audience/status")
+        async def status():
+            """Pollable mode flag so late joiners / missed data packets stay in sync."""
+            return JSONResponse(
+                {"narration_enabled": self.get_narration_enabled()}
+            )
 
         config = uvicorn.Config(
             app,

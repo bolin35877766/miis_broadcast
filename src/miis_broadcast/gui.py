@@ -13,7 +13,6 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
-# from .workers.chatterbox_tts import ChatterboxTTSWorker  # [ChatterBox disabled]
 from .widgets.text_output import TextOutputWidget
 from .workers.livecc import LiveCCWorker, LiveCCCameraWorker
 from .workers.gemini import GeminiWorker
@@ -24,8 +23,6 @@ from .workers.dual_source import DualSourceCameraThread
 from .workers.free_switch import FreeSwitchCameraThread, SOURCE_WEBCAM, SOURCE_VR, SOURCE_DUAL
 from .audience.livekit_publisher import AudiencePublisher
 from .audience.token_server import AudienceTokenServer
-# LiveCCWorker / LiveCCCameraWorker are imported lazily only when not using client-only mode
-# so this process never loads the VLM on a thin client.
 from .core.prompt.prompt_manager import PromptManager
 from .core.match_tracker import match_tracker
 from .core.utils.session_logger import SessionLogger
@@ -311,10 +308,11 @@ class ControlPanel(QtWidgets.QWidget):
         fm = self.fontMetrics()
         combo_h = max(34, fm.height() + 10)
         self._settings_row_min_h = combo_h
-        for c in (self.cmb_tts, self.cmb_style, self.cmb_voice):
+        for c in (self.cmb_tts, self.cmb_audience_mode, self.cmb_style, self.cmb_voice):
             c.setMinimumHeight(combo_h)
         titles = (
             "TTS Mode:",
+            "Audience:",
             "Style:",
             "Voice:",
             "Speed:",
@@ -324,6 +322,7 @@ class ControlPanel(QtWidgets.QWidget):
         lw = max(fm.horizontalAdvance(t) for t in titles) + 12
         for lb in (
             self.l_tts,
+            self.l_audience_mode,
             self.l_style,
             self.l_voice,
             self.l_speed,
@@ -665,10 +664,10 @@ class ControlPanel(QtWidgets.QWidget):
             }
         """
 
-        # [FIX] WSL 下拉選單修復 helper
+        # WSL combo-box fix: select on press instead of release
         def _fix_combo_behavior(combo: QtWidgets.QComboBox):
             combo.setItemDelegate(QtWidgets.QStyledItemDelegate())
-            # 強制在「按下」時就選取並關閉，避開 WSL 吃掉 MouseRelease 事件的問題
+            # Close popup on press; WSL often drops MouseRelease events
             combo.view().pressed.connect(lambda idx: (
                 combo.setCurrentIndex(idx.row()),
                 combo.hidePopup()
@@ -683,6 +682,22 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_tts.addItem("Local TTS", userData="local")
         self.cmb_tts.setCurrentIndex(1)
         self.cmb_tts.setStyleSheet(combo_style)
+
+        # --- Audience streaming mode: AI narration vs. video-only passthrough ---
+        # Independent of TTS Mode above — this only controls whether the AI voice
+        # reaches the Audience second screen (LiveKit). The operator's own TTS
+        # (if enabled) keeps playing locally either way.
+        self.l_audience_mode = _make_lbl("Audience:")
+        self.cmb_audience_mode = QtWidgets.QComboBox()
+        _fix_combo_behavior(self.cmb_audience_mode)
+        self.cmb_audience_mode.addItem("啟用播報 (AI 語音)", userData=True)
+        self.cmb_audience_mode.addItem("維持原聲 (僅畫面)", userData=False)
+        self.cmb_audience_mode.setCurrentIndex(0)
+        self.cmb_audience_mode.setToolTip(
+            "啟用播報：Audience 第二畫面會聽到 AI 語音播報。\n"
+            "維持原聲：Audience 第二畫面只有畫面，不會收到任何 AI 語音（單純觀看原影片）。"
+        )
+        self.cmb_audience_mode.setStyleSheet(combo_style)
 
         # --- LiveCC style ---
         self.l_style = _make_lbl("Style:")
@@ -742,6 +757,7 @@ class ControlPanel(QtWidgets.QWidget):
             _s.setSizePolicy(_sp_exp, _sp_fix)
 
         _settings_row_combo("tts", self.l_tts, self.cmb_tts)
+        _settings_row_combo("audience_mode", self.l_audience_mode, self.cmb_audience_mode)
         _settings_row_combo("style", self.l_style, self.cmb_style)
         _settings_row_combo("voice", self.l_voice, self.cmb_voice)
         _settings_row_combo("tts_lang", self.l_tts_lang, self.cmb_tts_lang)
@@ -793,8 +809,9 @@ class ControlPanel(QtWidgets.QWidget):
         self.slider_exag.valueChanged.connect(lambda v: self.lbl_exag_val.setText(f"{v/100:.1f}"))
         self.slider_cfg.valueChanged.connect(lambda v: self.lbl_cfg_val.setText(f"{v/100:.1f}"))
 
-        # 模式切換顯示/隱藏
+        # Show/hide TTS / AI controls when TTS Mode or Audience mode changes
         self.cmb_tts.currentIndexChanged.connect(self._refresh_tts_controls_visibility)
+        self.cmb_audience_mode.currentIndexChanged.connect(self._refresh_tts_controls_visibility)
         self._refresh_tts_controls_visibility()
 
         self.btn_open_remote.clicked.connect(self._show_remote_dialog)
@@ -945,11 +962,16 @@ class ControlPanel(QtWidgets.QWidget):
 
     def _refresh_tts_controls_visibility(self) -> None:
         mode = self.get_tts_mode()
+        # Video-only audience mode: hide AI broadcast controls (style / voice / …).
+        narration_on = self.get_audience_narration_enabled()
 
-        show_openai = (mode == "openai")
-        show_local = (mode == "local")
+        show_style = narration_on
+        show_openai = (mode == "openai") and narration_on
+        show_local = (mode == "local") and narration_on
         rows = getattr(self, "_settings_rows", {})
         if rows:
+            if "style" in rows:
+                rows["style"].setVisible(show_style)
             rows["voice"].setVisible(show_openai)
             rows["tts_lang"].setVisible(show_openai)
             rows["speed"].setVisible(show_openai)
@@ -957,6 +979,8 @@ class ControlPanel(QtWidgets.QWidget):
             rows["cfg"].setVisible(show_local)
             return
 
+        for w in (self.l_style, self.cmb_style):
+            w.setVisible(show_style)
         for w in (self.l_voice, self.cmb_voice,
                   self.l_tts_lang, self.cmb_tts_lang,
                   self.l_speed, self.slider_speed, self.lbl_speed_val):
@@ -985,6 +1009,10 @@ class ControlPanel(QtWidgets.QWidget):
 
     def get_tts_mode(self) -> str:
         return self.cmb_tts.currentData()
+
+    def get_audience_narration_enabled(self) -> bool:
+        """True when Audience hears AI narration; False for video-only."""
+        return bool(self.cmb_audience_mode.currentData())
 
     def get_selected_style_key(self) -> str:
         return self.cmb_style.currentData()
@@ -1056,7 +1084,7 @@ class MainWindow(QtWidgets.QMainWindow):
     signal_start_livecc = QtCore.Signal(str, str, int)
     signal_start_camera_livecc = QtCore.Signal(str)
 
-    # ✅ 用 signal 把設定丟到 tts thread，避免你直接 call slot 其實跑在主執行緒
+    # Route TTS settings through signals so slots run on the TTS thread
     signal_tts_apply_settings = QtCore.Signal(str, float)
     signal_tts_warmup = QtCore.Signal()
     signal_tts_stop = QtCore.Signal()
@@ -1125,6 +1153,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Audience second-screen services (Free Switch mode only)
         self._audience_publisher: Optional[AudiencePublisher] = None
         self._audience_token_server: Optional[AudienceTokenServer] = None
+        # When False, Audience gets video only (no AI narration on LiveKit).
+        self._audience_narration_enabled: bool = True
 
         self.font_family = "Sans Serif"
         self.font_size = 14
@@ -1168,7 +1198,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pending_segments = deque()  # items: (start_t, stop_t, text)
 
         self._subtitle_timer = QtCore.QTimer(self)
-        self._subtitle_timer.setInterval(50)  # 20 FPS 更新足夠
+        self._subtitle_timer.setInterval(50)  # 20 FPS is enough for subtitle sync
         self._subtitle_timer.timeout.connect(self._tick_subtitle_scheduler)
         self._subtitle_timer.start()
 
@@ -1375,7 +1405,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Click segment line -> seek to corresponding time in video
         self._install_text_output_click_handler()
 
-        # 垂直 splitter — 讓使用者可拖動上(影像)/下(字幕)邊界
+        # Vertical splitter: drag boundary between video and subtitle log
         self.main_vsplitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.main_vsplitter.setChildrenCollapsible(False)
         self.main_vsplitter.addWidget(self.top_splitter)
@@ -1406,7 +1436,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.requestStart.connect(self.on_start_clicked)
         self.video_panel.seekRequested.connect(self.on_seek_requested)
 
-        # 載入 prompts.yml 並填入下拉式選單
+        # Load prompts.yml into the style dropdown
         self._init_prompt_manager_and_fill_styles()
 
         if self.livecc_model is not None:
@@ -1809,9 +1839,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"[LiveCC] [{p_label}] [{self._fmt_time(start_t)}-{self._fmt_time(stop_t)}] {raw.strip()}",
         )
 
-        # [延遲][LiveCC] Stage 1: time from "frame appeared" (stop_t on the shared
-        # wall-clock anchor) to LiveCC emitting this segment. frame_wall_ts also
-        # anchors [延遲][語音][中斷] below (dimension 2: frame -> sound for P1/P2).
+        # [Latency][LiveCC] Stage 1: frame appeared -> LiveCC segment emitted.
+        # frame_wall_ts also anchors voice/interrupt latency below (P1/P2).
         frame_wall_ts = 0.0
         if self.mode == "file" and self._livecc_start_wall > 0:
             frame_wall_ts = self._livecc_start_wall + stop_t
@@ -2087,19 +2116,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_inference()
 
     def _initTTSWorker(self) -> None:
-            """Initialize all TTS Workers (OpenAI + Local Chatterbox)"""
-            
-            # ==========================================
-            # 1. OpenAI TTS Worker (Cloud)
-            # ==========================================
+            """Initialize OpenAI and local Chatterbox TTS workers."""
+
+            # OpenAI TTS worker
             self.tts_thread = QtCore.QThread(self)
             self.tts_worker = OpenAITTSWorker()
             self.tts_worker.moveToThread(self.tts_thread)
 
-            # Auto-call worker.start() to initialize connection when thread starts
             self.tts_thread.started.connect(self.tts_worker.start)
 
-            # Connect OpenAI dedicated signals
             self.signal_tts_apply_settings.connect(self.tts_worker.apply_settings, QtCore.Qt.QueuedConnection)
             self.signal_tts_warmup.connect(self.tts_worker.warmup_connect, QtCore.Qt.QueuedConnection)
             self.signal_tts_stop.connect(self.tts_worker.stop, QtCore.Qt.QueuedConnection)
@@ -2108,31 +2133,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
             self.tts_thread.start()
 
-            # ==========================================
-            # 2. Local TTS Worker (本地 Chatterbox) [ChatterBox disabled]
-            # ==========================================
+            # Local Chatterbox TTS worker (lazy-started when user selects Local TTS)
             from .workers.chatterbox_tts import ChatterboxTTSWorker
             self.local_tts_thread = QtCore.QThread(self)
             self.local_tts_worker = ChatterboxTTSWorker()
             self.local_tts_worker.moveToThread(self.local_tts_thread)
-            
-            # Thread 啟動時，自動呼叫 worker.start() 載入模型 (需時較久)
+
             self.local_tts_thread.started.connect(self.local_tts_worker.start)
 
-            # 連接 Local TTS 專用信號
             self.signal_local_tts_apply_settings.connect(self.local_tts_worker.apply_settings, QtCore.Qt.QueuedConnection)
             self.signal_local_tts_stop.connect(self.local_tts_worker.stop, QtCore.Qt.QueuedConnection)
             self.signal_local_tts_speak.connect(self.local_tts_worker.speak, QtCore.Qt.QueuedConnection)
             self.signal_local_tts_interrupt.connect(self.local_tts_worker.interrupt, QtCore.Qt.QueuedConnection)
 
-            # 🔥 [修改點 1] 註解掉或刪除原本的直接啟動，改為 Lazy Load
-            # self.local_tts_thread.start() 
-
-            # 🔥 監聽下拉選單變化（需在所有 worker 建立完後再 connect）
             self.control_panel.cmb_tts.currentIndexChanged.connect(self._on_tts_mode_changed)
 
-            # 初始化時根據預設模式啟動對應 worker
+            self.control_panel.cmb_audience_mode.currentIndexChanged.connect(
+                self._on_audience_mode_changed
+            )
+
             self._on_tts_mode_changed()
+            self._on_audience_mode_changed()
 
     # ---------------- Slots ----------------
 
@@ -2152,7 +2173,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         cur = float(getattr(self, "_playback_sec", 0.0))
 
-        # 把「已經到時間」的段落全部取出（避免只顯示最後一段造成跳秒/漏段）
+        # Drain all segments whose start time has passed (avoid skipping/jumping)
         ready: list[tuple] = []
         while self._pending_segments and float(self._pending_segments[0][0]) <= cur:
             st, ed, data = self._pending_segments.popleft()
@@ -2183,6 +2204,40 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._audience_publisher is not None:
             self._clear_all_pcm_sinks()
             self._register_audience_pcm_sink()
+
+    @QtCore.Slot()
+    def _on_audience_mode_changed(self) -> None:
+        """Toggle whether AI narration reaches the Audience second screen.
+
+        Enable narration: TTS PCM is routed to the Audience LiveKit narration track (default).
+        Keep original: Audience only gets video — no AI voice, regardless of tts_mode.
+        The operator's own TTS playback is unaffected either way; this only gates
+        what the /audience viewers hear. When narration is off, the audience page
+        also hides the cat avatar.
+        """
+        enabled = (
+            self.control_panel.get_audience_narration_enabled()
+            if hasattr(self, "control_panel")
+            else True
+        )
+        self._audience_narration_enabled = enabled
+        if hasattr(self, "control_panel"):
+            self.control_panel._refresh_tts_controls_visibility()
+        if self._audience_token_server is not None:
+            self._audience_token_server.set_narration_enabled(enabled)
+        # Always clear the TTS→LiveKit sink first so no further chunks are routed,
+        # even if the publisher has not started yet.
+        self._clear_all_pcm_sinks()
+        if self._audience_publisher is not None:
+            self._audience_publisher.set_narration_enabled(enabled)
+            if enabled:
+                self._register_audience_pcm_sink()
+            else:
+                self._audience_publisher.flush_pending_audio()
+        if enabled:
+            self.append_text("Audience: 啟用播報（AI 語音會播送到觀眾端）")
+        else:
+            self.append_text("Audience: 維持原聲（僅畫面，不播放 AI 語音）")
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
@@ -2556,6 +2611,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._audience_token_server = AudienceTokenServer(
             lk_url, api_key, api_secret, room_name, port=port
         )
+        self._audience_token_server.set_narration_enabled(
+            getattr(self, "_audience_narration_enabled", True)
+        )
         self._audience_token_server.start()
 
     def _stop_audience_token_server(self) -> None:
@@ -2594,7 +2652,12 @@ class MainWindow(QtWidgets.QMainWindow):
         mute_local silences the operator's own speaker (writes zero PCM) while
         the same audio streams to LiveKit, so a listener on the /audience page
         doesn't hear a doubled-up echo.
+
+        Skipped when narration is disabled (video-only mode) —
+        the Audience LiveKit track then carries no AI narration at all.
         """
+        if not getattr(self, "_audience_narration_enabled", True):
+            return
         mod = self._audience_pcm_tts_module()
         if mod is None or self._audience_publisher is None:
             return
@@ -2646,6 +2709,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ensure_audience_token_server()
         self._stop_audience_publisher_only()
 
+        # Keep HTTP join/status in sync with the operator's current mode.
+        if self._audience_token_server is not None:
+            self._audience_token_server.set_narration_enabled(
+                getattr(self, "_audience_narration_enabled", True)
+            )
+
         lk_url = audience_cfg.get("livekit_url", "ws://localhost:7880")
         api_key = audience_cfg.get("api_key", "devkey")
         api_secret = audience_cfg.get("api_secret", "devsecret")
@@ -2655,6 +2724,9 @@ class MainWindow(QtWidgets.QMainWindow):
             lk_url, api_key, api_secret, room_name
         )
         self._audience_publisher.reset_session_telemetry()
+        self._audience_publisher.set_narration_enabled(
+            getattr(self, "_audience_narration_enabled", True)
+        )
         self._audience_publisher.start()
 
         vr_thread.signal_vr_frame.connect(
@@ -2734,7 +2806,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.append_text(f"[FreeSwitch] 已切換至：{source}")
 
     def _apply_tts_settings_before_start(self) -> None:
-        """根據目前模式套用對應設定。"""
+        """Apply TTS settings for the currently selected mode."""
         self.tts_mode = self.control_panel.get_tts_mode()
 
         if self.tts_mode == "openai":
@@ -3147,9 +3219,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             ref_ts = now
 
-        # [延遲][Gemini] Stage 2: time from "frame appeared" to Gemini's broadcast
-        # output reaching here. Also re-anchor ref_ts to the frame's wall-clock
-        # timestamp so Stage 3 (voice latency) is measured from the same origin.
+        # [Latency][Gemini] Stage 2: frame appeared -> Gemini output reaches here.
         is_background = isinstance(data, dict) and data.get("_background")
         if self.mode == "file" and self._livecc_start_wall > 0 and not is_background:
             frame_wall_ts = self._livecc_start_wall + stop_t
@@ -3193,7 +3263,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     red, blue = match_tracker.get_scores()
                     logging.info("[MatchTracker] %s scored → Red %d : Blue %d", team, red, blue)
 
-        # Camera mode：沒有播放器時間軸可排程，所以直接顯示/唸
+        # Camera modes: no playback timeline to schedule against — show/speak immediately
         if self.mode != "file":
             if not self.is_inference_running:
                 return
@@ -3508,8 +3578,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_text("[System] Could not mount click-to-seek: Text output component not found.")
             return
 
-        # Mouse events usually occur on the viewport
-        # mouse event 多半在 viewport 上
+        # Mouse events usually land on the viewport, not the text widget itself
         self._text_click_viewport = getattr(self._text_click_widget, "viewport", lambda: None)()
         if self._text_click_viewport is None:
             self._text_click_viewport = self._text_click_widget
@@ -3613,16 +3682,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self._socket_runner.disconnect_and_quit()
             self._socket_runner = None
 
-        # 先停推論
+        # Stop inference first
         self.stop_inference()
 
-        # ✅ 停 camera thread
+        # Stop camera thread
         if self.camera_thread:
             self.camera_thread.requestStop()
             self.camera_thread.wait(1000)
             self.camera_thread = None
 
-        # ✅ 停 TTS（避免 QThread: Destroyed while thread is still running）
+        # Stop TTS threads (avoid "QThread: Destroyed while thread is still running")
         try:
             self.signal_tts_stop.emit()
         except Exception:

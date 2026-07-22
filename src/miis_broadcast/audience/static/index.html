@@ -249,6 +249,9 @@
   let avatarComposerRaf = null;
   let lastAvatarPaintTs = 0;
   let avatarDisabled = false; // set true when video asset is missing (404)
+  // Operator "啟用播報" vs "維持原聲": avatar only when narration is on.
+  let narrationEnabled = true;
+  let statusPollTimer = null;
 
   avatarSrc.addEventListener("loadeddata", () => {
     backdropCalibrated = false;
@@ -542,14 +545,70 @@
       : '<span class="mute-ico">🔊</span> <span class="mute-txt">靜音</span>';
   }
 
+  function setAvatarVisible(show) {
+    if (show && !avatarDisabled) {
+      avatarWrap.style.display = "block";
+      startAvatarComposer();
+      return;
+    }
+    stopAvatarComposer();
+    avatarWrap.style.display = "none";
+    avatarSrc.pause();
+    avatarSrc.currentTime = 0;
+    avatarOpen.style.opacity = "0";
+  }
+
+  function attachNarrationAudio(track) {
+    const tname = track.name || track.sid;
+    removeAudioByName(tname);
+    const audioEl = track.attach();
+    audioEl.muted = muted;
+    audioEl.dataset.trackName = tname;
+    document.body.appendChild(audioEl);
+    audioEls.set(tname, audioEl);
+    audioEl.play().catch(() => {});
+    console.log("[AUDIO] subscribed:", tname, "total:", audioEls.size);
+    if (track.mediaStreamTrack) {
+      initAnalyser(track.mediaStreamTrack);
+    }
+  }
+
+  function detachAllNarrationAudio() {
+    audioEls.forEach((_, name) => removeAudioByName(name));
+    teardownAnalyser();
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+  }
+
+  function reattachRemoteNarrationAudio() {
+    if (!room || !narrationEnabled) return;
+    room.remoteParticipants.forEach((participant) => {
+      participant.trackPublications.forEach((pub) => {
+        const track = pub.track;
+        if (!track || track.kind !== Track.Kind.Audio) return;
+        attachNarrationAudio(track);
+      });
+    });
+  }
+
+  function applyNarrationEnabled(enabled) {
+    narrationEnabled = !!enabled;
+    if (statusBar.classList.contains("visible")) {
+      setAvatarVisible(narrationEnabled);
+    }
+    if (!narrationEnabled) {
+      detachAllNarrationAudio();
+    } else if (statusBar.classList.contains("visible")) {
+      reattachRemoteNarrationAudio();
+    }
+  }
+
   function showLive() {
     overlay.classList.add("hidden");
     statusBar.classList.add("visible");
     controls.style.display = "flex";
-    if (!avatarDisabled) {
-      avatarWrap.style.display = "block";
-      startAvatarComposer();
-    }
+    setAvatarVisible(narrationEnabled);
     stateDot.className = "dot live";
     stateText.textContent = "直播中";
   }
@@ -589,7 +648,9 @@
     try {
       const res = await fetch("/api/audience/join", { method: "POST" });
       if (!res.ok) throw new Error(`join failed: ${res.status}`);
-      const { url, token } = await res.json();
+      const joinInfo = await res.json();
+      const { url, token } = joinInfo;
+      applyNarrationEnabled(joinInfo.narration_enabled !== false);
 
       setStatus("連線中…");
 
@@ -607,21 +668,12 @@
         }
 
         if (track.kind === Track.Kind.Audio) {
-          removeAudioByName(tname);
-          const audioEl = track.attach();
-          audioEl.muted = muted;
-          audioEl.dataset.trackName = tname;
-          document.body.appendChild(audioEl);
-          audioEls.set(tname, audioEl);
-          audioEl.play().catch(() => {});
-          console.log("[AUDIO] subscribed:", tname, "total:", audioEls.size);
-
-          // Hook the avatar analyser onto this audio track's raw MediaStreamTrack.
-          // createMediaStreamSource creates a parallel read path that does not
-          // affect the existing <audio> playback.
-          if (track.mediaStreamTrack) {
-            initAnalyser(track.mediaStreamTrack);
+          // Video-only mode: keep the LiveKit subscription but do not play AI audio.
+          if (!narrationEnabled) {
+            console.log("[AUDIO] ignored (維持原聲):", tname);
+            return;
           }
+          attachNarrationAudio(track);
         }
       });
 
@@ -636,6 +688,19 @@
         }
       });
 
+      // Operator toggles 啟用播報 / 維持原聲 → hide/show cat avatar live.
+      room.on(RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
+        if (topic && topic !== "audience_mode") return;
+        try {
+          const msg = JSON.parse(new TextDecoder().decode(payload));
+          if (msg && msg.type === "audience_mode") {
+            applyNarrationEnabled(!!msg.narration_enabled);
+          }
+        } catch (e) {
+          console.warn("[AUDIENCE] bad mode packet:", e);
+        }
+      });
+
       room.on(RoomEvent.ConnectionStateChanged, (state) => {
         if (state === ConnectionState.Reconnecting) showReconnecting();
         if (state === ConnectionState.Connected)    showLive();
@@ -645,6 +710,19 @@
       room.on(RoomEvent.Disconnected, () => showOffline("已中斷"));
 
       await room.connect(url, token);
+
+      // Fallback poll in case a LiveKit data packet is missed.
+      if (statusPollTimer) clearInterval(statusPollTimer);
+      statusPollTimer = setInterval(async () => {
+        try {
+          const r = await fetch("/api/audience/status");
+          if (!r.ok) return;
+          const j = await r.json();
+          if (typeof j.narration_enabled === "boolean") {
+            applyNarrationEnabled(j.narration_enabled);
+          }
+        } catch (_) { /* ignore */ }
+      }, 2000);
 
     } catch (err) {
       setStatus(`連線失敗：${err.message}`);
@@ -677,6 +755,7 @@
   });
 
   reconnBtn.addEventListener("click", async () => {
+    if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
     teardownAnalyser();
     stopAvatarComposer();
     avatarSrc.pause();

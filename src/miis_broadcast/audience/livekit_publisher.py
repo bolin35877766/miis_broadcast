@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import queue
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -80,6 +81,8 @@ class AudiencePublisher:
         self._audio_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=48)
 
         self._connected = False
+        self._room: Optional[Any] = None  # livekit.rtc.Room while connected
+        self._narration_enabled = True
 
         # Pipeline: compositing one frame while the previous may still encode.
         self._vr_executor = concurrent.futures.ThreadPoolExecutor(
@@ -169,11 +172,56 @@ class AudiencePublisher:
 
     def push_audio_chunk(self, pcm_int16: np.ndarray) -> None:
         """Called from TTS PCM sink callback (any thread)."""
+        if not self._narration_enabled:
+            return
         _enqueue_drop_oldest(self._audio_q, pcm_int16)
 
     def flush_pending_audio(self) -> None:
         """Drop buffered PCM not yet sent to LiveKit (call when TTS is interrupted/preempted)."""
         _drain_queue(self._audio_q)
+
+    def set_narration_enabled(self, enabled: bool) -> None:
+        """Notify audience clients whether the cat avatar / AI narration mode is on.
+
+        Does not change the published video track. When narration is off ("維持原聲"),
+        drops pending PCM and refuses further push_audio_chunk; clients also mute
+        the narration track and hide the mascot.
+        """
+        self._narration_enabled = bool(enabled)
+        if not self._narration_enabled:
+            self.flush_pending_audio()
+        loop = self._loop
+        if loop is None or loop.is_closed() or not self._connected:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._publish_audience_mode(), loop
+            )
+        except RuntimeError:
+            pass
+
+    async def _publish_audience_mode(self) -> None:
+        room = self._room
+        if room is None:
+            return
+        payload = json.dumps(
+            {
+                "type": "audience_mode",
+                "narration_enabled": self._narration_enabled,
+            }
+        ).encode("utf-8")
+        try:
+            await room.local_participant.publish_data(
+                payload,
+                reliable=True,
+                topic="audience_mode",
+            )
+            print(
+                f"{_ts()} | [AUDIENCE] mode notify narration_enabled="
+                f"{self._narration_enabled}"
+            )
+        except Exception as exc:
+            print(f"{_ts()} | [WARN] [AUDIENCE] mode notify failed: {exc}")
 
     # ── Internal ──────────────────────────────────────────────────────────
 
@@ -199,6 +247,7 @@ class AudiencePublisher:
         )
 
         room = rtc.Room()
+        self._room = room
         try:
             await room.connect(self._url, token)
             self._connected = True
@@ -224,6 +273,9 @@ class AudiencePublisher:
             )
             print(f"{_ts()} | [AUDIO] publish_start track=narration (vr mode)")
 
+            # Sync current operator mode to any viewers already in the room.
+            await self._publish_audience_mode()
+
             await asyncio.gather(
                 self._video_pump_vr(video_source),
                 self._audio_pump_direct(audio_source),
@@ -233,6 +285,7 @@ class AudiencePublisher:
             print(f"{_ts()} | [ERR] publisher session (vr): {exc}")
         finally:
             self._connected = False
+            self._room = None
             await _safe_disconnect(room)
 
     async def _video_pump_vr(self, source) -> None:

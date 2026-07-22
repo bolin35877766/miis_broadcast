@@ -14,9 +14,12 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - **VR & Webcam (Sync)** — synchronized dual capture: physical webcam + OBS Virtual Camera stitched side-by-side (`1280×480`) using back-to-back `grab()` / `retrieve()`
   - **Free Switch** — both Webcam and OBS Virtual Camera are opened at startup; only the **active** source (Webcam, VR, or stitched dual) is emitted to the video panel and forwarded to LiveCC (local/remote). Switching is a **software selector** only — **no camera reconnection**, sub-frame latency typical.
 - **Session Logging**: All terminal logs and AI-generated commentary (TTS output) are automatically saved to a unified log file in `logs/sessions/` for each broadcast session.
-- **Audience second screen (optional)**: In **Free Switch** mode, a browser viewer can subscribe via **LiveKit** to **`broadcast_video`** (full-screen VR at **native resolution**, typically **1920×1080**) plus **`narration`** (TTS) while the operator’s GUI continues to preview the active source. **`broadcast_video` is VR-only** (no mascot burned in by Python): an optional mascot/anchor clip is **composited in the browser** (`static/index.html` + `/assets/avatar/…` served from the token server). Setup, flow diagrams, and **`[AUDIENCE]` / `[MEDIA]` / `[AUDIO]`** log reference: [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md).
+- **Audience second screen (optional)**: In **Free Switch** or **VR (OBS Virtual Camera)** mode, a browser viewer can subscribe via **LiveKit** to **`broadcast_video`** (full-screen VR at **native resolution**, typically **1920×1080**). The GUI **Audience** dropdown selects:
+  - **啟用播報** — AI TTS on the `narration` track + browser mascot/anchor overlay
+  - **維持原聲** — video only (no AI audio, no mascot); Style / Voice / Language / Speed controls are hidden
+  **`broadcast_video` is VR-only** (no mascot burned in by Python). Setup and logs: [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md).
 - **Thin-client telemetry**: During **any** remote inference, the **inference server** stdout shows **`[Client]`** and **`[Server]`** lines: host **RAM** (RSS, system %) plus **CUDA VRAM** on **device 0** where available (global used/total, `torch_alloc` for this process). Lines are on a shared ~2 s cadence via `CLIENT_DIAG` and decode-thread sampling. The GUI does **not** print duplicate `[Client]` lines to its own console; optional **session log** may still record the same payload under `[Memory]`.
-- **Session averages on Stop**: When **Stop Broadcasting** finishes, the server prints **`[SESSION AVG] Server`** and **`[SESSION AVG] Client`** (means of the periodic samples) on **server stdout**. The GUI prints **`[SESSION AVG] Client-local`**, optional audience **`[SESSION AVG] [MEDIA]`** / **`[AUDIO]`** (Free Switch + audience enabled), and **`[SESSION AVG] ByteTrack`** when **Webcam + Tracking** was used — all on the **client** machine.
+- **Session averages on Stop**: When **Stop Broadcasting** finishes, the server prints **`[SESSION AVG] Server`** and **`[SESSION AVG] Client`** (means of the periodic samples) on **server stdout**. The GUI prints **`[SESSION AVG] Client-local`**, optional audience **`[SESSION AVG] [MEDIA]`** / **`[AUDIO]`** (audience publisher was running), and **`[SESSION AVG] ByteTrack`** when **Webcam + Tracking** was used — all on the **client** machine.
 - **Optimized Performance**: High-FPS video rendering with reduced jitter and correct color channel handling (BGR/RGB auto-switching).
 - **Clean source switching vs Stop Broadcasting**: **Changing the input** from the Source menu (`_stop_all_source_threads`) fully stops the old worker with **`QThread.wait(~6s)` + `terminate()`** so a stuck DirectShow `cap.read()` cannot leak threads — the window **may hitch briefly** while joining. **Stop Broadcasting** only ends the **inference session** (`MSG_STOP`, `is_inference_running = false`); in **Webcam + Tracking**, **`CameraByteTrackThread` stays alive** and the **annotated preview keeps updating** (subject crops to the server stop as soon as Stop is pressed).
 - **Background Model Preloading**: The ByteTrack (YOLOX) model is loaded in a background thread 0.5 s after startup. Switching to any tracking mode is instant instead of freezing the UI for several seconds.
@@ -26,9 +29,9 @@ A real-time AI sports broadcasting commentary system with a desktop GUI. It inge
   - 熱血沸騰型主播 (High-energy Hype)
   - 冷靜分析型 (Calm & Analytical)
 - **Fast–slow blade**: LiveCC keyword hits (P1/P2) hard-cut lower-priority TTS; P3 descriptions feed **Gemini** (per-segment + background worker) for richer broadcast copy before TTS.
-- **Text-to-Speech** (GUI dropdown):
+- **Text-to-Speech** (GUI dropdown; hidden Style/Voice/Language/Speed when Audience is **維持原聲**):
   - **不啟用 (Mute)** — subtitles only
-  - **OpenAI TTS** (default) — Realtime WebSocket, cloud, used for audience `narration` when enabled
+  - **OpenAI TTS** (default) — Realtime WebSocket; also feeds audience `narration` when Audience is **啟用播報**
   - **Local TTS** — Chatterbox voice-cloning (lazy-loaded; may be unavailable in some environments)
 - **Latency monitoring** — tracks LiveCC inference time, TTS latency, and end-to-end (vision → audio) latency
 - **OpenAI TTS live queue**: Incoming commentary lines enqueue **FIFO** in `core/models/openai_tts.py` (bounded by **`_MAX_PENDING_UTTERANCES`**; exceeding drops **oldest** backlog). **`drop_outdated=True`** (optional API) still clears pending text explicitly.
@@ -133,7 +136,7 @@ Tune **`_FRAME_QUEUE_MAX`** (`client.py`, default 30) or JPEG quality if you nee
 
 **Online ▾ → Free Switch** opens a dialog (“初始輸入源”) with **Webcam**, **VR**, or **Webcam+VR**. The worker (`FreeSwitchCameraThread` in `workers/free_switch.py`) then keeps **both** capture devices running: every loop it `grab()`s both cameras but `retrieve()`s only the frames needed for the currently selected view. **Webcam** is captured at **`640×480`** for the main pipeline. **OBS/VR** is requested at **`1920×1080`** (when the driver honours it) and is **resized to `640×480` only for `signal_frame`** (GUI + LiveCC / remote inference). **Dual** is **`1280×480`** (webcam | VR-downscaled), same layout as **VR & Webcam (Sync)**. A separate **`signal_vr_frame`** always carries the **native-resolution VR** feed for the optional audience LiveKit path (see below). Changing the source updates an in-memory selector only; **TCP send_frame** and `on_camera_frame` keep running, so remote LiveCC receives a continuous JPEG stream whose content switches instantly. The Source panel shows a small **切換輸入源** bar (鏡頭 / VR / 拼接; buttons remain usable during broadcasting). **10s輪播** (toggle) runs a **10-second** `QTimer` that cycles **Webcam → VR → dual** in order; toggle again to stop. Leaving Free Switch clears the timer and the toggle.
 
-**Audience (second display):** when `audience.enabled` is true in `configs/app.yml`, starting **Free Switch** also starts a **LiveKit publisher** that publishes **`broadcast_video` at `1920×1080`** (**VR only**; resize + RGBA pack in `livekit_publisher`) plus **`narration`** (TTS PCM). The viewer page composites an optional mascot on a **canvas** client-side (`/assets/*`); the publisher **does not** chroma-key or overlay the mascot in Python. Viewers use a local HTTP page on port **8080** (default). Wait for **`[MEDIA] connected`** in the GUI terminal. Higher resolution uses more uplink and encoder load; see **[src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md)** for Docker, firewall, mascot overlay tuning, flowcharts, and logs.
+**Audience (second display):** when `audience.enabled` is true in `configs/app.yml`, starting **Free Switch** or **VR (OBS)** also starts a **LiveKit publisher** that publishes **`broadcast_video` at `1920×1080`** (**VR only**). Whether viewers hear AI TTS and see the mascot is controlled by the GUI **Audience** mode (**啟用播報** / **維持原聲**), not by pressing Start alone — video can stream as soon as Free Switch / VR is open. Viewers use `http://…:8080/audience` (default). Wait for **`[MEDIA] connected`**. Details: **[src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md)**.
 
 Key modules:
 
@@ -142,7 +145,7 @@ Key modules:
 | [src/miis_broadcast/network/protocol.py](src/miis_broadcast/network/protocol.py) | TCP wire format (`pack_message`, `read_message`), message constants including `CLIENT_DIAG` |
 | [src/miis_broadcast/network/client.py](src/miis_broadcast/network/client.py) | `SocketClientRunner` — non-blocking JPEG send queue, `send_client_diagnostic` / `CLIENT_DIAG` during remote inference |
 | [src/miis_broadcast/server/session.py](src/miis_broadcast/server/session.py) | Per-connection handler: FRAME → JPEG decode → LiveCC buffer (**no** ByteTrack or `PREVIEW` on the server; tracking overlay stays on the client) |
-| [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window, video panel — **Free Switch** source bar (`切換輸入源`); `obs_track` shows local ByteTrack annotated preview |
+| [src/miis_broadcast/gui.py](src/miis_broadcast/gui.py) | Main window — Free Switch source bar; Audience mode (**啟用播報** / **維持原聲**); `obs_track` ByteTrack preview |
 | [src/miis_broadcast/workers/free_switch.py](src/miis_broadcast/workers/free_switch.py) | `FreeSwitchCameraThread` — dual always-on captures; VR at **1080p** for audience `signal_vr_frame`; **640×480** / **1280×480** on `signal_frame` for LiveCC |
 | [src/miis_broadcast/workers/gemini.py](src/miis_broadcast/workers/gemini.py) | `GeminiWorker` + `GeminiBackgroundWorker` — zh-TW broadcast from LiveCC text |
 | [src/miis_broadcast/core/models/gemini_broadcaster.py](src/miis_broadcast/core/models/gemini_broadcaster.py) | Gemini API, RAG, stream parsing, style prompts |
@@ -237,6 +240,7 @@ audience:
   api_secret: "your_secret_at_least_32_chars"
   room: "broadcast-room"
   port: 8080
+  mute_operator_local: true   # when 啟用播報: silence operator speaker while PCM goes to LiveKit
 ```
 
 ### Commentary styles ([configs/livecc_prompts.yml](configs/livecc_prompts.yml))
@@ -300,11 +304,12 @@ python -m miis_broadcast
      - **🥽 VR (OBS Virtual Camera)** — e.g. Quest Link / capture into OBS, then use OBS Virtual Camera as the device
      - **🎮 VR & Webcam (Sync)** — `1280×480` side-by-side: webcam + OBS Virtual Camera
      - **🔀 Free Switch** — both cameras always-on; switch Webcam / VR / dual without reconnecting (audience second-screen when enabled)
-2. **Choose a commentary style** from the dropdown (affects Gemini broadcast tone)
-3. **Select TTS** — **OpenAI TTS** (default), **Local TTS** (Chatterbox), or **不啟用 (Mute)**. Audience `narration` requires **OpenAI TTS**.
-4. **Click Start Broadcasting** — the model loads on first run (LiveCC-7B takes ~30–60 s on first local use). ByteTrack (YOLOX) preloads in the background so **Webcam + Tracking** is ready without a long stall (local path only).
-5. Commentary text appears in the transcript panel and is read aloud in real time (when TTS is not muted)
-6. **Click Stop Broadcasting** to end inference (server + client **`[SESSION AVG]`** lines as above; latency stats may still print per your build). In **Webcam + Tracking**, the **camera + ByteTrack overlay keep running** until you pick another input source.
+2. **Audience mode** (second screen, when `audience.enabled`):
+   - **啟用播報** — viewers get AI voice + cat mascot; choose Style / TTS / Voice / Language / Speed as usual
+   - **維持原聲** — viewers get VR video only; Style / Voice / Language / Speed are hidden. No need to press Start just to stream video
+3. **For AI commentary on the operator machine** (and audience narration when 啟用播報): choose style + TTS (**OpenAI TTS** required for audience `narration`), then **Start Broadcasting**
+4. Commentary text appears in the transcript panel and is read aloud when TTS is not muted (operator local; audience only if 啟用播報)
+5. **Stop Broadcasting** ends inference (server + client **`[SESSION AVG]`**). In **Webcam + Tracking**, the annotated preview keeps running until you pick another input source.
 
 #### Subject Tracking behavior
 
@@ -389,7 +394,7 @@ Printed **once** when **`MSG_STOP`** completes (means of snapshots collected dur
 | `[SESSION AVG] Server (n=…) …` | **Inference server** stdout (`session.py`) |
 | `[SESSION AVG] Client (n=…) …` | **Same server terminal** — mean of **`[Client]`** rows received from `CLIENT_DIAG` |
 | `[SESSION AVG] Client-local (n=…) …` | **Client / GUI** stdout — local CLIENT_DIAG aggregates (`gui.py`) |
-| `[SESSION AVG] [MEDIA]` / `[SESSION AVG] [AUDIO]` … | **Client** stdout when the audience publisher ran (**Free Switch** + `audience.enabled`) (`livekit_publisher.py`) |
+| `[SESSION AVG] [MEDIA]` / `[SESSION AVG] [AUDIO]` … | **Client** stdout when the audience publisher ran (**Free Switch** or **VR/OBS** + `audience.enabled`) (`livekit_publisher.py`) |
 | `[SESSION AVG] ByteTrack (n=…) …` | **Client** stdout in **Webcam + Tracking** (`bytetrack_tracker.py`) |
 
 ### Server logging
@@ -499,7 +504,7 @@ miis_broadcast/
 |----------|---------|
 | [README.md](README.md) (this file) | Install, usage, remote server, configuration |
 | [src/miis_broadcast/workers/README.md](src/miis_broadcast/workers/README.md) | Input sources, frame signals, server log reference |
-| [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md) | LiveKit second-screen setup and troubleshooting |
+| [src/miis_broadcast/audience/README.md](src/miis_broadcast/audience/README.md) | LiveKit second screen: 啟用播報 / 維持原聲, setup, logs |
 
 ---
 

@@ -1,16 +1,33 @@
 # Audience second screen (LiveKit)
 
-This package implements a **second display** for viewers: they open a browser page and receive **video** (LiveKit track `broadcast_video`) plus **TTS narration** (`narration`) over WebRTC. **`broadcast_video`** carries **only the VR / OBS feed** (no mascot burned in): `AudiencePublisher` scales to **`1920×1080`** when `VIDEO_W`/`VIDEO_H` match and the capture pipeline delivers that resolution. The **mascot / anchor character** is drawn **in the browser** (`static/index.html`): a hidden MP4 is chroma-keyed on a `<canvas>` (auto backdrop colour from the frame border) and an optional mouth PNG follows `narration` volume—**not** via OpenCV in Python. The **control GUI (first screen)** continues to show whichever source the operator selects in **Free Switch**. When the audience PCM sink is active, **OpenAI TTS** uses `mute_local=True` so narration goes to LiveKit while the operator preview stays silent (timing preserved via zero PCM to the local device).
+This package implements a **second display** for viewers: they open a browser page and receive **VR video** (LiveKit track `broadcast_video`) over WebRTC. Optionally they also receive **AI TTS** (`narration`) and a **browser-side mascot** overlay.
 
 | Topic | Behavior |
 |-------|----------|
-| **Video** | Native-resolution VR from `FreeSwitchCameraThread` via `signal_vr_frame` (typically **1920×1080**; driver may snap to another mode) |
-| **Audio** | TTS PCM → local LiveKit room directly (`_audio_pump_direct`) |
-| **Mascot** | **Viewer only:** `index.html` loads `/assets/avatar/…` (served by `token_server`); canvas chroma + optional `overlay_config.json` overrides—no extra load on `livekit_publisher`. |
+| **Video** | Native-resolution VR from Free Switch or pure OBS via `signal_vr_frame` (typically **1920×1080**) |
+| **Audio** | Only when GUI **Audience** = **啟用播報**: OpenAI TTS PCM → `push_audio_chunk` → LiveKit `narration` |
+| **Mascot** | Viewer-only canvas chroma (`static/index.html` + `/assets/avatar/…`). Shown only when **啟用播報**; hidden in **維持原聲** |
+| **Operator GUI** | Continues to preview the selected Free Switch / OBS source |
 
-**Note:** `signal_frame` still uses **640×480** / **1280×480** for LiveCC; only the audience branch uses full-res VR. Higher video resolution increases **encode bandwidth** and **CPU/GPU** load on the publisher machine.
+`AudiencePublisher` never burns the mascot into `broadcast_video`. Higher video resolution increases encode bandwidth and CPU/GPU load on the publisher machine.
 
-Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_server`, `_start_audience_services`, `_deliver_audience_vr_frame`). For input workers and frame contracts, see [workers/README.md](../workers/README.md).
+Integration: [gui.py](../gui.py) (`_ensure_audience_token_server`, `_start_audience_services`, `_on_audience_mode_changed`, `_deliver_audience_vr_frame`). Frame contracts: [workers/README.md](../workers/README.md).
+
+---
+
+## Audience modes (GUI dropdown)
+
+| Mode | Viewers get | Operator UI |
+|------|-------------|-------------|
+| **啟用播報 (AI 語音)** | VR video + AI `narration` + cat mascot | Style / Voice / Language / Speed visible (as usual for the selected TTS) |
+| **維持原聲 (僅畫面)** | VR video only — no AI audio, no mascot | Style / Voice / Language / Speed (and Local Exaggeration/CFG) **hidden** |
+
+Notes:
+
+- Switching modes mid-session updates viewers live (LiveKit data topic `audience_mode` + HTTP status poll).
+- **維持原聲 does not require Start Broadcasting** — open Free Switch or VR, wait for `[MEDIA] connected`, viewers see video.
+- **Start Broadcasting** starts the AI pipeline (LiveCC → Gemini → TTS). Audience hears that TTS only in **啟用播報** with **OpenAI TTS**.
+- Publisher refuses further PCM when narration is off (`push_audio_chunk` gated + queue flushed). The browser also detaches `narration` audio elements so leftover WebRTC audio cannot play.
 
 ---
 
@@ -18,10 +35,11 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 
 | Condition | Behavior |
 |-----------|----------|
-| `audience.enabled: true` in [configs/app.yml](../../../configs/app.yml) | HTTP token server may start with the GUI (`GET /audience`, `POST /api/audience/join`). |
-| Operator chooses **Online ▾ → Free Switch** | **LiveKit publisher** starts: publishes `broadcast_video` + `narration` (when TTS is **OpenAI TTS**). |
-| Operator leaves Free Switch / switches mode | Publisher stops; HTTP server keeps running until the app exits (if enabled). |
-| TTS set to **Mute** or **Local TTS** | Video track may still publish; **`narration`** PCM sink is not registered (no audience audio). |
+| `audience.enabled: true` in [configs/app.yml](../../../configs/app.yml) | HTTP token server starts with the GUI (`GET /audience`, `POST /api/audience/join`, `GET /api/audience/status`, `/assets/*`). |
+| Operator opens **Free Switch** or **VR (OBS Virtual Camera)** | LiveKit publisher starts: always publishes `broadcast_video`; `narration` track is published but only receives PCM when **啟用播報** + OpenAI TTS sink is registered. |
+| Operator leaves those modes | Publisher stops; HTTP server keeps running until the app exits. |
+| TTS = **Mute** or **Local TTS** | No PCM sink → no AI audio on audience even in **啟用播報**. |
+| `audience.mute_operator_local: true` | While the PCM sink is active, the operator speaker is silenced (zero PCM locally) so timing stays aligned without double audio. |
 
 ---
 
@@ -29,32 +47,38 @@ Full integration points live in [gui.py](../gui.py) (`_ensure_audience_token_ser
 
 ```mermaid
 flowchart LR
-  subgraph SRC["① Sources (Free Switch on)"]
+  subgraph SRC["① Sources Free Switch / OBS VR"]
     direction TB
-    VR["VR video<br/>FreeSwitch → MainWindow"]
-    PCM["Narration PCM<br/>OpenAI TTS → push_audio_chunk"]
+    VR["VR video<br/>signal_vr_frame → MainWindow"]
+    PCM["Narration PCM<br/>OpenAI TTS → push_audio_chunk<br/>only if 啟用播報"]
   end
 
   PUB["② AudiencePublisher"]
 
   subgraph LOC["③ Local SFU"]
-    LK["LiveKit (Docker)<br/>room · signaling :7880"]
+    LK["LiveKit Docker<br/>room · :7880"]
   end
 
   subgraph AUD["④ Audience"]
     direction TB
-    HTTP["FastAPI :8080<br/>/audience · /api/audience/join<br/>/assets/* static"]
-    BR["Browser · livekit-client<br/>+ canvas mascot layer"]
+    HTTP["FastAPI :8080<br/>/audience · join · status · /assets"]
+    BR["Browser · livekit-client<br/>canvas mascot if 啟用播報"]
   end
 
   VR --> PUB
   PCM --> PUB
-  PUB -->|"publish broadcast_video + narration"| LK
-  HTTP -->|"HTML + JWT + avatar assets"| BR
-  BR <-->|"subscribe"| LK
+  PUB -->|"broadcast_video + narration track"| LK
+  HTTP -->|"HTML + JWT + narration_enabled"| BR
+  BR <-->|"subscribe + audience_mode data"| LK
 ```
 
-**CPU / threading (publisher):** OpenCV (`cv2`) resize and RGBA packing for **VR only** run off the asyncio loop via `loop.run_in_executor(self._vr_executor, …)` with a **`ThreadPoolExecutor`** (`_vr_executor`, two workers). **Mascot** decoding and chroma run in the **viewer’s browser** (main thread + `requestAnimationFrame`).
+**Mode sync to viewers**
+
+1. `POST /api/audience/join` returns `narration_enabled` with the JWT.
+2. Publisher sends LiveKit data packets on topic `audience_mode` (`{"type":"audience_mode","narration_enabled":bool}`).
+3. Viewer polls `GET /api/audience/status` every ~2 s as a fallback.
+
+**CPU / threading (publisher):** OpenCV resize / RGBA pack for VR run on `_vr_executor` (`ThreadPoolExecutor`, 2 workers). Mascot chroma runs only in the browser.
 
 ---
 
@@ -62,21 +86,19 @@ flowchart LR
 
 | Item | Detail |
 |------|--------|
-| **Video source** | `<video id="avatar-src" src="/assets/avatar/<file>.mp4">` — replace the file name in HTML when you swap the clip; keep a **flat, even backdrop** and the subject away from the frame edges so border sampling stays clean. |
-| **Keying** | Each decoded frame is drawn to a fixed-size `<canvas>`; **backdrop RGB** and a **spherical radius** are estimated once per load from a **border band** of pixels, then pixels inside the sphere (and not “colourful” enough) go transparent. **High-saturation** pixels are always treated as foreground to protect fur / clothing when you change backdrop colour. |
-| **Mouth** | Optional PNG (`cat_mouth_opened.png`) opacity follows **RMS** on the subscribed `narration` track via Web Audio `AnalyserNode`. |
-| **Playback** | While speech energy is detected: mascot MP4 **plays** (`loop`); when silent: **pause** (timeline preserved). |
-| **Tuning** | Copy [`assets/avatar/overlay_config.example.json`](../../../assets/avatar/overlay_config.example.json) to **`assets/avatar/overlay_config.json`** (optional, not required in git) to override `foregroundSatMin`, `backdropRadiusBias`, `backdropRadiusClamp`. |
+| **Visibility** | Shown only when `narration_enabled` is true and avatar assets exist (`window._AVATAR_ENABLED`). |
+| **Video source** | `/assets/avatar/cat_anchor.mp4` (flat backdrop recommended). |
+| **Keying** | Canvas chroma from border-band backdrop estimate; optional `overlay_config.json`. |
+| **Mouth** | Optional PNG opacity follows RMS on the `narration` track (`AnalyserNode`). |
+| **Audio** | When **維持原聲**, all narration `<audio>` elements are detached; new audio tracks are ignored until mode returns to **啟用播報**. |
 
-**Not supported here:** server-side (Python) compositing of the mascot into `broadcast_video`—that path was removed to keep encoder CPU predictable.
+There is **no** server-side Python mascot composite into `broadcast_video`.
 
 ---
 
-### TTS path (why it matches first-screen timing)
+## TTS path (啟用播報 only)
 
-PCM still flows through a **single** `_audio_output_queue`. The player thread forwards each chunk to `push_audio_chunk` **and**, when `mute_local=True`, feeds **silence** to the local audio device so **hardware playback timing** stays aligned with unmuted mode. That keeps the LiveKit audio stream paced like normal local playback (see [openai_tts.py](../core/models/openai_tts.py)).
-
-**Utterance queueing:** the Realtime worker does **not** send `response.cancel` when a new segment arrives while audio is still playing. Pending lines are queued **FIFO** so a burst of **`SEGMENT`** messages (e.g. several lines from one LiveCC batch) keeps order and does not let the last line alone override earlier commentary. If the queue grows past **`_MAX_PENDING_UTTERANCES`**, oldest backlog items are dropped. Optional **`drop_outdated=True`** clears the whole pending text queue; hard **Stop** / `interrupt_tts` still cancels audio.
+PCM flows through OpenAI TTS `_audio_output_queue`. The player forwards each chunk to `push_audio_chunk` and, when `mute_operator_local` is true, writes **silence** to the local device so pacing matches unmuted playback.
 
 ```mermaid
 sequenceDiagram
@@ -88,10 +110,14 @@ sequenceDiagram
 
   API->>Q: response.audio.delta chunks
   Q->>P: dequeue
-  P->>LK: push_audio_chunk (real PCM)
-  alt mute_local
-    P->>SD: write zero PCM (silent, same duration)
-  else not muted
+  alt narration enabled
+    P->>LK: push_audio_chunk real PCM
+  else 維持原聲
+    Note over LK: sink cleared / push gated
+  end
+  alt mute_operator_local
+    P->>SD: write zero PCM
+  else
     P->>SD: write real PCM
   end
 ```
@@ -102,129 +128,96 @@ sequenceDiagram
 
 | Path | Role |
 |------|------|
-| [token_server.py](token_server.py) | FastAPI + uvicorn on `0.0.0.0`; serves viewer HTML, subscribe-only JWTs, and **`/assets/*`** (project `assets/` root for mascot files). |
-| [static/index.html](static/index.html) | LiveKit JS viewer: subscribes to `broadcast_video` + `narration`; **canvas chroma mascot** + optional mouth overlay (see section above). |
-| [livekit_publisher.py](livekit_publisher.py) | Background asyncio thread: publishes **`1920×1080`** `broadcast_video` (**VR only**, resize + RGBA pack), **30 fps** pacing; **cv2** on **`_vr_executor`**—**no** mascot compositing. |
-| [assets/avatar/](../../../assets/avatar/) | Mascot MP4 + optional mouth PNG; optional **`overlay_config.json`** (see example). |
-| [gui.py](../gui.py) | Starts token server and `AudiencePublisher` when Free Switch runs with `audience.enabled`. |
-| [openai_tts.py](../core/models/openai_tts.py) | `register_pcm_sink`, `clear_audio_queue` + optional `flush_callback` for LiveKit backlog. |
-| [workers/free_switch.py](../workers/free_switch.py) | Emits **`signal_vr_frame`** (native VR, audience) alongside **`signal_frame`** (LiveCC-resolution active view). |
-| [docker-compose.yml](../../../docker-compose.yml) | Local LiveKit container; map signaling + UDP ports. |
-| [livekit.yaml](../../../livekit.yaml) | LiveKit server config (keys, RTC port range). |
-| [scripts/open-audience-firewall.ps1](../../../scripts/open-audience-firewall.ps1) | Windows inbound rules for LAN viewers (run elevated). |
+| [token_server.py](token_server.py) | FastAPI: viewer HTML, JWTs, `/assets/*`, `narration_enabled` on join + `/api/audience/status`. |
+| [static/index.html](static/index.html) | LiveKit viewer; mode-aware mascot + audio attach/detach. |
+| [livekit_publisher.py](livekit_publisher.py) | Publishes `broadcast_video` + `narration`; gates PCM; publishes `audience_mode` data. |
+| [gui.py](../gui.py) | Audience dropdown, control visibility, PCM sink register/clear, starts publisher on Free Switch / OBS. |
+| [openai_tts.py](../core/models/openai_tts.py) | `register_pcm_sink` + `flush_callback` for LiveKit backlog. |
+| [workers/free_switch.py](../workers/free_switch.py) / [workers/obs_input.py](../workers/obs_input.py) | Emit `signal_vr_frame` for audience video. |
+| [docker-compose.yml](../../../docker-compose.yml) / [livekit.yaml](../../../livekit.yaml) | Local LiveKit. |
+| [scripts/open-audience-firewall.ps1](../../../scripts/open-audience-firewall.ps1) | Windows firewall for LAN viewers. |
 
 ---
 
 ## Setup (local)
 
-1. **LiveKit** (from repo root):
-
-   ```bash
-   docker compose up -d
-   ```
-
-2. **Align URLs for your LAN** (same host in all three places):
-
-   - `configs/app.yml` → `audience.livekit_url` (e.g. `ws://<PC_LAN_IP>:7880`)
-   - `docker-compose.yml` → `--node-ip <PC_LAN_IP>` (ICE must advertise a reachable IP)
-   - Optional: pass `lan_hint_host=` into `AudienceTokenServer` from config if your `gui.py` is wired for it (prints a same-Wi-Fi URL in the console).
-
-3. **Firewall** (other devices on Wi‑Fi): run `scripts/open-audience-firewall.ps1` **as Administrator** once, or manually allow TCP **8080, 7880, 7881** and UDP **50000–50020**.
-
-4. **GUI**:
-
-   ```bash
-   python -m miis_broadcast
-   ```
-
-5. **Operator**: **Free Switch** → wait for **`[MEDIA] connected`** in the terminal → viewers open `http://<PC_LAN_IP>:8080/audience` (or `localhost` on the same machine).
+1. **LiveKit** (repo root): `docker compose up -d`
+2. Align LAN IP in `configs/app.yml` → `audience.livekit_url` and `docker-compose.yml` → `--node-ip`
+3. Firewall: run `scripts/open-audience-firewall.ps1` as Administrator if needed
+4. GUI: `python -m miis_broadcast`
+5. Operator: Free Switch or VR → wait for **`[MEDIA] connected`** → viewers open `http://<host>:8080/audience`
+6. Choose **啟用播報** or **維持原聲**; hard-refresh the viewer page after pulling HTML/JS changes
 
 ---
 
-## Configuration reference ([configs/app.yml](../../../configs/app.yml))
-
-### `audience` section
+## Configuration ([configs/app.yml](../../../configs/app.yml))
 
 | Key | Meaning |
 |-----|---------|
-| `audience.enabled` | Master switch for the feature. |
-| `audience.livekit_url` | WebSocket URL passed to the browser (`ws://…:7880`). |
-| `audience.api_key` / `api_secret` | Must match `livekit.yaml` `keys` (secret ≥ 32 chars on recent LiveKit). |
-| `audience.room` | LiveKit room name (publisher + viewers join the same room). |
-| `audience.port` | HTTP port for `/audience`, `/api/audience/join`, and static **`/assets/*`** (mascot files; default **8080**). |
+| `audience.enabled` | Master switch |
+| `audience.livekit_url` | WebSocket URL for the browser |
+| `audience.api_key` / `api_secret` | Must match `livekit.yaml` |
+| `audience.room` | Shared room name |
+| `audience.port` | HTTP port for `/audience`, join, status, `/assets/*` (default **8080**) |
+| `audience.mute_operator_local` | Silence operator speaker while PCM sinks to LiveKit |
+
+Audience **mode** (啟用播報 / 維持原聲) is a **GUI** setting, not a YAML key.
 
 ---
 
-## Client terminal log reference (prefixes)
+## Client terminal log reference
 
-These lines appear on **`python -m miis_broadcast`** stdout (not the browser). They are **separate** from session files under `logs/sessions/` and from server `[Server]` / `[Client]` telemetry in remote inference.
-
-**`[MEDIA]`** means the **local audience** LiveKit path (video → `broadcast_video`, session connect/disconnect). **`[AUDIO]`** means the **`narration`** track and the TTS → publisher PCM pipeline stats.
-
-### `[AUDIENCE]` — HTTP token server
+### `[AUDIENCE]` — HTTP token server / mode notify
 
 | Example | Meaning |
 |---------|---------|
-| `[AUDIENCE] token server started → http://localhost:8080/audience` | Uvicorn bound; local viewer URL. |
-| `[AUDIENCE] same-WiFi URL → http://…:8080/audience` | Printed when a LAN hint host is configured. |
-| `[AUDIENCE] if other devices cannot open…` | Reminder about Windows firewall. |
-| `[AUDIENCE] join id=audience-… room=broadcast-room` | A viewer called `POST /api/audience/join`; JWT issued. |
-| `[AUDIENCE] token server stopped` | App shutdown or server torn down. |
-| `[ERR] [AUDIENCE] token server bind failed …` | Port in use or permission issue. |
+| `[AUDIENCE] token server started → http://localhost:8080/audience` | Uvicorn bound |
+| `[AUDIENCE] join id=… room=…` | Viewer joined; JWT issued |
+| `[AUDIENCE] mode notify narration_enabled=False` | Publisher told viewers to hide mascot / stop AI audio |
+| `[ERR] [AUDIENCE] token server bind failed …` | Port in use |
 
-### `[MEDIA]` — LiveKit publisher (video + session)
+### `[MEDIA]` — video publisher
 
 | Example | Meaning |
 |---------|---------|
-| `[MEDIA] publisher starting \| room=… mode=vr` | `AudiencePublisher.start()`. |
-| `[MEDIA] connected \| room=…` | Local room connected. |
-| `[MEDIA] publish_start track=broadcast_video (vr mode)` | Video track published. |
-| `[MEDIA] fps=29.0 drop=0` | Video pump stats; `drop` = `_video_q` depth. |
-| `[MEDIA] disconnected from LiveKit` | Clean disconnect. |
-| `[MEDIA] publisher stopped` | Thread joined after `stop()`. |
-| `[WARN] [MEDIA] publisher thread hung; forcing event loop stop` | Graceful shutdown timed out. |
-| `[ERR] publisher session (vr): …` | Python-side failure. |
+| `[MEDIA] connected \| room=…` | Room connected |
+| `[MEDIA] publish_start track=broadcast_video (vr mode)` | Video track up |
+| `[MEDIA] fps=29.0 drop=0` | Video pump stats |
+| `[MEDIA] publisher stopped` | Teardown complete |
 
-### `[AUDIO]` — publisher narration track + PCM hook
+### `[AUDIO]` — narration track + PCM sink
 
 | Example | Meaning |
 |---------|---------|
-| `[AUDIO] publish_start track=narration (vr mode)` | LiveKit audio track published. |
-| `[AUDIO] chunks/s=4.0 sample_rate≈24000 aq=8` | Periodic audio pump stats; **`aq`** = `_audio_q` depth. |
-| `[AUDIO] PCM sink registered \| mute_local=True` | From [openai_tts.py](../core/models/openai_tts.py) when Free Switch registers the audience sink. |
-| `[AUDIO] PCM sink cleared \| mute_local=False` | Publisher stopped / sink removed. |
+| `[AUDIO] publish_start track=narration (vr mode)` | Audio track published (may stay silent in 維持原聲) |
+| `[AUDIO] PCM sink registered \| mute_local=…` | TTS→LiveKit sink active (**啟用播報**) |
+| `[AUDIO] PCM sink cleared \| mute_local=False` | Sink removed (**維持原聲** or teardown) |
+| `[AUDIO] chunks/s=… aq=…` | Audio pump stats while PCM is flowing |
 
-### `[SESSION AVG]` — audience pumps (printed once on Stop Broadcasting)
-
-When the operator clicks **Stop Broadcasting**, the publisher flushes telemetry and may print:
+### `[SESSION AVG]` — on Stop Broadcasting
 
 | Example | Meaning |
 |---------|---------|
-| `[SESSION AVG] [MEDIA] fps=… drop=… (n=…)` | Mean video pump FPS and queue-depth proxy for this session (`livekit_publisher.py`). |
-| `[SESSION AVG] [AUDIO] chunks/s=… sample_rate≈… aq=… (n=…)` | Mean narration chunk rate and **`aq`** (audio queue depth) for this session. |
-
-### LiveKit **server** (Docker logs)
-
-Rust lines such as `failed to negotiate the publisher` may appear in **`docker compose logs`** during bad ICE / reconnect races; they are **not** the Python `[MEDIA]` prefixes above. Correlate with publisher start/stop on the client.
+| `[SESSION AVG] [MEDIA] …` | Mean video pump stats for the session |
+| `[SESSION AVG] [AUDIO] …` | Mean narration pump stats for the session |
 
 ---
 
-## Troubleshooting (short)
+## Troubleshooting
 
 | Symptom | Check |
 |---------|--------|
-| `ERR_CONNECTION_REFUSED` on `:8080` | GUI not running or `audience.enabled: false`. |
-| `ERR_CONNECTION_REFUSED` on `:7880` | `docker compose up -d` and firewall. |
-| Phone cannot connect | Same Wi‑Fi, correct LAN IP in `livekit_url` + `--node-ip`, firewall script. |
-| Mascot holes / fringe after swapping MP4 | Re-open page; tweak `overlay_config.json` (`foregroundSatMin`, radius clamps). Prefer **flat single-colour** backdrop touching all four edges. |
-| Overlapping audio in browser | Ensure a single `narration` element (see `index.html` dedupe by track name); avoid duplicate tabs both unmuted in the same room. |
-| `[MEDIA] fps=…` not ~30 | Current build uses **deadline-based** pacing; sustained **~60+** may indicate an old build or clock skew. |
-| Stutter with remote inference; server stdout shows `JPEG send_queue=30/30` | TCP/client cannot drain frames as fast as produced; often **high client RAM** or network. Root README → *Client send rate* / `_FRAME_QUEUE_MAX`. |
-| `QThread: Destroyed while thread '' is still running` on exit | A background thread (e.g. publisher) may still be stopping; ensure Free Switch / audience teardown completes before closing the app window, or wait for `[MEDIA] publisher stopped`. |
+| Still hear AI after **維持原聲** | Hard-refresh `/audience` (Ctrl+F5); confirm log shows `PCM sink cleared` and/or `mode notify narration_enabled=False` |
+| Cat still visible after **維持原聲** | Same hard-refresh; check join/status `narration_enabled` |
+| No video | Free Switch or VR open? `[MEDIA] connected`? `audience.enabled`? |
+| No AI audio in **啟用播報** | TTS = **OpenAI TTS**; pressed **Start**; sink registered |
+| Style/Voice hidden | Expected in **維持原聲** — switch back to **啟用播報** |
+| Phone cannot connect | LAN IP in `livekit_url` + `--node-ip`, firewall |
+| Port 8080 refused | GUI running with `audience.enabled: true` |
 
 ---
 
 ## See also
 
-- Root project overview: [README.md](../../../README.md)
-- Input workers and `signal_vr_frame`: [workers/README.md](../workers/README.md)
+- Root overview: [README.md](../../../README.md)
+- Input workers / `signal_vr_frame`: [workers/README.md](../workers/README.md)

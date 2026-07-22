@@ -41,6 +41,7 @@ Each source thread emits one or two frame signals that `MainWindow` connects to:
 | `VideoThread` | `signal_frame` | `(frame_rgb: np.ndarray, frame_idx: int, fps: float)` | `on_video_frame()` |
 | `CameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` |
 | `OBSCameraThread` | `signal_frame` | `frame_rgb: np.ndarray` | `on_camera_frame()` |
+| `OBSCameraThread` | `signal_vr_frame` | `frame_rgb: np.ndarray` — native OBS/VR (typically **`1920×1080`**) for audience LiveKit | `MainWindow._deliver_audience_vr_frame()` → `AudiencePublisher.push_video_frame()` |
 | `CameraByteTrackThread` | `signal_frame` | `annotated_bgr: np.ndarray` | `on_obs_track_frame()` |
 | `CameraByteTrackThread` | `signal_subject_frame` | `subject_crop_rgb: np.ndarray` | `on_obs_track_subject_frame()` |
 | `DualSourceCameraThread` | `signal_frame` | `combined_rgb: np.ndarray` | `on_camera_frame()` |
@@ -172,7 +173,7 @@ CAM idx=0  |  VR idx=5  |  Target: 30 FPS
 | `vr` (`SOURCE_VR`) | `640×480` RGB | OBS/VR captured at **`1920×1080`** (requested), **resized** to **`640×480`** for GUI + LiveCC |
 | `dual` (`SOURCE_DUAL`) | `1280×480` RGB | `hstack(webcam, VR→640×480)` — same layout as **`DualSourceCameraThread`** |
 
-**Audience path:** `signal_vr_frame` always emits the **native VR** frame (no downscale) so `AudiencePublisher` can publish **`1920×1080`** **`broadcast_video`** (**VR pixels only**; no mascot composite in Python). Mascot/anchor overlays run in the **browser** viewer (see `[../audience/README.md](../audience/README.md)`).
+**Audience path:** `signal_vr_frame` always emits the **native VR** frame (no downscale) so `AudiencePublisher` can publish **`1920×1080`** **`broadcast_video`** (**VR pixels only**; no mascot composite in Python). Whether viewers hear TTS / see the mascot is controlled by the GUI **Audience** mode — see [../audience/README.md](../audience/README.md).
 
 ### Why switching feels instant
 
@@ -197,7 +198,15 @@ Same path as **`camera`** / **`dual_sync`**: `start_inference(..., mode="free_sw
 
 ### Audience second screen (LiveKit)
 
-When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** also drives a **LiveKit** publisher: **`signal_vr_frame`** carries the **full-resolution OBS/VR** line for **`broadcast_video`** (typically **`1920×1080`** — **pure VR**, not chroma-keyed with a mascot in this process), while **`signal_frame`** stays on **`640×480` / `1280×480`** for the GUI and LiveCC. **`narration`** PCM is tapped from **OpenAI TTS** only. Viewer-side mascot layers are documented under **Browser mascot overlay** in the audience README. 👉 Full setup: **[../audience/README.md](../audience/README.md)**.
+When **`audience.enabled`** is set in `configs/app.yml`, **Free Switch** and **VR (OBS)** start a **LiveKit** publisher:
+
+| Track / layer | Source |
+|---------------|--------|
+| `broadcast_video` | `signal_vr_frame` → native VR (typically **1920×1080**) |
+| `narration` + browser mascot | Only when GUI **Audience** = **啟用播報** and TTS is **OpenAI TTS** |
+| Video-only (no AI audio / no mascot) | GUI **Audience** = **維持原聲** |
+
+`signal_frame` stays at **640×480** / **1280×480** for the GUI and LiveCC. Mode changes are pushed live via LiveKit data topic `audience_mode` and `GET /api/audience/status`. 👉 **[../audience/README.md](../audience/README.md)**.
 
 ---
 
