@@ -3,10 +3,20 @@
 import time
 from typing import Optional
 
+import cv2
 import numpy as np
 from PySide6 import QtCore
 
 from ..core.io.obs_input import OBSVirtualCameraInput
+
+# LiveCC inference / preview expects 640×480 — resize before signal_frame so
+# behaviour matches the other camera modes regardless of OBS's canvas size.
+_LIVECC_W, _LIVECC_H = 640, 480
+
+# Requested capture resolution — OBS Virtual Camera is asked for 1080p so the
+# Audience second screen (signal_vr_frame) gets native quality, mirroring
+# FreeSwitchCameraThread's VR capture.
+_VR_W, _VR_H = 1920, 1080
 
 
 class OBSCameraThread(QtCore.QThread):
@@ -19,7 +29,8 @@ class OBSCameraThread(QtCore.QThread):
     in MainWindow is reused without modification.
     """
 
-    signal_frame = QtCore.Signal(np.ndarray)   # emits RGB ndarray
+    signal_frame = QtCore.Signal(np.ndarray)   # emits RGB ndarray — 640x480 for LiveCC/preview
+    signal_vr_frame = QtCore.Signal(np.ndarray)  # emits RGB ndarray — native/HD, for Audience second screen
     signal_error = QtCore.Signal(str)
 
     DEFAULT_FPS_FALLBACK = 30.0
@@ -45,6 +56,8 @@ class OBSCameraThread(QtCore.QThread):
             cam = OBSVirtualCameraInput(
                 device_name=self.device_name,
                 fallback_index=self.fallback_index,
+                request_width=_VR_W,
+                request_height=_VR_H,
             )
         except RuntimeError as e:
             self.signal_error.emit(str(e))
@@ -62,7 +75,17 @@ class OBSCameraThread(QtCore.QThread):
                 self.signal_error.emit(str(e))
                 break
 
-            self.signal_frame.emit(frame_rgb)
+            # Audience second screen: always emit native resolution.
+            self.signal_vr_frame.emit(frame_rgb)
+
+            # LiveCC inference / local preview: resize to a fixed 640x480
+            # regardless of OBS's actual canvas size.
+            h, w = frame_rgb.shape[:2]
+            if (w, h) != (_LIVECC_W, _LIVECC_H):
+                frame_small = cv2.resize(frame_rgb, (_LIVECC_W, _LIVECC_H))
+            else:
+                frame_small = frame_rgb
+            self.signal_frame.emit(frame_small)
 
             # Pace the loop to match the source FPS for smooth preview
             elapsed = time.perf_counter() - t_start

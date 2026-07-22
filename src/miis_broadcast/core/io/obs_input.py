@@ -166,6 +166,8 @@ class OBSVirtualCameraInput(BaseInput):
         self,
         device_name: str = DEFAULT_DEVICE_NAME,
         fallback_index: int = 1,
+        request_width: int | None = None,
+        request_height: int | None = None,
     ) -> None:
         super().__init__(device_name)
         self.device_name = device_name
@@ -194,6 +196,14 @@ class OBSVirtualCameraInput(BaseInput):
                 f"Make sure OBS is running and Virtual Camera is started.\n"
                 f"On Linux, also ensure v4l2loopback is loaded: sudo modprobe v4l2loopback"
             )
+
+        # Request native/HD resolution when the caller needs full quality
+        # (e.g. Audience second screen). Without this, cv2 falls back to
+        # whatever default the driver reports (often 640x480) even though
+        # OBS itself may be rendering at 1080p.
+        if request_width and request_height:
+            self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, request_width)
+            self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, request_height)
 
         actual_w = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))

@@ -1422,7 +1422,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.control_panel.requestRemoteDisconnect.connect(self.on_remote_disconnect_clicked)
 
         # Audience viewer page (HTTP) — start early so http://localhost:8080/audience works
-        # before entering Free Switch. LiveKit publisher still starts with Free Switch only.
+        # before entering Free Switch / pure VR. LiveKit publisher starts once one of
+        # those camera modes is opened (see _start_audience_services).
         self._ensure_audience_token_server()
 
     def _init_prompt_manager_and_fill_styles(self) -> None:
@@ -2236,10 +2237,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.camera_thread.wait()
             self.camera_thread = None
         if self.obs_thread:
+            self._stop_audience_publisher_only()
             self.obs_thread.requestStop()
             try:
                 self.obs_thread.signal_frame.disconnect()
-            except RuntimeError:
+                self.obs_thread.signal_vr_frame.disconnect(
+                    self._deliver_audience_vr_frame
+                )
+            except (RuntimeError, AttributeError, TypeError):
                 pass
             self._join_worker_thread_smooth(self.obs_thread)
             self.obs_thread = None
@@ -2357,6 +2362,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.video_panel.slider.setEnabled(False)
         self._update_start_button_state()
+
+        # Pure VR (OBS Virtual Camera) also supports the Audience second screen —
+        # same LiveKit publisher path as Free Switch, sourced from signal_vr_frame.
+        self._start_audience_services()
 
     @QtCore.Slot()
     def on_open_camera_track_clicked(self) -> None:
@@ -2580,34 +2589,58 @@ class MainWindow(QtWidgets.QMainWindow):
         return None
 
     def _register_audience_pcm_sink(self) -> None:
-        """Route TTS PCM to LiveKit for the currently selected TTS engine."""
+        """Route TTS PCM to LiveKit for the currently selected TTS engine.
+
+        mute_local silences the operator's own speaker (writes zero PCM) while
+        the same audio streams to LiveKit, so a listener on the /audience page
+        doesn't hear a doubled-up echo.
+        """
         mod = self._audience_pcm_tts_module()
         if mod is None or self._audience_publisher is None:
             return
+        audience_cfg = self.configs.get("audience", {})
+        mute_local = bool(audience_cfg.get("mute_operator_local", False))
         mod.register_pcm_sink(
             self._audience_publisher.push_audio_chunk,
-            mute_local=True,
+            mute_local=mute_local,
             flush_callback=self._audience_publisher.flush_pending_audio,
         )
+
+    def _audience_vr_frame_thread(self):
+        """Return the live-source thread that emits native-resolution VR
+        frames (signal_vr_frame) for the Audience second screen, for
+        whichever camera mode is currently active. Both Free Switch and
+        pure VR (OBS Virtual Camera) support this; other modes don't."""
+        if self.mode == "free_switch":
+            return getattr(self, "free_switch_thread", None)
+        if self.mode == "obs":
+            return getattr(self, "obs_thread", None)
+        return None
 
     def _stop_audience_publisher_only(self) -> None:
         """Tear down LiveKit publisher + TTS sink; keep HTTP token server running."""
         self._clear_all_pcm_sinks()
         if self._audience_publisher is not None:
-            try:
-                if self.free_switch_thread is not None:
-                    self.free_switch_thread.signal_vr_frame.disconnect(
-                        self._deliver_audience_vr_frame
-                    )
-            except (RuntimeError, AttributeError, TypeError):
-                pass
+            for attr in ("free_switch_thread", "obs_thread"):
+                thread = getattr(self, attr, None)
+                if thread is None:
+                    continue
+                try:
+                    thread.signal_vr_frame.disconnect(self._deliver_audience_vr_frame)
+                except (RuntimeError, AttributeError, TypeError):
+                    pass
             self._audience_publisher.stop()
             self._audience_publisher = None
 
     def _start_audience_services(self) -> None:
-        """Free Switch: LiveKit publisher + TTS PCM sink (HTTP server already up)."""
+        """Free Switch / pure VR (OBS): LiveKit publisher + TTS PCM sink
+        (HTTP server already up)."""
         audience_cfg = self.configs.get("audience", {})
         if not audience_cfg.get("enabled", False):
+            return
+
+        vr_thread = self._audience_vr_frame_thread()
+        if vr_thread is None:
             return
 
         self._ensure_audience_token_server()
@@ -2624,11 +2657,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._audience_publisher.reset_session_telemetry()
         self._audience_publisher.start()
 
-        if self.free_switch_thread is not None:
-            self.free_switch_thread.signal_vr_frame.connect(
-                self._deliver_audience_vr_frame,
-                QtCore.Qt.QueuedConnection,
-            )
+        vr_thread.signal_vr_frame.connect(
+            self._deliver_audience_vr_frame,
+            QtCore.Qt.QueuedConnection,
+        )
 
         self._register_audience_pcm_sink()
 
@@ -2722,6 +2754,12 @@ class MainWindow(QtWidgets.QMainWindow):
             exag = self.control_panel.get_local_exaggeration()
             cfg = self.control_panel.get_local_cfg()
             self.signal_local_tts_apply_settings.emit(float(exag), float(cfg))
+
+        # Audience PCM sink can be cleared between opening a camera mode and
+        # pressing Start (e.g. TTS dropdown change). Re-register here so
+        # narration reaches LiveKit once inference actually begins.
+        if self._audience_publisher is not None:
+            self._register_audience_pcm_sink()
 
     @QtCore.Slot()
     def on_start_clicked(self) -> None:
@@ -2911,10 +2949,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.video_thread.wait()
                 self.video_thread = None
 
-            if self.mode == "obs" and self.obs_thread is not None:
-                self.obs_thread.requestStop()
-                self._join_worker_thread_smooth(self.obs_thread)
-                self.obs_thread = None
+            # Pure VR (OBS) stays alive here too — same as Free Switch — so the
+            # camera preview and Audience second screen keep running between
+            # broadcast Start/Stop cycles instead of being torn down every time.
 
             # Webcam+ByteTrack stays alive here: inference ended above; preview keeps updating.
             if self.mode == "obs_track" and self.obs_bytetrack_thread is not None:

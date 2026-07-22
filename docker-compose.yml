@@ -7,5 +7,5 @@ services:
       - "50000-50020:50000-50020/udp"  # WebRTC UDP media (narrow range for Windows)
     volumes:
       - ./livekit.yaml:/livekit.yaml
-    command: --config /livekit.yaml --node-ip 10.134.98.138
+    command: --config /livekit.yaml --node-ip 127.0.0.1
     restart: unless-stopped
