@@ -38,7 +38,7 @@ inference:
 # Remote inference (set client_only: false to load LiveCC locally)
 remote:
   enabled: true
-  client_only: false
+  client_only: true
   host: 127.0.0.1
   port: 9000
 
@@ -52,3 +52,4 @@ audience:
   port: 8080
   # If true, silence the operator's own speaker (Free Switch AND pure VR)
   mute_operator_local: true
+  original_audio_device: null

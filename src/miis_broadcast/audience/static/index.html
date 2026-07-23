@@ -567,8 +567,10 @@
     document.body.appendChild(audioEl);
     audioEls.set(tname, audioEl);
     audioEl.play().catch(() => {});
-    console.log("[AUDIO] subscribed:", tname, "total:", audioEls.size);
-    if (track.mediaStreamTrack) {
+    console.log("[AUDIO] subscribed:", tname, "total:", audioEls.size,
+                "narration=", narrationEnabled);
+    // Lip-sync analyser only when AI narration (cat) is visible.
+    if (narrationEnabled && track.mediaStreamTrack) {
       initAnalyser(track.mediaStreamTrack);
     }
   }
@@ -582,7 +584,8 @@
   }
 
   function reattachRemoteNarrationAudio() {
-    if (!room || !narrationEnabled) return;
+    // Always (re)attach: track carries AI TTS or original desktop/game audio.
+    if (!room) return;
     room.remoteParticipants.forEach((participant) => {
       participant.trackPublications.forEach((pub) => {
         const track = pub.track;
@@ -597,8 +600,15 @@
     if (statusBar.classList.contains("visible")) {
       setAvatarVisible(narrationEnabled);
     }
+    // Keep playing the audio track in both modes (AI vs original).
+    // Only the cat mascot / lip-sync follows narrationEnabled.
     if (!narrationEnabled) {
-      detachAllNarrationAudio();
+      if (analyser) { analyser.disconnect(); analyser = null; }
+      timeDomain = null;
+      emaRms = 0;
+      wasSpeaking = false;
+      avatarSrc.pause();
+      avatarOpen.style.opacity = "0";
     } else if (statusBar.classList.contains("visible")) {
       reattachRemoteNarrationAudio();
     }
@@ -668,11 +678,7 @@
         }
 
         if (track.kind === Track.Kind.Audio) {
-          // Video-only mode: keep the LiveKit subscription but do not play AI audio.
-          if (!narrationEnabled) {
-            console.log("[AUDIO] ignored (維持原聲):", tname);
-            return;
-          }
+          // Always play: AI TTS (啟用播報) or original desktop/game audio (維持原聲).
           attachNarrationAudio(track);
         }
       });

@@ -7,7 +7,7 @@ Publishes audio/video to the local LiveKit room for audience viewing.
 VR mode (only mode)
 -------------------
 - Video source: VR frames from FreeSwitchCameraThread.signal_vr_frame
-- Audio source: OpenAI TTS PCM sink (push_audio_chunk)
+- Audio source: OpenAI TTS PCM (啟用播報) or desktop/game capture (維持原聲)
 - Track names: broadcast_video (video), narration (audio)
 
 Heavy cv2 work runs on a ThreadPoolExecutor (_vr_executor) so the asyncio event
@@ -171,8 +171,14 @@ class AudiencePublisher:
         return last
 
     def push_audio_chunk(self, pcm_int16: np.ndarray) -> None:
-        """Called from TTS PCM sink callback (any thread)."""
+        """TTS PCM sink callback (any thread). Only while AI narration is on."""
         if not self._narration_enabled:
+            return
+        _enqueue_drop_oldest(self._audio_q, pcm_int16)
+
+    def push_original_audio_chunk(self, pcm_int16: np.ndarray) -> None:
+        """Desktop/game PCM for 維持原聲 (any thread). Ignored while AI narration is on."""
+        if self._narration_enabled:
             return
         _enqueue_drop_oldest(self._audio_q, pcm_int16)
 
@@ -183,13 +189,12 @@ class AudiencePublisher:
     def set_narration_enabled(self, enabled: bool) -> None:
         """Notify audience clients whether the cat avatar / AI narration mode is on.
 
-        Does not change the published video track. When narration is off ("維持原聲"),
-        drops pending PCM and refuses further push_audio_chunk; clients also mute
-        the narration track and hide the mascot.
+        Does not change the published video track. Switching modes flushes the audio
+        queue so TTS and original desktop audio do not cross-fade into each other;
+        clients hide the mascot when narration is off but keep playing the audio track.
         """
         self._narration_enabled = bool(enabled)
-        if not self._narration_enabled:
-            self.flush_pending_audio()
+        self.flush_pending_audio()
         loop = self._loop
         if loop is None or loop.is_closed() or not self._connected:
             return

@@ -90,6 +90,26 @@ def test_referee_cue_wins_over_negative_scoring_lead_in() -> None:
     assert MainWindow._scan_priority("Scored! Away") == 1
 
 
+def test_livecc_narrative_score_words_are_p2_not_hard_p1() -> None:
+    """LiveCC prose must not hard-interrupt; only exact banners are P1."""
+    assert MainWindow._scan_priority(
+        "The player dribbles past the half-court line. The player ... scores."
+    ) == 2
+    assert MainWindow._scan_priority(
+        "they make an easy dunk with no one around!"
+    ) == 2
+    assert MainWindow._scan_priority(
+        "The player dunks on the robot opponent in front of the home bench."
+    ) == 2
+    assert MainWindow._scan_priority("Robot opponent makes a shot at half-court") == 2
+    assert MainWindow._scan_priority(
+        "The third -person player scores away on this shot attempt from the top ..."
+    ) == 2
+    assert MainWindow._scan_priority("Home scores!") == 2
+    assert MainWindow._scan_priority("Scored! Home") == 1
+    assert MainWindow._scan_priority("Out of Bounds! Home") == 1
+
+
 class _CounterSignal:
     def __init__(self) -> None:
         self.calls = 0

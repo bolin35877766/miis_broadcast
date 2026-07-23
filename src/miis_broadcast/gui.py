@@ -23,6 +23,7 @@ from .workers.dual_source import DualSourceCameraThread
 from .workers.free_switch import FreeSwitchCameraThread, SOURCE_WEBCAM, SOURCE_VR, SOURCE_DUAL
 from .audience.livekit_publisher import AudiencePublisher
 from .audience.token_server import AudienceTokenServer
+from .audience.original_audio_capture import OriginalAudioCapture
 from .core.prompt.prompt_manager import PromptManager
 from .core.models.broadcast_grounding import compose_result_evidence, result_cue
 from .core.match_tracker import match_tracker
@@ -692,11 +693,14 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_audience_mode = QtWidgets.QComboBox()
         _fix_combo_behavior(self.cmb_audience_mode)
         self.cmb_audience_mode.addItem("啟用播報 (AI 語音)", userData=True)
-        self.cmb_audience_mode.addItem("維持原聲 (僅畫面)", userData=False)
+        self.cmb_audience_mode.addItem("維持原聲", userData=False)
         self.cmb_audience_mode.setCurrentIndex(0)
         self.cmb_audience_mode.setToolTip(
-            "啟用播報：Audience 第二畫面會聽到 AI 語音播報。\n"
-            "維持原聲：Audience 只有畫面；不會播放 AI 語音（本機喇叭也不會播）。"
+            "啟用播報：Audience 播放 AI 語音播報（顯示貓咪主播）。\n"
+            "維持原聲：Audience 播放系統／遊戲原聲（不播 AI；隱藏貓咪）。\n"
+            "原聲＝本機正在播放的聲音（WASAPI loopback）。\n"
+            "若無聲：確認遊戲／OBS「音訊監控」有進喇叭或耳機；"
+            "或在 app.yml 設 original_audio_device（如 Speakers / Oculus）。"
         )
         self.cmb_audience_mode.setStyleSheet(combo_style)
 
@@ -1102,8 +1106,10 @@ class MainWindow(QtWidgets.QMainWindow):
     # P3 LiveCC description → GeminiBackgroundWorker.update_context (QueuedConnection)
     signal_livecc_context = QtCore.Signal(object)
 
-    # Fast-path keyword sets
-    _P1_KEYWORDS = frozenset({
+    # Soft LiveCC wording → P2 (queue, no hard cut). Hard P1 is ONLY exact
+    # referee banners via result_cue("Scored!" / "Out of Bounds!").
+    # Narrative "scores"/"dunk" used to hard-interrupt and drop real banners.
+    _SOFT_SCORE_KEYWORDS = frozenset({
         "scores", "scored",
         "makes the shot", "makes a shot", "makes it", "makes the basket",
         "made the shot", "made a shot",
@@ -1120,6 +1126,8 @@ class MainWindow(QtWidgets.QMainWindow):
         "out of bounds",
         "未進", "彈框", "籃板", "界外",
     })
+    # Back-compat alias (tests / older references).
+    _P1_KEYWORDS = _SOFT_SCORE_KEYWORDS
 
     def __init__(self, configs: dict, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -1154,13 +1162,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._actor_frame_cache: deque[tuple[float, bytes]] = deque(maxlen=80)
         self._recent_basketball_actions: deque[tuple[float, str]] = deque(maxlen=6)
         self._last_actor_frame_sec: float = -1e9
+        self._last_banner_scan_sec: float = -1e9   # throttle heavy banner template scan off the GUI thread hot path
+        self._last_banner_probe_sec: float = -1e9  # throttle the diagnostic confidence probe
         self._livecc_start_wall: float = 0.0   # wall-clock anchor for file-mode "frame appeared" latency (== LiveCC inference start)
 
         # Audience second-screen services (Free Switch mode only)
         self._audience_publisher: Optional[AudiencePublisher] = None
         self._audience_token_server: Optional[AudienceTokenServer] = None
-        # When False, Audience gets video only (no AI narration on LiveKit).
+        # When False, Audience gets original desktop/game audio (not AI TTS).
         self._audience_narration_enabled: bool = True
+        self._original_audio_capture: Optional[OriginalAudioCapture] = None
 
         self.font_family = "Sans Serif"
         self.font_size = 14
@@ -1702,17 +1713,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @staticmethod
     def _scan_priority(text: str) -> int:
-        """Return 1 (P1), 2 (P2), or 3 (P3) based on keyword presence in text."""
-        # An exact referee banner is authoritative.  In particular, attached
-        # lead-in context may contain words such as "no points being scored";
-        # that must never upgrade Out of Bounds! from P2 to P1.
+        """Return 1 (P1), 2 (P2), or 3 (P3) based on keyword presence in text.
+
+        Hard P1 is only exact referee banners (``Scored!`` / ``Out of Bounds!``
+        via ``result_cue``). LiveCC prose such as ``player scores`` / ``dunk``
+        is soft P2 (queue, no hard cut) so false VLM captions cannot spam
+        interrupt TTS.
+        """
         cue = result_cue(text)
         if cue == "score":
             return 1
         if cue == "out_of_bounds":
             return 1
         lower = text.lower()
-        # Remove explicit negative outcome clauses before scanning made-basket
+        # Remove explicit negative outcome clauses before scanning soft score
         # keywords.  The old substring scan classified "no points being scored"
         # and "does not go in" as critical scoring plays.
         lower = re.sub(
@@ -1727,9 +1741,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "",
             lower,
         )
-        for kw in MainWindow._P1_KEYWORDS:
+        for kw in MainWindow._SOFT_SCORE_KEYWORDS:
             if kw in lower:
-                return 1
+                return 2
         for kw in MainWindow._P2_KEYWORDS:
             if kw in lower:
                 return 2
@@ -1770,9 +1784,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         return int(data.get("priority", 5)) <= 4 and bool(data.get("should_speak", False))
 
-    def _p1_hard_interrupt(self, already_p1: bool) -> None:
-        """Hard-cut current TTS so P1 Gemini commentary can play next."""
-        if already_p1:
+    def _p1_hard_interrupt(self, already_p1: bool, *, force: bool = False) -> None:
+        """Hard-cut current TTS so P1 Gemini commentary can play next.
+
+        ``force=True`` cuts again when a new referee banner replaces an in-flight P1
+        (e.g. ``Scored!`` arriving while ``Out of Bounds!`` is still shielded).
+        """
+        if already_p1 and not force:
             return
         self._register_tts_priority(1)
         if self.tts_mode == "openai":
@@ -1796,25 +1814,33 @@ class MainWindow(QtWidgets.QMainWindow):
     ) -> None:
         """Send LiveCC text to GeminiBroadcaster; UI shows LiveCC preview (all TTS modes).
 
-        When already_p1 is True, skip enqueue_front to avoid stacking duplicate P1
-        Gemini requests while a P1 utterance is in flight.
+        When already_p1 is True, skip enqueue_front for non-banner repeats.
+        A new exact referee banner (``result_cue``) still flushes and replaces
+        the in-flight P1 so ``Scored!`` is not dropped behind an ``Out of Bounds!``
+        protection window.
         When already_p2 is True, skip duplicate P2 Gemini requests while P2 is playing.
         """
         gem_event = self._fast_blade_gemini_event(raw, data)
-        if flush and not already_p1 and hasattr(self, "gemini_worker"):
+        replacing_p1 = bool(already_p1 and result_cue(raw) is not None)
+        if flush and (not already_p1 or replacing_p1) and hasattr(self, "gemini_worker"):
             self.gemini_worker.flush_and_abort()
         if hasattr(self, "gemini_worker"):
-            if already_p1:
+            if already_p1 and not replacing_p1:
                 logging.info("[FastBlade] P1 already active, skipping enqueue_front")
             elif already_p2 and p2:
                 logging.info("[FastBlade] P2 already active, skipping enqueue_front")
             else:
+                if replacing_p1:
+                    logging.info(
+                        "[FastBlade] P1 replace with new referee cue: %r",
+                        raw[:80],
+                    )
                 self.gemini_worker.enqueue_front(start_t, stop_t, gem_event)
         livecc_preview = self._preview_text(raw)
         if p2:
             tag = "[LiveCC·排隊]" if already_p2 else "[LiveCC→P2]"
             hint = "" if already_p2 else "（等 Gemini 稿）"
-        elif already_p1:
+        elif already_p1 and not replacing_p1:
             tag, hint = "[LiveCC·排隊]", ""
         else:
             tag, hint = "[LiveCC→P1]", "（等 Gemini 稿）"
@@ -1916,19 +1942,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 logging.info("[FastBlade] P1 duplicate suppressed: %r", tts_text[:80])
             else:
                 already_p1 = self._is_p1_audio_active()
-                # Only an accepted new P1 owns the pause/resume lifecycle.
-                # Repeated cues inside the P1 guard used to pause background
-                # Gemini and then skip enqueue, leaving no completion signal
-                # or fallback timer capable of resuming it.
-                if not already_p1 and hasattr(self, "gemini_bg_worker"):
-                    self.gemini_bg_worker.pause()
-                self._p1_hard_interrupt(already_p1)
+                # 維持原聲: no AI TTS — do not pause background or hard-cut;
+                # still enqueue Gemini so UI captions can update.
+                narration_on = getattr(self, "_audience_narration_enabled", True)
+                replace_p1 = bool(already_p1 and result_cue(raw) is not None)
+                if narration_on:
+                    # Only an accepted new P1 owns the pause/resume lifecycle.
+                    # Repeated cues inside the P1 guard used to pause background
+                    # Gemini and then skip enqueue, leaving no completion signal
+                    # or fallback timer capable of resuming it.
+                    if not already_p1 and hasattr(self, "gemini_bg_worker"):
+                        self.gemini_bg_worker.pause()
+                    self._p1_hard_interrupt(already_p1, force=replace_p1)
                 if tts_text:
                     self._fast_blade_enqueue_gemini(
                         start_t, stop_t, raw, data,
                         already_p1=already_p1, flush=True,
                     )
-                if not already_p1:
+                if narration_on and not already_p1:
                     self.signal_p1_confirmed.emit()
 
         elif fast_priority == 2:
@@ -2269,9 +2300,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Toggle whether AI narration is active for Audience / local speakers.
 
         Enable narration: TTS PCM is routed to the Audience LiveKit narration track.
-        Keep original (維持原聲): no AI voice on Audience, and local TTS is muted /
-        not spoken so clearing the LiveKit sink cannot unmute the operator speakers.
-        The audience page also hides the cat avatar when narration is off.
+        Keep original (維持原聲): capture system/game audio → LiveKit for Audience;
+        local TTS is muted / not spoken. The audience page hides the cat avatar.
         """
         enabled = (
             self.control_panel.get_audience_narration_enabled()
@@ -2295,13 +2325,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
         if self._audience_publisher is not None:
             self._audience_publisher.set_narration_enabled(enabled)
-            if not enabled:
-                self._audience_publisher.flush_pending_audio()
         self._apply_audience_pcm_routing()
+        self._sync_original_audio_capture()
         if enabled:
             self.append_text("Audience: 啟用播報（AI 語音會播送到觀眾端）")
         else:
-            self.append_text("Audience: 維持原聲（僅畫面，不播放 AI 語音）")
+            self.append_text("Audience: 維持原聲（系統／遊戲音訊會播送到觀眾端）")
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
@@ -2714,8 +2743,9 @@ class MainWindow(QtWidgets.QMainWindow):
         """Route TTS according to Audience mode and publisher state.
 
         啟用播報: forward PCM to LiveKit (optional mute_operator_local).
-        維持原聲: do not forward PCM; keep local muted so clearing the LiveKit
+        維持原聲: do not forward TTS PCM; keep local muted so clearing the LiveKit
         sink cannot unmute the operator speakers (that inversion was the bug).
+        Original desktop/game audio is handled by ``_sync_original_audio_capture``.
         """
         mod = self._audience_pcm_tts_module()
         if mod is None:
@@ -2737,6 +2767,52 @@ class MainWindow(QtWidgets.QMainWindow):
             flush_callback=pub.flush_pending_audio,
         )
 
+    def _stop_original_audio_capture(self) -> None:
+        cap = getattr(self, "_original_audio_capture", None)
+        if cap is None:
+            return
+        try:
+            cap.stop()
+        except Exception:
+            pass
+        self._original_audio_capture = None
+
+    def _start_original_audio_capture(self) -> None:
+        """Start desktop/game audio → LiveKit when Audience is live in 維持原聲."""
+        pub = self._audience_publisher
+        if pub is None:
+            return
+        if getattr(self, "_original_audio_capture", None) is not None:
+            return
+        audience_cfg = self.configs.get("audience", {})
+        device = audience_cfg.get("original_audio_device", None)
+
+        def _on_pcm(pcm: np.ndarray) -> None:
+            p = self._audience_publisher
+            if p is not None:
+                p.push_original_audio_chunk(pcm)
+
+        try:
+            cap = OriginalAudioCapture(on_pcm=_on_pcm, device=device)
+            cap.start()
+            self._original_audio_capture = cap
+            self.append_text("Audience: 原聲擷取已啟動（系統播放音 → 觀眾端）")
+        except Exception as exc:
+            self._original_audio_capture = None
+            self.append_text(f"Audience: 原聲擷取失敗（觀眾端將無聲）: {exc}")
+            print(f"[ERR] OriginalAudioCapture: {exc}")
+
+    def _sync_original_audio_capture(self) -> None:
+        """Run original-audio capture iff publisher is up and 維持原聲 is selected."""
+        want = (
+            self._audience_publisher is not None
+            and not getattr(self, "_audience_narration_enabled", True)
+        )
+        if want:
+            self._start_original_audio_capture()
+        else:
+            self._stop_original_audio_capture()
+
     def _register_audience_pcm_sink(self) -> None:
         """Compatibility wrapper — prefer `_apply_audience_pcm_routing`."""
         self._apply_audience_pcm_routing()
@@ -2754,6 +2830,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _stop_audience_publisher_only(self) -> None:
         """Tear down LiveKit publisher + TTS sink; keep HTTP token server running."""
+        self._stop_original_audio_capture()
         self._clear_all_pcm_sinks()
         if self._audience_publisher is not None:
             for attr in ("free_switch_thread", "obs_thread"):
@@ -2807,6 +2884,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         self._register_audience_pcm_sink()
+        self._sync_original_audio_capture()
 
     def _stop_audience_services(self) -> None:
         """Tear down publisher only (HTTP /audience stays up for the app lifetime)."""
@@ -2914,10 +2992,20 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if self.prompt_manager is None or self.prompt_manager.current_sport() != "basketball":
             return
+        # Template matching + scoreboard OCR is expensive and runs on the GUI
+        # thread. Cap it to ~8 scans/sec so playback / preview stays responsive.
+        if sec - self._last_banner_scan_sec < 0.12:
+            return
+        self._last_banner_scan_sec = sec
         cue = self._result_banner_tracker.update(
             frame_rgb, sec, is_rgb=True, splitscreen=splitscreen
         )
         if cue is None:
+            # Diagnostic: periodically report where (if anywhere) the templates
+            # respond, so a silent detector can be traced to ROI / half / scale.
+            if sec - self._last_banner_probe_sec >= 3.0:
+                self._last_banner_probe_sec = sec
+                logging.info(self._result_banner_tracker.debug_probe(frame_rgb, is_rgb=True))
             return
         result = "Scored!" if cue.kind == "score" else "Out of Bounds!"
         banner = f"{result} {cue.side.title()}" if cue.side else result
@@ -2927,6 +3015,11 @@ class MainWindow(QtWidgets.QMainWindow):
             and cue.away_score is not None
         ):
             banner += f" Score: Home {cue.home_score}, Away {cue.away_score}"
+        logging.info(
+            "[ResultBanner] emit %s @ %.2f-%.2f (splitscreen=%s)",
+            banner, cue.start, cue.end, splitscreen,
+        )
+        self.append_text(f"[ResultBanner] {banner}")
         recent_action = next(
             (
                 action

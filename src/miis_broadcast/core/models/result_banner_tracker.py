@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
+
+from .banner_template_matcher import BannerTemplateMatcher, default_template_dir
 
 _DIGIT_TEMPLATES = {
     digit: np.array([[char == "#" for char in row] for row in rows], dtype=np.uint8)
@@ -35,9 +40,20 @@ class ResultBannerCue:
 
 
 class ResultBannerTracker:
-    """Consume RGB/BGR split-screen frames and emit each persistent result once."""
+    """Detect ``Scored!`` / ``Out of Bounds!`` via template matching (+ scoreboard).
 
-    def __init__(self, min_duration_sec: float = 0.8, merge_gap_sec: float = 0.8) -> None:
+    Primary path: multi-scale template match on the gameplay (right) view.
+    Colour heuristics are only a fallback when templates are missing.
+    Scoreboard digit templates optionally attach Home/Away totals after a make.
+    """
+
+    def __init__(
+        self,
+        min_duration_sec: float = 0.35,
+        merge_gap_sec: float = 0.9,
+        template_dir: Optional[Path | str] = None,
+        use_templates: bool = True,
+    ) -> None:
         self.min_duration_sec = min_duration_sec
         self.merge_gap_sec = merge_gap_sec
         self.home_score = 0
@@ -45,6 +61,13 @@ class ResultBannerTracker:
         self._last_scoreboard_score: tuple[int, int] | None = None
         self._pending_score_cue: ResultBannerCue | None = None
         self._scoreboard_votes: dict[tuple[int, int], int] = {}
+        self._matcher: Optional[BannerTemplateMatcher] = None
+        if use_templates:
+            self._matcher = BannerTemplateMatcher(
+                template_dir or default_template_dir()
+            )
+            if not self._matcher.available:
+                self._matcher = None
         self.reset()
 
     def reset(self) -> None:
@@ -62,6 +85,10 @@ class ResultBannerTracker:
         self._last_seen = 0.0
         self._emitted = False
         self._side_votes: dict[str, int] = {"home": 0, "away": 0}
+
+    @staticmethod
+    def _as_bgr(frame: np.ndarray, *, is_rgb: bool) -> np.ndarray:
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if is_rgb else frame
 
     @staticmethod
     def _detect_side(gameplay: np.ndarray, *, is_rgb: bool) -> str | None:
@@ -88,8 +115,6 @@ class ResultBannerTracker:
                 glyphs.append((int(x), int(y), int(glyph_w), int(glyph_h), int(area)))
         if len(glyphs) < 4:
             return None
-        # Home has an aligned baseline; Away's final y extends below it.
-        # Multi-frame voting rejects occasional collisions with background text.
         glyphs = sorted(sorted(glyphs, key=lambda item: item[4], reverse=True)[:4])
         if glyphs[-1][0] - glyphs[0][0] > roi.shape[1] * 0.55:
             return None
@@ -147,6 +172,79 @@ class ResultBannerTracker:
             return None
         return home, away
 
+    def _detect_kind_colour(
+        self, gameplay: np.ndarray, *, is_rgb: bool
+    ) -> Optional[str]:
+        """Legacy colour flash detector (fallback when templates unavailable)."""
+        height = gameplay.shape[0]
+        center = gameplay[int(height * 0.35) : int(height * 0.60)]
+        hsv = cv2.cvtColor(center, cv2.COLOR_RGB2HSV if is_rgb else cv2.COLOR_BGR2HSV)
+        orange = cv2.countNonZero(cv2.inRange(hsv, (5, 180, 180), (22, 255, 255)))
+        cyan = cv2.countNonZero(cv2.inRange(hsv, (38, 160, 160), (95, 255, 255)))
+        scale = center.shape[0] * center.shape[1] / (120 * 640)
+        if orange > 5000 * scale:
+            return "out_of_bounds"
+        if 3000 * scale < cyan < 50000 * scale:
+            return "score"
+        return None
+
+    def _resolve_side(
+        self, gameplay: np.ndarray, gameplay_bgr: np.ndarray, *, is_rgb: bool
+    ) -> Optional[str]:
+        if self._matcher is not None:
+            side, conf = self._matcher.match_side(gameplay_bgr)
+            if side is not None:
+                return side
+        return self._detect_side(gameplay, is_rgb=is_rgb)
+
+    def _finish_score_with_board(
+        self, pending: ResultBannerCue, scoreboard: tuple[int, int], side: Optional[str]
+    ) -> ResultBannerCue:
+        self._last_scoreboard_score = scoreboard
+        self.home_score, self.away_score = scoreboard
+        self._pending_score_cue = None
+        self._scoreboard_votes = {}
+        logging.info(
+            "[ResultBanner] confirmed Scored! %s (%d-%d)",
+            side, scoreboard[0], scoreboard[1],
+        )
+        return ResultBannerCue(
+            pending.start,
+            pending.end,
+            pending.kind,
+            side,
+            scoreboard[0],
+            scoreboard[1],
+        )
+
+    def debug_probe(self, frame: np.ndarray, *, is_rgb: bool = True) -> str:
+        """Return a one-line report of best template confidences per region.
+
+        Helps locate the banner in a live composite: scans the full frame plus
+        left / right halves so we can see which region (if any) the templates
+        actually respond to, and at what confidence vs the score_threshold.
+        """
+        if self._matcher is None:
+            return "[BannerProbe] templates unavailable (colour-only fallback)"
+        regions = {
+            "full": frame,
+            "left": frame[:, : frame.shape[1] // 2],
+            "right": frame[:, frame.shape[1] // 2 :],
+        }
+        parts: list[str] = []
+        for name, region in regions.items():
+            region_bgr = self._as_bgr(region, is_rgb=is_rgb)
+            _kind, scored_c, oob_c = self._matcher.match_kind(region_bgr)
+            side, side_c = self._matcher.match_side(region_bgr)
+            parts.append(
+                f"{name}: scored={scored_c:.2f} oob={oob_c:.2f} "
+                f"side={side or '-'}({side_c:.2f})"
+            )
+        return (
+            f"[BannerProbe] thr={self._matcher.score_threshold:.2f} | "
+            + " | ".join(parts)
+        )
+
     def update(
         self,
         frame: np.ndarray,
@@ -161,7 +259,10 @@ class ResultBannerTracker:
         splitscreen=False → treat the whole frame as gameplay (pure VR / OBS).
         """
         gameplay = frame[:, frame.shape[1] // 2 :] if splitscreen else frame
+        gameplay_bgr = self._as_bgr(gameplay, is_rgb=is_rgb)
         scoreboard = self._detect_scoreboard(gameplay, is_rgb=is_rgb)
+
+        # ── Pending score waiting for scoreboard +1 (enrichment) ──────────
         if self._pending_score_cue is not None:
             if scoreboard is not None:
                 baseline = self._last_scoreboard_score
@@ -173,14 +274,11 @@ class ResultBannerTracker:
                         (new_home == old_home + 1 and new_away == old_away)
                         or (new_away == old_away + 1 and new_home == old_home)
                     )
-                # The scoreboard can reappear with its old value for several
-                # seconds after the Scored animation. Do not vote for that
-                # stale value; wait until one side's top-UI score advances.
                 if score_changed:
                     self._scoreboard_votes[scoreboard] = (
                         self._scoreboard_votes.get(scoreboard, 0) + 1
                     )
-                if score_changed and self._scoreboard_votes[scoreboard] >= 3:
+                if score_changed and self._scoreboard_votes[scoreboard] >= 2:
                     pending = self._pending_score_cue
                     side = pending.side
                     if self._last_scoreboard_score is not None:
@@ -190,38 +288,38 @@ class ResultBannerTracker:
                             side = "home"
                         elif new_away > old_away and new_home == old_home:
                             side = "away"
-                    self._last_scoreboard_score = scoreboard
-                    self.home_score, self.away_score = scoreboard
-                    self._pending_score_cue = None
-                    self._scoreboard_votes = {}
-                    return ResultBannerCue(
-                        pending.start,
-                        pending.end,
-                        pending.kind,
-                        side,
-                        scoreboard[0],
-                        scoreboard[1],
-                    )
-            if timestamp - self._pending_score_cue.end > 7.0:
+                    return self._finish_score_with_board(pending, scoreboard, side)
+            # Template already named the side — don't wait forever for OCR digits.
+            if (
+                self._pending_score_cue.side is not None
+                and timestamp - self._pending_score_cue.end > 1.2
+            ):
                 pending = self._pending_score_cue
                 self._pending_score_cue = None
                 self._scoreboard_votes = {}
+                logging.info(
+                    "[ResultBanner] emit Scored! %s (template; scoreboard not ready)",
+                    pending.side,
+                )
                 return pending
+            if timestamp - self._pending_score_cue.end > 7.0:
+                logging.info(
+                    "[ResultBanner] discard pending Scored! (no confirm, side=%s)",
+                    self._pending_score_cue.side,
+                )
+                self._pending_score_cue = None
+                self._scoreboard_votes = {}
         elif scoreboard is not None:
             self._last_scoreboard_score = scoreboard
             self.home_score, self.away_score = scoreboard
 
-        height = gameplay.shape[0]
-        center = gameplay[int(height * 0.35) : int(height * 0.60)]
-        hsv = cv2.cvtColor(center, cv2.COLOR_RGB2HSV if is_rgb else cv2.COLOR_BGR2HSV)
-        orange = cv2.countNonZero(cv2.inRange(hsv, (5, 180, 180), (22, 255, 255)))
-        cyan = cv2.countNonZero(cv2.inRange(hsv, (38, 160, 160), (95, 255, 255)))
-        scale = center.shape[0] * center.shape[1] / (120 * 640)
-        kind = None
-        if orange > 5000 * scale:
-            kind = "out_of_bounds"
-        elif 3000 * scale < cyan < 10000 * scale:
-            kind = "score"
+        # ── Kind detection: templates first, colour fallback ──────────────
+        kind: Optional[str] = None
+        scored_c = oob_c = -1.0
+        if self._matcher is not None:
+            kind, scored_c, oob_c = self._matcher.match_kind(gameplay_bgr)
+        if kind is None and self._matcher is None:
+            kind = self._detect_kind_colour(gameplay, is_rgb=is_rgb)
 
         if kind is None and self._kind is not None:
             if timestamp - self._last_seen <= self.merge_gap_sec:
@@ -237,18 +335,46 @@ class ResultBannerTracker:
             return None
         if kind:
             self._last_seen = timestamp
-            side = self._detect_side(gameplay, is_rgb=is_rgb)
+            side = self._resolve_side(gameplay, gameplay_bgr, is_rgb=is_rgb)
             if side:
                 self._side_votes[side] += 1
         if kind and not self._emitted and timestamp - self._start >= self.min_duration_sec:
             self._emitted = True
             home_votes = self._side_votes["home"]
             away_votes = self._side_votes["away"]
-            side = "home" if home_votes > away_votes else "away" if away_votes > home_votes else None
+            side = (
+                "home"
+                if home_votes > away_votes
+                else "away"
+                if away_votes > home_votes
+                else None
+            )
             cue = ResultBannerCue(self._start, timestamp, kind, side)
             if kind == "score":
-                self._pending_score_cue = cue
-                self._scoreboard_votes = {}
-                return None
+                # A template-confirmed Scored! is trustworthy on its own → emit
+                # immediately so the broadcast actually cuts in. Side (Home/Away)
+                # and scoreboard digits are best-effort enrichment only.
+                home_s = away_s = None
+                if scoreboard is not None and self._last_scoreboard_score is not None:
+                    old_home, old_away = self._last_scoreboard_score
+                    new_home, new_away = scoreboard
+                    if (
+                        (new_home == old_home + 1 and new_away == old_away)
+                        or (new_away == old_away + 1 and new_home == old_home)
+                    ):
+                        home_s, away_s = new_home, new_away
+                        self._last_scoreboard_score = scoreboard
+                        self.home_score, self.away_score = scoreboard
+                logging.info(
+                    "[ResultBanner] Scored! %s via template (scored=%.2f oob=%.2f)",
+                    side, scored_c, oob_c,
+                )
+                return ResultBannerCue(
+                    self._start, timestamp, "score", side, home_s, away_s
+                )
+            logging.info(
+                "[ResultBanner] Out of Bounds! %s (tm scored=%.2f oob=%.2f)",
+                side, scored_c, oob_c,
+            )
             return cue
         return None
