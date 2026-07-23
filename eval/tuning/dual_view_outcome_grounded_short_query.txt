@@ -1,0 +1,7 @@
+Describe only the current one-on-one basketball action in the RIGHT game view.
+Output one complete present-tense sentence. There are no passes or teammates.
+Call a made basket only if the ball clearly enters the hoop or a "Scored!" banner is
+visible. Call out of bounds when an "Out of Bounds!" banner is visible. Otherwise
+describe only the visible dribble, drive, shot attempt, defense, waiting, or reset.
+Never infer an outcome from body motion, reaction, numeric score, or game clock.
+Do not mention the split screen, room, VR, interface, names, score, or time.

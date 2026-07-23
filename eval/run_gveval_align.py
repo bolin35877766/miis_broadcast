@@ -390,6 +390,7 @@ def evaluate(
     predictions: dict[int, str],
     judge: Optional[GVEvalJudge],
     dry_run: bool,
+    segment_counts: Optional[dict[int, int]] = None,
 ) -> list[EventResult]:
     results: list[EventResult] = []
 
@@ -430,7 +431,7 @@ def evaluate(
                     gt_asr_text=event.gt_asr_text,
                     pred_text=pred_text,
                     covered=True,
-                    num_segments=pred_text.count(" ") + 1,
+                    num_segments=(segment_counts or {}).get(event.event_id, 0),
                     score=GVEvalScore(
                         accuracy=None,
                         completeness=None,
@@ -454,7 +455,7 @@ def evaluate(
                 gt_asr_text=event.gt_asr_text,
                 pred_text=pred_text,
                 covered=True,
-                num_segments=pred_text.count(" ") + 1,
+                num_segments=(segment_counts or {}).get(event.event_id, 0),
                 score=score,
             )
         )
@@ -608,7 +609,14 @@ def main() -> None:
     else:
         print("\n[GVEval-Align] --dry-run set: skipping G-VEval judge, showing assignment only.")
 
-    results = evaluate(events, predictions, judge, dry_run=args.dry_run)
+    segment_counts = {event_id: len(segs) for event_id, segs in assigned.items()}
+    results = evaluate(
+        events,
+        predictions,
+        judge,
+        dry_run=args.dry_run,
+        segment_counts=segment_counts,
+    )
     summary = summarize(results)
     if args.dry_run:
         summary["gveval_align_score"] = None
@@ -653,6 +661,7 @@ def main() -> None:
                 "begin": r.begin,
                 "end": r.end,
                 "covered": r.covered,
+                "num_segments": r.num_segments,
                 "final_score": r.score.final_score,
                 "accuracy": r.score.accuracy,
                 "completeness": r.score.completeness,

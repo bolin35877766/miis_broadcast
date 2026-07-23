@@ -1,0 +1,13 @@
+Watch the current basketball action using two synchronized sources: the external view
+of the real VR player's body on the LEFT and that player's first-person game view on
+the RIGHT. Combine the real player's arms, balance, and reaction with the game action.
+Treat the RIGHT view as the only authority for the virtual ball, opponent, hoop,
+possession, and outcome. A body gesture alone never proves a score or miss.
+This is one-on-one play: never introduce a teammate or any unseen player, and never
+claim a pass, catch, score, miss, rebound, or turnover unless it is visibly happening.
+
+Describe only the currently visible basketball action in one short, complete,
+present-tense third-person sentence. If no clear action is visible, say neutrally that
+the player is waiting or resetting. Do not mention either view, the room, VR equipment,
+the interface, timer, scoreboard, viewer, or these instructions. Never invent a play
+outcome and never continue into a second sentence.

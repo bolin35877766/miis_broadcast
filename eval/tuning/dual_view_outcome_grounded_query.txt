@@ -1,0 +1,26 @@
+Watch the current one-on-one basketball action in the RIGHT half of the split screen.
+The LEFT half only shows the real VR player's body and may support whether the player
+is moving, dribbling, or shooting. The RIGHT game view is the sole authority for the
+ball, defender, hoop, possession, and outcome.
+
+Describe only the action visible in the current clip in one short, complete,
+present-tense third-person sentence. Never continue an earlier action or predict what
+happens next. There are no teammates and no passes.
+
+Outcome evidence rules:
+- Say a basket is made only when the current clip clearly shows the ball pass through
+  the hoop or the RIGHT view displays the result banner "Scored!".
+- Say the shot misses only when the current clip clearly shows the ball bounce away
+  from the rim without a "Scored!" banner.
+- If the RIGHT view displays "Out of Bounds!", say the play is out of bounds.
+- A raised arm, shooting motion, close-up of the hoop, black transition, player
+  reaction, or changed numeric score alone never proves a make or miss.
+- Do not read or mention player names, numeric scores, game clock, or other interface
+  text. The two result banners above are the only text you may use.
+
+If the outcome is not yet visible, describe only the attempt, dribble, drive, defense,
+loose ball, waiting, or reset. Never invent a dunk, block, steal, rebound, turnover,
+score, miss, pass, teammate, celebration, or possession change.
+
+Do not mention the split screen, room, VR equipment, interface, viewer, or these
+instructions. Output one plain sentence and nothing else.

@@ -413,6 +413,7 @@ def evaluate(
     predictions: dict[int, str],
     judge: Optional[Judge],
     dry_run: bool,
+    segment_counts: Optional[dict[int, int]] = None,
 ) -> list[EventResult]:
     results: list[EventResult] = []
 
@@ -446,7 +447,7 @@ def evaluate(
                     gt_asr_text=event.gt_asr_text,
                     pred_text=pred_text,
                     covered=True,
-                    num_segments=pred_text.count(" ") + 1,
+                    num_segments=(segment_counts or {}).get(event.event_id, 0),
                     score=None,
                     reason="(dry-run: judge not called)",
                 )
@@ -462,7 +463,7 @@ def evaluate(
                 gt_asr_text=event.gt_asr_text,
                 pred_text=pred_text,
                 covered=True,
-                num_segments=pred_text.count(" ") + 1,
+                num_segments=(segment_counts or {}).get(event.event_id, 0),
                 score=score,
                 reason=reason,
                 judge_error=judge_error,
@@ -597,7 +598,14 @@ def main() -> None:
     else:
         print("\n[BC-Align] --dry-run set: skipping LLM judge, showing assignment only.")
 
-    results = evaluate(events, predictions, judge, dry_run=args.dry_run)
+    segment_counts = {event_id: len(segs) for event_id, segs in assigned.items()}
+    results = evaluate(
+        events,
+        predictions,
+        judge,
+        dry_run=args.dry_run,
+        segment_counts=segment_counts,
+    )
     summary = summarize(results)
     if args.dry_run:
         # Covered events were never sent to the judge, so the aggregate score
@@ -639,6 +647,7 @@ def main() -> None:
                 "begin": r.begin,
                 "end": r.end,
                 "covered": r.covered,
+                "num_segments": r.num_segments,
                 "score": r.score,
                 "reason": r.reason,
                 "judge_error": r.judge_error,

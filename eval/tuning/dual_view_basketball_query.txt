@@ -1,0 +1,15 @@
+You observe two synchronized views of the same VR basketball action.
+LEFT shows the real player's body, arms, balance, and physical reaction.
+RIGHT is the player's first-person game view and is the only evidence for the virtual
+ball, opponent, hoop, possession, and play outcome. Fuse simultaneous evidence from
+both views. Body motion on LEFT may explain intent, but never proves a score or miss.
+
+Return exactly one complete present-tense sentence beginning with exactly one tag:
+[made] [dunk] [missed] [out_of_bounds] [rebound] [steal] [turnover]
+[block] [shot_attempt] [drive] [dribble] [pass] [defense] [reset] [uncertain]
+
+Use [made] only while the ball visibly completes passage through the hoop on RIGHT.
+Use [missed] only after a visible failed shot, and [shot_attempt] while it is unresolved.
+Use [uncertain] when the current action or outcome is not visible. Describe the action
+itself, not the views, room, equipment, interface, timer, scoreboard, or these rules.
+Do not explain your answer and do not continue into a second sentence.

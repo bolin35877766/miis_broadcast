@@ -1,0 +1,23 @@
+classifiers:
+  livecc_7b:
+    desc: LiveCC dual-view wider temporal candidate
+    model_path: chenjoya/LiveCC-7B-Instruct
+    attn_implementation: auto
+    device_id: 0
+    suppress_numbers: false
+    fps: 4.0
+    initial_fps_frames: 12
+    streaming_fps_frames: 12
+    max_new_tokens: 42
+    headroom: 1024
+    mm_window_sec: 12.0
+    carry_text_max_chars: 120
+    carry_recent_k: 2
+    carry_structured_only: true
+    kv_reset_every_segments: 1
+    generation:
+      temperature: 0.2
+      top_p: 0.8
+      top_k: 20
+      repetition_penalty: 1.12
+      no_repeat_ngram_size: 3
