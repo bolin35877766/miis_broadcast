@@ -2857,11 +2857,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
 
     def _live_frame_is_splitscreen(self) -> bool:
-        """True when the LiveCC / banner frame is LEFT|RIGHT (file dual / Free Switch dual)."""
-        if self.mode in ("file", "dual_sync"):
+        """True when the preview / LiveCC frame is LEFT|RIGHT composite.
+
+        Production OBS / VR feeds in this project are synchronized third-person |
+        first-person splits. Only Free Switch's plain webcam source is single-view.
+        """
+        if self.mode in ("file", "dual_sync", "obs"):
             return True
         if self.mode == "free_switch" and self.free_switch_thread is not None:
-            return self.free_switch_thread.active_source == "dual"
+            # webcam = single camera; vr/dual = OBS composite (L|R) or stitched dual
+            return self.free_switch_thread.active_source != "webcam"
         return False
 
     def _resolve_livecc_query(self) -> str:
