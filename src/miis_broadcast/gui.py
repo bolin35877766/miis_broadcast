@@ -696,7 +696,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.cmb_audience_mode.setCurrentIndex(0)
         self.cmb_audience_mode.setToolTip(
             "啟用播報：Audience 第二畫面會聽到 AI 語音播報。\n"
-            "維持原聲：Audience 第二畫面只有畫面，不會收到任何 AI 語音（單純觀看原影片）。"
+            "維持原聲：Audience 只有畫面；不會播放 AI 語音（本機喇叭也不會播）。"
         )
         self.cmb_audience_mode.setStyleSheet(combo_style)
 
@@ -1740,7 +1740,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return enriched
 
     def _broadcast_tts_allowed(self, data: object) -> bool:
-        """Only speak Gemini broadcast_text (zh-TW), never raw LiveCC — all TTS engines."""
+        """Only speak Gemini broadcast_text, never raw LiveCC — all TTS engines."""
         if not isinstance(data, dict):
             return False
         if not data.get("broadcast_text"):
@@ -2234,19 +2234,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_tts_mode_changed(self) -> None:
         mode = self.control_panel.get_tts_mode() if hasattr(self, "control_panel") else None
         self.tts_mode = mode or getattr(self, "tts_mode", "none")
-        if self._audience_publisher is not None:
-            self._clear_all_pcm_sinks()
-            self._register_audience_pcm_sink()
+        self._apply_audience_pcm_routing()
 
     @QtCore.Slot()
     def _on_audience_mode_changed(self) -> None:
-        """Toggle whether AI narration reaches the Audience second screen.
+        """Toggle whether AI narration is active for Audience / local speakers.
 
-        Enable narration: TTS PCM is routed to the Audience LiveKit narration track (default).
-        Keep original: Audience only gets video — no AI voice, regardless of tts_mode.
-        The operator's own TTS playback is unaffected either way; this only gates
-        what the /audience viewers hear. When narration is off, the audience page
-        also hides the cat avatar.
+        Enable narration: TTS PCM is routed to the Audience LiveKit narration track.
+        Keep original (維持原聲): no AI voice on Audience, and local TTS is muted /
+        not spoken so clearing the LiveKit sink cannot unmute the operator speakers.
+        The audience page also hides the cat avatar when narration is off.
         """
         enabled = (
             self.control_panel.get_audience_narration_enabled()
@@ -2258,15 +2255,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.control_panel._refresh_tts_controls_visibility()
         if self._audience_token_server is not None:
             self._audience_token_server.set_narration_enabled(enabled)
-        # Always clear the TTS→LiveKit sink first so no further chunks are routed,
-        # even if the publisher has not started yet.
-        self._clear_all_pcm_sinks()
+        if not enabled:
+            # Stop any in-flight AI audio immediately (local + LiveKit backlog).
+            try:
+                self.signal_tts_interrupt.emit()
+            except Exception:
+                pass
+            try:
+                self.signal_local_tts_interrupt.emit()
+            except Exception:
+                pass
         if self._audience_publisher is not None:
             self._audience_publisher.set_narration_enabled(enabled)
-            if enabled:
-                self._register_audience_pcm_sink()
-            else:
+            if not enabled:
                 self._audience_publisher.flush_pending_audio()
+        self._apply_audience_pcm_routing()
         if enabled:
             self.append_text("Audience: 啟用播報（AI 語音會播送到觀眾端）")
         else:
@@ -2667,7 +2670,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pub.push_video_frame(frame_rgb)
 
     def _clear_all_pcm_sinks(self) -> None:
-        """Clear audience PCM sinks on every TTS backend that supports them."""
+        """Fully clear TTS PCM sink and unmute local playback (teardown path)."""
         from .core.models import openai_tts as _oai_tts_mod
         _oai_tts_mod.register_pcm_sink(None, mute_local=False)
 
@@ -2679,28 +2682,36 @@ class MainWindow(QtWidgets.QMainWindow):
             return mod
         return None
 
-    def _register_audience_pcm_sink(self) -> None:
-        """Route TTS PCM to LiveKit for the currently selected TTS engine.
+    def _apply_audience_pcm_routing(self) -> None:
+        """Route TTS according to Audience mode and publisher state.
 
-        mute_local silences the operator's own speaker (writes zero PCM) while
-        the same audio streams to LiveKit, so a listener on the /audience page
-        doesn't hear a doubled-up echo.
-
-        Skipped when narration is disabled (video-only mode) —
-        the Audience LiveKit track then carries no AI narration at all.
+        啟用播報: forward PCM to LiveKit (optional mute_operator_local).
+        維持原聲: do not forward PCM; keep local muted so clearing the LiveKit
+        sink cannot unmute the operator speakers (that inversion was the bug).
         """
-        if not getattr(self, "_audience_narration_enabled", True):
-            return
         mod = self._audience_pcm_tts_module()
-        if mod is None or self._audience_publisher is None:
+        if mod is None:
+            return
+        narration = getattr(self, "_audience_narration_enabled", True)
+        pub = self._audience_publisher
+        if not narration:
+            # No-op sink + mute_local: discard any residual TTS PCM and silence speakers.
+            mod.register_pcm_sink(lambda _pcm: None, mute_local=True)
+            return
+        if pub is None:
+            mod.register_pcm_sink(None, mute_local=False)
             return
         audience_cfg = self.configs.get("audience", {})
         mute_local = bool(audience_cfg.get("mute_operator_local", False))
         mod.register_pcm_sink(
-            self._audience_publisher.push_audio_chunk,
+            pub.push_audio_chunk,
             mute_local=mute_local,
-            flush_callback=self._audience_publisher.flush_pending_audio,
+            flush_callback=pub.flush_pending_audio,
         )
+
+    def _register_audience_pcm_sink(self) -> None:
+        """Compatibility wrapper — prefer `_apply_audience_pcm_routing`."""
+        self._apply_audience_pcm_routing()
 
     def _audience_vr_frame_thread(self):
         """Return the live-source thread that emits native-resolution VR
@@ -2837,6 +2848,72 @@ class MainWindow(QtWidgets.QMainWindow):
         """Called when FreeSwitchCameraThread confirms the new source."""
         self.control_panel.highlight_switch_source(source)
         self.append_text(f"[FreeSwitch] 已切換至：{source}")
+        self._result_banner_tracker.reset()
+        # Drop stale multi-shape frames + KV so the next clip matches the new source.
+        if self.is_inference_running and hasattr(self, "cam_worker") and self.cam_worker is not None:
+            try:
+                self.signal_p1_confirmed.emit()  # Queued → requestMemoryReset
+            except Exception:
+                pass
+
+    def _live_frame_is_splitscreen(self) -> bool:
+        """True when the LiveCC / banner frame is LEFT|RIGHT (file dual / Free Switch dual)."""
+        if self.mode in ("file", "dual_sync"):
+            return True
+        if self.mode == "free_switch" and self.free_switch_thread is not None:
+            return self.free_switch_thread.active_source == "dual"
+        return False
+
+    def _resolve_livecc_query(self) -> str:
+        """Same as before: prefer splitscreen prompt, fall back to livecc_query."""
+        if self.prompt_manager is None:
+            return "Describe only what you see on screen right now in one objective sentence."
+        return (
+            self.prompt_manager.livecc_query_splitscreen()
+            or self.prompt_manager.livecc_query()
+        )
+
+    def _emit_result_banner_if_any(
+        self, frame_rgb: np.ndarray, sec: float, *, splitscreen: bool
+    ) -> None:
+        """File / VR / Free Switch: inject Scored! / Out of Bounds! evidence into the pipeline."""
+        if not self.is_inference_running:
+            return
+        if self.prompt_manager is None or self.prompt_manager.current_sport() != "basketball":
+            return
+        cue = self._result_banner_tracker.update(
+            frame_rgb, sec, is_rgb=True, splitscreen=splitscreen
+        )
+        if cue is None:
+            return
+        result = "Scored!" if cue.kind == "score" else "Out of Bounds!"
+        banner = f"{result} {cue.side.title()}" if cue.side else result
+        recent_action = next(
+            (
+                action
+                for action_t, action in reversed(self._recent_basketball_actions)
+                if 0.0 <= cue.start - action_t <= 8.0
+            ),
+            "",
+        )
+        raw = compose_result_evidence(banner, recent_action)
+        self._route_segment(cue.start, cue.end, self._livecc_event_dict(raw))
+
+    def _maybe_cache_actor_frame(
+        self, frame_rgb: np.ndarray, sec: float, *, splitscreen: bool
+    ) -> None:
+        if not self.is_inference_running:
+            return
+        if self.prompt_manager is None or self.prompt_manager.current_sport() != "basketball":
+            return
+        if sec - self._last_actor_frame_sec < 0.24:
+            return
+        gameplay = frame_rgb[:, frame_rgb.shape[1] // 2 :] if splitscreen else frame_rgb
+        right_bgr = cv2.cvtColor(gameplay, cv2.COLOR_RGB2BGR)
+        ok, encoded = cv2.imencode(".jpg", right_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if ok:
+            self._actor_frame_cache.append((sec, encoded.tobytes()))
+            self._last_actor_frame_sec = sec
 
     def _apply_tts_settings_before_start(self) -> None:
         """Apply TTS settings for the currently selected mode."""
@@ -2893,14 +2970,12 @@ class MainWindow(QtWidgets.QMainWindow):
         style_key = self.control_panel.get_selected_style_key()
         style_label = self.control_panel.get_selected_style_label()
 
+        # Apply language before style so Gemini resolves the EN/ZH prompt correctly.
+        self._apply_tts_settings_before_start()
+
         if self.prompt_manager is not None:
-            # The production feed is a synchronized third-person/first-person
-            # composition.  Use the explicit relationship prompt so LiveCC does
-            # not mistake the left-side player motion for equipment adjustment.
-            prompt = (
-                self.prompt_manager.livecc_query_splitscreen()
-                or self.prompt_manager.livecc_query()
-            )
+            # Pick splitscreen vs single-view query from the active camera / file mode.
+            prompt = self._resolve_livecc_query()
             from .core.models.gemini_broadcaster import set_style
             set_style(style_key)
         else:
@@ -2917,8 +2992,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cam_worker.response_prefix = response_prefix
         self._use_gemini = True
 
-        # Apply TTS settings before start, then pre-connect OpenAI Realtime (warmup).
-        self._apply_tts_settings_before_start()
+        # Pre-connect OpenAI Realtime after language/voice/speed are applied.
         if self.tts_mode == "openai":
             self.signal_tts_warmup.emit()
 
@@ -3124,34 +3198,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 and self.prompt_manager.current_sport() == "basketball"
                 and sec - self._last_actor_frame_sec >= 0.24
             ):
-                right = frame_rgb[:, frame_rgb.shape[1] // 2 :]
-                right_bgr = cv2.cvtColor(right, cv2.COLOR_RGB2BGR)
-                ok, encoded = cv2.imencode(
-                    ".jpg", right_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90]
-                )
-                if ok:
-                    self._actor_frame_cache.append((sec, encoded.tobytes()))
-                    self._last_actor_frame_sec = sec
+                self._maybe_cache_actor_frame(frame_rgb, sec, splitscreen=True)
 
             if (
                 self.is_inference_running
                 and self.prompt_manager is not None
                 and self.prompt_manager.current_sport() == "basketball"
             ):
-                cue = self._result_banner_tracker.update(frame_rgb, sec, is_rgb=True)
-                if cue is not None:
-                    result = "Scored!" if cue.kind == "score" else "Out of Bounds!"
-                    banner = f"{result} {cue.side.title()}" if cue.side else result
-                    recent_action = next(
-                        (
-                            action
-                            for action_t, action in reversed(self._recent_basketball_actions)
-                            if 0.0 <= cue.start - action_t <= 8.0
-                        ),
-                        "",
-                    )
-                    raw = compose_result_evidence(banner, recent_action)
-                    self._route_segment(cue.start, cue.end, self._livecc_event_dict(raw))
+                self._emit_result_banner_if_any(frame_rgb, sec, splitscreen=True)
 
         # Stream video frames to remote server for file-mode inference
         if self.mode == "file" and self.is_inference_running and self._socket_runner is not None:
@@ -3168,8 +3222,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.mode not in ("camera", "obs", "dual_sync", "free_switch"):
             return
 
-        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         t_relative = self._broadcast_timeline_sec()
+        # Result banners + actor evidence for VR / Free Switch (and dual).
+        if self.mode in ("obs", "free_switch", "dual_sync"):
+            splitscreen = self._live_frame_is_splitscreen()
+            self._maybe_cache_actor_frame(frame_rgb, t_relative, splitscreen=splitscreen)
+            self._emit_result_banner_if_any(frame_rgb, t_relative, splitscreen=splitscreen)
+
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
         if self._socket_runner is not None:
             self._socket_runner.send_frame(frame_bgr, t_relative)
@@ -3361,6 +3421,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             if tts_text.strip().lower() == "silence":
                 return  # model silence sentinel — skip TTS
+            # 維持原聲: show captions only — do not speak AI audio locally or to Audience.
+            if not getattr(self, "_audience_narration_enabled", True):
+                return
             if self.tts_mode == "openai" and self._use_gemini and not self._broadcast_tts_allowed(data):
                 return
             # P1 scoring plays must always be voiced; only dedup routine commentary.
@@ -3401,6 +3464,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if tts_text.strip().lower() == "silence":
             return  # model silence sentinel — skip TTS
+        # 維持原聲: show captions only — do not speak AI audio locally or to Audience.
+        if not getattr(self, "_audience_narration_enabled", True):
+            return
         if self.tts_mode == "openai" and self._use_gemini and not self._broadcast_tts_allowed(data):
             return
         # P1 scoring plays must always be voiced; only dedup routine commentary.

@@ -165,10 +165,13 @@ def build_clip_from_buffer(
     buffer: Deque[FrameItem],
     window_sec: float,
     target_fps: float,
+    t_min: Optional[float] = None,
 ) -> Optional["VideoClip"]:
     """
     從 buffer 中擷取最近 window_sec 秒的畫面，組成一個 VideoClip。
     - buffer 裡存的已經是相對時間了，直接用就好
+    - t_min: optional exclusive lower bound so successive clips do not overlap
+      (closer to offline live_cc() time-axis advance without more frequent inference)
     """
     from ..core.models.livecc_transformers import VideoClip
 
@@ -177,6 +180,8 @@ def build_clip_from_buffer(
 
     t_now = buffer[-1].t
     t_start = max(t_now - window_sec, buffer[0].t)
+    if t_min is not None:
+        t_start = max(t_start, float(t_min))
 
     frames_in_window = [fi for fi in buffer if fi.t >= t_start]
     if len(frames_in_window) < 2:
@@ -244,10 +249,10 @@ class LiveCCCameraWorker(QtCore.QObject):
     def __init__(
         self,
         device_id: int = 0,
-        window_sec: float = 2.0,
-        target_fps: float = 2.0,
-        infer_interval: float = 2.0,
-        memory_reset_every: int = 5,
+        window_sec: float = 1.33,
+        target_fps: float = 3.0,
+        infer_interval: float = 1.33,
+        memory_reset_every: int = 8,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -265,6 +270,8 @@ class LiveCCCameraWorker(QtCore.QObject):
         self._state: Dict[str, Any] = {}
         self._query: str = "請描述畫面"
         self._inference_start_time = 0.0  # ✅ 新增：記錄推論開始時間
+        # Advance like offline live_cc(): next clip starts after previous end.
+        self._next_t_min: Optional[float] = None
 
     @QtCore.Slot()
     def loadModel(self) -> None:
@@ -306,8 +313,13 @@ class LiveCCCameraWorker(QtCore.QObject):
 
         self._state = {}      # 初始清空 KV Cache 和 past_ids
         self._buffer.clear()  # 清空影像緩衝
+        self._next_t_min = None
 
-        print(f"[LiveCCCameraWorker] 🚀 runCameraInference started | query='{self._query[:30]}...'")
+        print(
+            f"[LiveCCCameraWorker] 🚀 runCameraInference started | "
+            f"window={self.window_sec}s fps={self.target_fps} "
+            f"interval={self.infer_interval}s | query='{self._query[:30]}...'"
+        )
 
         # ✅ 新增：初始化計數器
         inference_count = 0
@@ -325,9 +337,10 @@ class LiveCCCameraWorker(QtCore.QObject):
                     continue
 
                 clip = build_clip_from_buffer(
-                    self._buffer, 
-                    self.window_sec, 
-                    self.target_fps
+                    self._buffer,
+                    self.window_sec,
+                    self.target_fps,
+                    t_min=self._next_t_min,
                 )
                 if clip is None:
                     msg = f"⏳ Buffer too thin (size={len(self._buffer)}) — waiting"
@@ -342,10 +355,8 @@ class LiveCCCameraWorker(QtCore.QObject):
 
                 last_infer_t = now
 
-                # ✅【關鍵修改】實作「短暫記憶」機制
-                # 每推論 5 次後，清空一次記憶 (State Reset)
-                # 假設 infer_interval=1.0s，代表每 5 秒會重置一次記憶。
-                # 既能保留短期動作連貫性，又能斬斷無限跳針的迴圈。
+                # Short-term memory: reset less often than before so continuity
+                # approaches offline mm_window without raising infer rate.
                 inference_count += 1
                 if inference_count % self.memory_reset_every == 0:
                     self._state = {}
@@ -362,6 +373,9 @@ class LiveCCCameraWorker(QtCore.QObject):
                             continue
                         parsed = self.livecc._parse_visual_json(text)
                         self.signal_segment.emit(float(start_ts), float(stop_ts), parsed)
+                    # Non-overlapping advance (same idea as offline PTS cursor).
+                    clip_dur = float(len(clip.frames)) / max(float(clip.fps), 1e-6)
+                    self._next_t_min = float(clip.t_start) + clip_dur
                 except Exception as e:
                     logging.exception("[LiveCCCameraWorker] Error during camera inference")
                     self.signal_error.emit(str(e))
@@ -388,9 +402,10 @@ class LiveCCCameraWorker(QtCore.QObject):
 
     @QtCore.Slot()
     def requestMemoryReset(self) -> None:
-        """P1 event triggered — reset KV cache immediately.
-        Must be called via QueuedConnection so it runs in the worker thread."""
+        """Reset KV (+ buffer cursor). Used on P1 and Free Switch source changes."""
         self._state = {}
-        logging.info("[LiveCCCameraWorker] Memory reset triggered by P1 event")
+        self._buffer.clear()
+        self._next_t_min = None
+        logging.info("[LiveCCCameraWorker] Memory reset (state + buffer cleared)")
 
 

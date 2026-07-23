@@ -869,6 +869,8 @@ class LiveCCInfer:
                     temp_text = self.processor.apply_chat_template([temp_msg], tokenize=False)
                     self.system_prompt_offset = temp_text.index("<|im_start|>user")
                 texts = "<|im_end|>\n" + texts[self.system_prompt_offset :]
+            if response_prefix:
+                texts = texts + response_prefix
 
             inputs = self.processor(
                 text=texts,
@@ -941,6 +943,7 @@ class LiveCCInfer:
                     do_sample=True,
                     temperature=self._gen_temperature,
                     top_p=self._gen_top_p,
+                    top_k=self._gen_top_k,
                     repetition_penalty=self._gen_repetition_penalty,
                     no_repeat_ngram_size=self._gen_no_repeat_ngram_size,
                     bad_words_ids=self._bad_words_ids,

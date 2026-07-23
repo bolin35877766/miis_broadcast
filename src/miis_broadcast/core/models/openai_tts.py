@@ -56,7 +56,7 @@ def _log_openai_tts_rejection_once(source: str, msg: str) -> None:
     _tts_invalid_api_key_logged = True
     _log.warning(
         "OpenAI TTS: API key rejected (%s). Further identical errors are not printed; "
-        "set OPENAI_API_KEY and restart. Detail: %s",
+        "set***** OPENAI_API_KEY and restart. Detail: %s",
         source,
         (msg or "")[:220],
     )
@@ -83,6 +83,8 @@ def set_tts_language(lang: str) -> None:
     lang = lang if lang in ("en", "zh") else "en"
     _tts_lang = lang
     SYSTEM_INSTRUCTIONS = _SYSTEM_INSTRUCTIONS_ZH if lang == "zh" else _SYSTEM_INSTRUCTIONS_EN
+    # Push new instructions into an already-open Realtime session (same path as speed).
+    _cfg_update_event.set()
     _log.info("[OpenAITTS] Language switched to '%s' (%d chars)", lang, len(SYSTEM_INSTRUCTIONS))
 
 # ==========================================

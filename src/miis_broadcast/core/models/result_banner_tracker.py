@@ -66,9 +66,19 @@ class ResultBannerTracker:
         return "away" if last_bottom - first_three_bottom >= 7 * np.sqrt(scale) else "home"
 
     def update(
-        self, frame: np.ndarray, timestamp: float, *, is_rgb: bool = True
+        self,
+        frame: np.ndarray,
+        timestamp: float,
+        *,
+        is_rgb: bool = True,
+        splitscreen: bool = True,
     ) -> ResultBannerCue | None:
-        gameplay = frame[:, frame.shape[1] // 2 :]
+        """Detect persistent Scored! / Out of Bounds! banners.
+
+        splitscreen=True  → use the RIGHT half (file / dual LEFT|RIGHT layout).
+        splitscreen=False → treat the whole frame as gameplay (pure VR / OBS).
+        """
+        gameplay = frame[:, frame.shape[1] // 2 :] if splitscreen else frame
         height = gameplay.shape[0]
         center = gameplay[int(height * 0.35) : int(height * 0.60)]
         hsv = cv2.cvtColor(center, cv2.COLOR_RGB2HSV if is_rgb else cv2.COLOR_BGR2HSV)

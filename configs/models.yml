@@ -20,11 +20,14 @@ classifiers:
       top_k: 30
       repetition_penalty: 1.15
       no_repeat_ngram_size: 3
+    # Live / remote clip path (live_cc_from_frames). Tuned to mirror offline
+    # streaming chunks (~4 frames @ 3 fps ≈ 1.33s) with non-overlapping
+    # infer_interval so we do NOT increase inference rate / latency.
     camera:
-      window_sec: 1.5
-      target_fps: 2.0
-      infer_interval: 1.0
-      memory_reset_every: 5
+      window_sec: 1.33
+      target_fps: 3.0
+      infer_interval: 1.33
+      memory_reset_every: 8
 
 # ---------------------------------------------------------------------------
 # ByteTrack — YOLOX + BYTETracker subject-tracking configuration

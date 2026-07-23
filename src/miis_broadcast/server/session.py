@@ -39,6 +39,37 @@ from ..core.utils.gpu_telemetry import (
 log = logging.getLogger(__name__)
 
 
+def _camera_infer_cfg() -> Dict[str, float]:
+    """Load live clip params from models.yml (same keys as GUI LiveCCCameraWorker)."""
+    defaults = {
+        "window_sec": 1.33,
+        "target_fps": 3.0,
+        "infer_interval": 1.33,
+        "memory_reset_every": 8.0,
+    }
+    try:
+        from ..core.utils.config import load_models_config
+
+        classifiers = (load_models_config().get("classifiers") or {})
+        for _name, cfg in classifiers.items():
+            cam = (cfg or {}).get("camera") or {}
+            if not cam:
+                continue
+            return {
+                "window_sec": float(cam.get("window_sec", defaults["window_sec"])),
+                "target_fps": float(cam.get("target_fps", defaults["target_fps"])),
+                "infer_interval": float(
+                    cam.get("infer_interval", defaults["infer_interval"])
+                ),
+                "memory_reset_every": float(
+                    cam.get("memory_reset_every", defaults["memory_reset_every"])
+                ),
+            }
+    except Exception as exc:
+        log.warning("[Session] Falling back to default camera infer cfg: %s", exc)
+    return defaults
+
+
 def _commentary_too_similar(prev: str, cur: str, *, ratio: float = 0.86) -> bool:
     """True if the new segment is a near-duplicate of the last (loop / stuck phrasing)."""
     a = (prev or "").strip().lower()
@@ -126,8 +157,11 @@ class ClientSession:
         self._rx_frames: int = 0
         self._tx_segments: int = 0
         self._infer_cycles: int = 0
-        # Drop near-duplicate LiveCC lines (overlapping 2s clips + KV tend to echo wording)
+        # Drop near-duplicate LiveCC lines (overlapping clips + KV tend to echo wording)
         self._last_segment_text: str = ""
+        self._camera_cfg = _camera_infer_cfg()
+        # Non-overlapping clip cursor (mirrors offline live_cc PTS advance).
+        self._next_t_min: Optional[float] = None
         # Throttle server-side RSS print (~2s, aligned with thin-client QTimer)
         self._server_ram_last_mono: float = 0.0
         # One inference session (START→STOP): rolling numeric samples for end-of-session AVG
@@ -479,8 +513,21 @@ class ClientSession:
         from ..workers.livecc import build_clip_from_buffer
         state: Dict[str, Any] = {}
         inference_count = 0
-        infer_interval = 2.0
+        cam = self._camera_cfg
+        infer_interval = float(cam["infer_interval"])
+        window_sec = float(cam["window_sec"])
+        target_fps = float(cam["target_fps"])
+        memory_reset_every = max(1, int(cam["memory_reset_every"]))
+        self._next_t_min = None
         last_infer_t = time.time()
+        log.info(
+            "[Session %s] live infer cfg window=%.2fs fps=%.1f interval=%.2fs reset_every=%d",
+            self.addr,
+            window_sec,
+            target_fps,
+            infer_interval,
+            memory_reset_every,
+        )
         while not stop_event.is_set():
             now = time.time()
             if now - last_infer_t < infer_interval:
@@ -491,7 +538,10 @@ class ClientSession:
                 continue
             # Build clip from shared buffer (thread-safe read for deque)
             clip = build_clip_from_buffer(
-                buffer, window_sec=2.0, target_fps=2.0
+                buffer,
+                window_sec=window_sec,
+                target_fps=target_fps,
+                t_min=self._next_t_min,
             )
             if clip is None:
                 time.sleep(0.1)
@@ -504,8 +554,8 @@ class ClientSession:
                 self._infer_cycles,
                 len(buffer),
             )
-            # Periodic state reset: overlapping 2s clips + KV make echo outputs; clear more often on server
-            if inference_count % 3 == 0:
+            # Periodic state reset (less aggressive than the old every-3 default).
+            if inference_count % memory_reset_every == 0:
                 state = {}
                 log.debug("[Session] State reset (count=%d)", inference_count)
             try:
@@ -515,6 +565,8 @@ class ClientSession:
                     )
                 )
                 last_infer_t = time.time()
+                clip_dur = float(len(clip.frames)) / max(float(clip.fps), 1e-6)
+                self._next_t_min = float(clip.t_start) + clip_dur
                 for (start_ts, stop_ts), text, state in batch:
                     if stop_event.is_set():
                         break
