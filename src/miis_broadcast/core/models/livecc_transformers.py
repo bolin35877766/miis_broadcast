@@ -1,4 +1,5 @@
 import functools
+import difflib
 import json
 import re
 import time
@@ -373,6 +374,8 @@ class LiveCCInfer:
         self.mm_window_sec = float(mm_window_sec)
         self.carry_text_max_chars = int(carry_text_max_chars)
         self.carry_recent_k = int(carry_recent_k)
+        self.carry_structured_only = bool(cfg.get("carry_structured_only", False))
+        self.kv_reset_every_segments = max(0, int(cfg.get("kv_reset_every_segments", 0)))
 
         # Ban pure-number tokens so the model cannot collapse into "The player 5 / 6 / 2D"
         # jersey-number / scoreboard counting loops on this VR-gameplay footage.
@@ -382,6 +385,21 @@ class LiveCCInfer:
         )
 
         self.max_pixels: int = int(cfg.get("max_pixels", 384 * 28 * 28))
+        self.input_crop: str = str(cfg.get("input_crop", "none")).strip().lower()
+
+    def _prepare_visual_clip(self, clip: Any) -> Any:
+        """Apply an optional model-only crop without changing playback or trackers."""
+        if self.input_crop != "right_half":
+            return clip
+        shape = getattr(clip, "shape", None)
+        if shape is None or len(shape) < 3:
+            return clip
+        # Video clips are T,H,W,C. Keep the authoritative first-person game view.
+        width_axis = -2 if len(shape) >= 4 else 1
+        width = int(shape[width_axis])
+        slices = [slice(None)] * len(shape)
+        slices[width_axis] = slice(width // 2, None)
+        return clip[tuple(slices)]
 
     def _build_number_bad_words(self) -> List[List[int]]:
         tok = self.processor.tokenizer
@@ -488,10 +506,16 @@ class LiveCCInfer:
         if len(words) > 80:
             return True
 
-        # prompt leakage：輸出的前 60% 內容出現在 query 裡
-        if query and len(text) > 10:
-            overlap = sum(1 for w in words if w.lower() in query.lower())
-            if overlap / len(words) > 0.6:
+        # Prompt leakage must mean contiguous copying, not ordinary vocabulary
+        # overlap. Role-constrained answers intentionally repeat phrases such as
+        # "the player" and "the robot opponent" from the query.
+        if query and len(text) > 24:
+            normalized_text = " ".join(text.lower().split())
+            normalized_query = " ".join(query.lower().split())
+            match = difflib.SequenceMatcher(
+                None, normalized_text, normalized_query, autojunk=False
+            ).find_longest_match()
+            if match.size / max(len(normalized_text), 1) > 0.72:
                 return True
 
         # Audio transcription / YouTube commentary hallucination
@@ -502,14 +526,14 @@ class LiveCCInfer:
         # First/second-person pronoun dominant → YouTuber/coaching voice hallucination
         person_words = {"i", "me", "my", "we", "us", "our", "i'm", "i've", "i'll", "i'd",
                         "you", "your", "you're", "you've", "you'll"}
-        fp_count = sum(1 for w in words if w.lower().rstrip("'s") in person_words)
-        if fp_count / len(words) > 0.15:
-            return True
+        def _person_token(word: str) -> str:
+            token = word.lower().strip(".,!?;:()[]{}\"")
+            if token.endswith("'s"):
+                token = token[:-2]
+            return token
 
-        # Excessive conjunctions/vague language ("and", "or", "the", "a") > 35% suggests incoherence
-        vague_words = {"and", "or", "the", "a", "an", "is", "are", "was", "were"}
-        vague_count = sum(1 for w in words if w.lower() in vague_words)
-        if vague_count / len(words) > 0.35:
+        fp_count = sum(1 for w in words if _person_token(w) in person_words)
+        if fp_count / len(words) > 0.15:
             return True
 
         return False
@@ -520,6 +544,14 @@ class LiveCCInfer:
         if not isinstance(response, str):
             return
         r = response.strip()
+
+        if self.carry_structured_only:
+            try:
+                structured = json.loads(r)
+            except (json.JSONDecodeError, ValueError):
+                structured = None
+            if not isinstance(structured, dict):
+                return
 
         # Degenerate output (empty / score-banner loops / word-salad) must NOT be carried
         # forward as context, otherwise carry_text re-seeds the next window with garbage and
@@ -545,6 +577,21 @@ class LiveCCInfer:
         if self.carry_recent_k > 0 and len(recent) > self.carry_recent_k:
             recent = recent[-self.carry_recent_k :]
         state["recent_texts"] = recent
+
+    def _apply_segment_reset_policy(self, state: Dict[str, Any]) -> None:
+        """Apply the configured periodic KV reset and force prompt re-injection."""
+        count = int(state.get("segments_since_kv_reset", 0)) + 1
+        state["segments_since_kv_reset"] = count
+        interval = self.kv_reset_every_segments
+        if interval <= 0 or count < interval:
+            return
+        state.pop("past_ids", None)
+        state.pop("past_key_values", None)
+        # _build_message_content normally sends the long query only when it
+        # changes. After a KV reset the model no longer has that prompt, so its
+        # marker must also be cleared.
+        state.pop("query", None)
+        state["segments_since_kv_reset"] = 0
 
     @staticmethod
     def _parse_visual_json(text: str) -> Dict[str, Any]:
@@ -592,7 +639,7 @@ class LiveCCInfer:
             content.append({"type": "text", "text": f"Context so far: {carry.strip()}"})
 
         content.append({"type": "text", "text": f"Time={start_ts:.1f}-{stop_ts:.1f}s"})
-        content.append({"type": "video", "video": clip_obj})
+        content.append({"type": "video", "video": self._prepare_visual_clip(clip_obj)})
 
         if query and state.get("query", None) != query:
             content.append({"type": "text", "text": query})
@@ -772,6 +819,7 @@ class LiveCCInfer:
 
             # ✅ Option A: Update recent commentaries (for the next reset)
             self._update_recent_texts(state, response, query)
+            self._apply_segment_reset_policy(state)
 
             yield (start_timestamp, stop_timestamp), response, state
 
@@ -912,6 +960,7 @@ class LiveCCInfer:
 
             # ✅ Option A: Update recent commentaries
             self._update_recent_texts(state, response, query)
+            self._apply_segment_reset_policy(state)
 
             yield (start_timestamp, stop_timestamp), response, state
             break

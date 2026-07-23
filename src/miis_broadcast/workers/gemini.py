@@ -147,8 +147,10 @@ class GeminiWorker(QtCore.QObject):
                 start_t, stop_t, wait_time,
             )
         api_start = time.time()
+        raw_visual = data.get("metadata", {}).get("raw") or data.get("event", "")
         try:
-            from ..core.models.gemini_broadcaster import stream_gemini
+            from ..core.models.gemini_broadcaster import get_language, stream_gemini
+            from ..core.models.broadcast_grounding import ground_broadcast_text
             for ev in stream_gemini(data):
                 if self._abort_current:
                     logging.info(
@@ -164,6 +166,9 @@ class GeminiWorker(QtCore.QObject):
                     priority_emitted = True
 
                 if not broadcast_emitted and ev.broadcast_text is not None:
+                    ev.broadcast_text = ground_broadcast_text(
+                        ev.broadcast_text, raw_visual, language=get_language()
+                    )
                     result = ev.to_dict()
                     result["should_speak"] = True  # override: direct LiveCC feed always speaks
                     result["_enqueue_ts"] = enqueue_ts
@@ -204,7 +209,7 @@ class GeminiBackgroundWorker(QtCore.QObject):
     WATERMARK_SEC = 1.0       # trigger next call when TTS remaining < this
     POLL_INTERVAL_MS = 200    # polling interval while watermark not reached
     INTER_SENTENCE_MS = 500   # silence injected between consecutive sentences
-    MIN_FIRE_INTERVAL_SEC = 4.0  # hard floor between consecutive Gemini API calls
+    MIN_FIRE_INTERVAL_SEC = 8.0  # aggregate enough temporal context; avoids repetitive play calls
 
     def __init__(self, get_remaining_sec_fn, parent=None) -> None:
         super().__init__(parent)
@@ -216,7 +221,7 @@ class GeminiBackgroundWorker(QtCore.QObject):
         self._abort_current: bool = False
         self._paused: bool = False
         self._initialized: bool = False
-        self._context_pool: deque = deque(maxlen=3)
+        self._context_pool: deque = deque(maxlen=4)
         self._last_fire_t: float = 0.0
 
     @QtCore.Slot()
@@ -265,6 +270,13 @@ class GeminiBackgroundWorker(QtCore.QObject):
                     if ev.broadcast_text:
                         final_ev = ev
                 if final_ev and not self._abort_current and not self._stop_requested:
+                    from ..core.models.broadcast_grounding import ground_broadcast_text
+                    from ..core.models.gemini_broadcaster import get_language
+                    final_ev.broadcast_text = ground_broadcast_text(
+                        final_ev.broadcast_text or "",
+                        context.get("event", ""),
+                        language=get_language(),
+                    )
                     result = final_ev.to_dict()
                     result["_enqueue_ts"] = t_now
                     result["should_speak"] = True
@@ -282,13 +294,30 @@ class GeminiBackgroundWorker(QtCore.QObject):
     def _build_context(self) -> dict:
         from ..core.models.gemini_broadcaster import _get_match_state
         recent = list(self._context_pool)
-        event_text = " ".join(recent) if recent else "Game in progress."
-        return {
+        descriptions: list[str] = []
+        latest_frames: list[bytes] = []
+        for item in recent:
+            if isinstance(item, dict):
+                metadata = item.get("metadata", {})
+                description = metadata.get("raw") or item.get("event", "")
+                frames = metadata.get("actor_frames_jpeg") or []
+                if isinstance(frames, (list, tuple)) and frames:
+                    latest_frames = [frame for frame in frames if isinstance(frame, bytes)]
+            else:
+                description = str(item)
+            if description:
+                descriptions.append(description)
+        event_text = " ".join(descriptions) if descriptions else "Game in progress."
+        context = {
             "event": event_text,
+            "metadata": {"raw": event_text},
             # Shared 0:0-opening suppression (see _get_match_state) so background
             # commentary doesn't recite a bogus scoreline before anyone scores.
             "match_state": _get_match_state(),
         }
+        if latest_frames:
+            context["metadata"]["actor_frames_jpeg"] = latest_frames[:3]
+        return context
 
     @QtCore.Slot()
     def pause(self) -> None:
@@ -301,8 +330,8 @@ class GeminiBackgroundWorker(QtCore.QObject):
         self._paused = False
         logging.info("[GeminiBackgroundWorker] Resumed after P1 silence")
 
-    @QtCore.Slot(str)
-    def update_context(self, description: str) -> None:
+    @QtCore.Slot(object)
+    def update_context(self, description: object) -> None:
         """Receive LiveCC P3 description via signal_livecc_context (QueuedConnection)."""
         self._context_pool.append(description)
 

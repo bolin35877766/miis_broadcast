@@ -24,6 +24,7 @@ from .workers.free_switch import FreeSwitchCameraThread, SOURCE_WEBCAM, SOURCE_V
 from .audience.livekit_publisher import AudiencePublisher
 from .audience.token_server import AudienceTokenServer
 from .core.prompt.prompt_manager import PromptManager
+from .core.models.broadcast_grounding import compose_result_evidence, result_cue
 from .core.match_tracker import match_tracker
 from .core.utils.session_logger import SessionLogger
 from .core.utils.audio_recorder import AudioRecorder
@@ -1099,7 +1100,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # Fires when Gemini confirms a P1 event — used to reset LiveCC KV cache
     signal_p1_confirmed = QtCore.Signal()
     # P3 LiveCC description → GeminiBackgroundWorker.update_context (QueuedConnection)
-    signal_livecc_context = QtCore.Signal(str)
+    signal_livecc_context = QtCore.Signal(object)
 
     # Fast-path keyword sets
     _P1_KEYWORDS = frozenset({
@@ -1148,6 +1149,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tts_protected_priority: int = 5  # priority being protected until _tts_protect_until
         self._post_p1_pending: bool = False     # True while waiting for 1.0s post-P1 silence
         self._pending_livecc_fragment: Optional[tuple] = None  # truncated "..." fragment awaiting stitching
+        from .core.models.result_banner_tracker import ResultBannerTracker
+        self._result_banner_tracker = ResultBannerTracker()
+        self._actor_frame_cache: deque[tuple[float, bytes]] = deque(maxlen=80)
+        self._recent_basketball_actions: deque[tuple[float, str]] = deque(maxlen=6)
+        self._last_actor_frame_sec: float = -1e9
         self._livecc_start_wall: float = 0.0   # wall-clock anchor for file-mode "frame appeared" latency (== LiveCC inference start)
 
         # Audience second-screen services (Free Switch mode only)
@@ -1711,6 +1717,28 @@ class MainWindow(QtWidgets.QMainWindow):
         """Normalize a LiveCC caption into the dict shape GeminiBroadcaster expects."""
         return {"metadata": {"raw": raw}, "event": "raw_description"}
 
+    def _with_actor_frames(
+        self, data: object, start_t: float, stop_t: float, raw: str
+    ) -> object:
+        """Attach three nearby right-view frames to routine basketball events."""
+        if not isinstance(data, dict) or not self._actor_frame_cache:
+            return data
+        lower = raw.lower()
+        if "scored!" in lower or "out of bounds!" in lower:
+            return data
+        midpoint = (float(start_t) + float(stop_t)) / 2.0
+        nearest = sorted(
+            self._actor_frame_cache,
+            key=lambda item: abs(item[0] - midpoint),
+        )[:3]
+        if not nearest:
+            return data
+        enriched = dict(data)
+        metadata = dict(enriched.get("metadata", {}))
+        metadata["actor_frames_jpeg"] = [jpeg for _timestamp, jpeg in sorted(nearest)]
+        enriched["metadata"] = metadata
+        return enriched
+
     def _broadcast_tts_allowed(self, data: object) -> bool:
         """Only speak Gemini broadcast_text (zh-TW), never raw LiveCC — all TTS engines."""
         if not isinstance(data, dict):
@@ -1807,6 +1835,9 @@ class MainWindow(QtWidgets.QMainWindow):
             raw = data.get("metadata", {}).get("raw", "") or data.get("event", "")
         elif isinstance(data, str):
             raw = data
+        if raw.strip() and result_cue(raw) is None:
+            self._recent_basketball_actions.append((stop_t, raw.strip()))
+        data = self._with_actor_frames(data, start_t, stop_t, raw)
 
         # Stitch truncated fragments: LiveCC frequently cuts text off mid-thought
         # ("..."), and a P1/P2 trigger keyword can straddle that boundary and be
@@ -1893,7 +1924,9 @@ class MainWindow(QtWidgets.QMainWindow):
             # fighting over the TTS queue, and stalling the opening seconds.
             description = raw.strip()
             if description:
-                self.signal_livecc_context.emit(description)
+                self.signal_livecc_context.emit(
+                    data if isinstance(data, dict) else self._livecc_event_dict(description)
+                )
 
     # ---------------- Remote Socket ----------------
 
@@ -2861,7 +2894,13 @@ class MainWindow(QtWidgets.QMainWindow):
         style_label = self.control_panel.get_selected_style_label()
 
         if self.prompt_manager is not None:
-            prompt = self.prompt_manager.livecc_query()
+            # The production feed is a synchronized third-person/first-person
+            # composition.  Use the explicit relationship prompt so LiveCC does
+            # not mistake the left-side player motion for equipment adjustment.
+            prompt = (
+                self.prompt_manager.livecc_query_splitscreen()
+                or self.prompt_manager.livecc_query()
+            )
             from .core.models.gemini_broadcaster import set_style
             set_style(style_key)
         else:
@@ -2884,6 +2923,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.signal_tts_warmup.emit()
 
         self.is_inference_running = True
+        self._result_banner_tracker.reset()
+        self._actor_frame_cache.clear()
+        self._recent_basketball_actions.clear()
+        self._last_actor_frame_sec = -1e9
         self._reset_broadcast_timeline()
 
         # Start audio recording only when user has opted in via checkbox
@@ -2988,6 +3031,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_pending_segments"):
                 self._pending_segments.clear()
             self._pending_livecc_fragment = None
+            self._actor_frame_cache.clear()
+            self._recent_basketball_actions.clear()
+            self._last_actor_frame_sec = -1e9
             self._livecc_start_wall = 0.0
             self._broadcast_start_wall = 0.0
             self._broadcast_playback_sec = 0.0
@@ -3071,6 +3117,41 @@ class MainWindow(QtWidgets.QMainWindow):
             self._playback_sec = sec
             if self.is_inference_running:
                 self._broadcast_playback_sec = sec
+
+            if (
+                self.is_inference_running
+                and self.prompt_manager is not None
+                and self.prompt_manager.current_sport() == "basketball"
+                and sec - self._last_actor_frame_sec >= 0.24
+            ):
+                right = frame_rgb[:, frame_rgb.shape[1] // 2 :]
+                right_bgr = cv2.cvtColor(right, cv2.COLOR_RGB2BGR)
+                ok, encoded = cv2.imencode(
+                    ".jpg", right_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90]
+                )
+                if ok:
+                    self._actor_frame_cache.append((sec, encoded.tobytes()))
+                    self._last_actor_frame_sec = sec
+
+            if (
+                self.is_inference_running
+                and self.prompt_manager is not None
+                and self.prompt_manager.current_sport() == "basketball"
+            ):
+                cue = self._result_banner_tracker.update(frame_rgb, sec, is_rgb=True)
+                if cue is not None:
+                    result = "Scored!" if cue.kind == "score" else "Out of Bounds!"
+                    banner = f"{result} {cue.side.title()}" if cue.side else result
+                    recent_action = next(
+                        (
+                            action
+                            for action_t, action in reversed(self._recent_basketball_actions)
+                            if 0.0 <= cue.start - action_t <= 8.0
+                        ),
+                        "",
+                    )
+                    raw = compose_result_evidence(banner, recent_action)
+                    self._route_segment(cue.start, cue.end, self._livecc_event_dict(raw))
 
         # Stream video frames to remote server for file-mode inference
         if self.mode == "file" and self.is_inference_running and self._socket_runner is not None:

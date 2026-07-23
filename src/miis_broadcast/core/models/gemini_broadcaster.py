@@ -127,6 +127,33 @@ _DEFAULT_STYLE: str = "objective"
 _current_style_key: str = _DEFAULT_STYLE
 _current_lang: str = "en"  # "en" | "zh"
 
+_VIEW_RELATIONSHIP_CONTEXT = (
+    "[View relationship: LEFT is a synchronized third-person gameplay view and "
+    "RIGHT is the same action from the first-person in-game view. Treat any claim "
+    "about VR equipment, controllers, setup, calibration, or device adjustment as "
+    "an observer error. Broadcast only the unified sports action, using RIGHT as "
+    "the authoritative gameplay evidence. Role identity is fixed: LEFT person and "
+    "RIGHT first-person hands are the player; the other RIGHT-side avatar is the "
+    "robot/test_bot opponent. Explicitly name the player or the robot opponent as "
+    "the actor. The scoreboard mapping is fixed: left Home score is the player's, "
+    "center is time only, and right Away score is the robot opponent's. Treat a clearly "
+    "visible Scored! or Out of Bounds! result as the referee's final ruling, overriding "
+    "an inferred physical outcome. Scored! Home means the player scored; Scored! Away "
+    "means the robot opponent scored. Out of Bounds! Home means the player sent the ball "
+    "out; Out of Bounds! Away means the robot opponent sent the ball out. State the "
+    "outcome naturally without mentioning text, a banner, a screen, or a referee. Treat "
+    "the result ruling and the next visible ballhandler as separate facts. Identify "
+    "possession only from visible dribbling or ball contact. A dribbling robot avatar means "
+    "the robot opponent has possession; the third-person player's synchronized dribble "
+    "with foreground first-person hands means the player has possession. Never derive the "
+    "next possession from Home/Away or an out-of-bounds ruling. There are "
+    "exactly two competitors, no teammates, passes, or assists. Preserve visible "
+    "dribbles, cuts, drives, retreats, backcourt resets, steals, blocks, rebounds, "
+    "turnovers, and possession changes; do not collapse them into a shot. Never say "
+    "kick it back out, dish, or feed: say the same ballhandler retreats, carries the "
+    "ball back out, returns to the perimeter, or resets in the backcourt.]"
+)
+
 def _resolve_prompt(style_key: str, lang: str) -> str:
     """Return the system prompt for the given style + language combination."""
     styles = _GEMINI_STYLES_ZH if lang == "zh" else _GEMINI_STYLES_EN
@@ -167,6 +194,11 @@ def set_language(lang: str) -> None:
         _SYSTEM_PROMPT = prompt
     logging.info("[GeminiBroadcaster] Language switched to '%s', style='%s' (%d chars)",
                  lang, _current_style_key, len(_SYSTEM_PROMPT))
+
+
+def get_language() -> str:
+    """Return the active Gemini broadcast language."""
+    return _current_lang
 _retriever: _ContextRetriever = _ContextRetriever(top_k=3)
 _raw_context: str = ""
 _RAG_THRESHOLD: int = int(_gemini_cfg.get("rag_threshold", 600))
@@ -303,12 +335,15 @@ def _generate_from_rag(visual: str) -> Dict[str, Any]:
 
 class StreamEvent:
     """Emitted incrementally as Gemini streams the response."""
-    __slots__ = ("priority", "broadcast_text", "action_label", "should_speak", "complete")
+    __slots__ = (
+        "priority", "broadcast_text", "action_label", "actor_label", "should_speak", "complete"
+    )
 
     def __init__(self) -> None:
         self.priority: int | None = None
         self.broadcast_text: str | None = None
         self.action_label: str | None = None
+        self.actor_label: str | None = None
         self.should_speak: bool | None = None
         self.complete: bool = False
 
@@ -317,6 +352,7 @@ class StreamEvent:
             "priority": self.priority,
             "broadcast_text": self.broadcast_text,
             "action_label": self.action_label,
+            "actor_label": self.actor_label,
             "should_speak": self.should_speak,
         }
 
@@ -324,6 +360,94 @@ class StreamEvent:
 def _extract_text(event_data: Dict[str, Any]) -> str:
     """Extract the plain-text visual description from a LiveCC event dict."""
     return event_data.get("metadata", {}).get("raw") or event_data.get("event", "")
+
+
+def _build_gemini_contents(event_data: Dict[str, Any], prompt: str) -> list[Any]:
+    """Build text-only or frame-grounded Gemini contents for one broadcast."""
+    contents: list[Any] = [prompt]
+    frames = event_data.get("metadata", {}).get("actor_frames_jpeg") or []
+    if not isinstance(frames, (list, tuple)):
+        return contents
+    valid_frames = [frame for frame in frames if isinstance(frame, bytes) and frame]
+    if valid_frames:
+        contents[0] = (
+            prompt
+            + "\n[The following consecutive images are authoritative RIGHT-side first-person "
+            "gameplay evidence. Foreground black/yellow hands belong to the player; "
+            "the test_bot avatar is the robot opponent. LiveCC frequently assigns the "
+            "wrong actor, so determine possession independently from the images and "
+            "OVERRIDE the text actor when visual ball contact is clear. A ball held, "
+            "touched, or released by test_bot requires the subject 'the robot opponent' "
+            "even when the text says player. A ball in the foreground hands requires "
+            "the subject 'the player'. If ownership is unclear, do not infer it from pose.]"
+        )
+        contents.extend(
+            genai_types.Part.from_bytes(data=frame, mime_type="image/jpeg")
+            for frame in valid_frames[:3]
+        )
+    return contents
+
+
+_ACTOR_CLASSIFIER_PROMPT = """Classify visible basketball possession from consecutive images.
+Images show only the player's first-person game view. Foreground black/yellow hands are
+the player; the avatar often labeled test_bot1 is the robot opponent. Return player only
+when the ball is visibly held, touched, or released by foreground hands. Return
+robot_opponent only when the ball is visibly held, touched, or released by the avatar.
+Repeated ball contact consistent with dribbling is decisive: foreground-hand dribbling is
+player possession, while avatar dribbling is robot_opponent possession.
+If the ball is absent, occluded, between actors, or ownership is unclear, return unclear.
+Ignore camera direction, pose, score, and result text. Output exactly one label."""
+
+
+def _classify_actor_frames(client: Any, frames: list[bytes]) -> str:
+    """Return a conservative authoritative actor label for three right-view frames."""
+    if not frames:
+        return "unclear"
+    contents = [
+        genai_types.Part.from_bytes(data=frame, mime_type="image/jpeg")
+        for frame in frames[:3]
+    ]
+    response = client.models.generate_content(
+        model=_MODEL_NAME,
+        contents=contents,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=_ACTOR_CLASSIFIER_PROMPT,
+            temperature=0.0,
+            max_output_tokens=10,
+        ),
+    )
+    label = (response.text or "").strip().lower()
+    return label if label in {"player", "robot_opponent"} else "unclear"
+
+
+def _override_actor_subject(text: str, actor: str) -> str:
+    """Apply only a visually confirmed subject, leaving unclear evidence untouched."""
+    if actor == "robot_opponent":
+        if not re.match(r"^(?:The player|Player)\b", text, flags=re.IGNORECASE):
+            return text
+        swapped = re.sub(
+            r"^(?:The player|Player)\b", "__ACTOR__", text, flags=re.IGNORECASE
+        )
+        swapped = re.sub(
+            r"\bthe robot opponent\b", "the player", swapped, flags=re.IGNORECASE
+        )
+        return swapped.replace("__ACTOR__", "The robot opponent")
+    if actor == "player":
+        if not re.match(
+            r"^(?:The robot opponent|Robot opponent|The opponent|Opponent)\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return text
+        swapped = re.sub(
+            r"^(?:The robot opponent|Robot opponent|The opponent|Opponent)\b",
+            "__ACTOR__",
+            text,
+            flags=re.IGNORECASE,
+        )
+        swapped = re.sub(r"\bthe player\b", "the robot opponent", swapped, flags=re.IGNORECASE)
+        return swapped.replace("__ACTOR__", "The player")
+    return text
 
 
 _PLINE_RE = re.compile(r"^P([1-5]):\s*(.+)$")
@@ -341,18 +465,29 @@ def stream_gemini(event_data: Dict[str, Any]) -> Generator[StreamEvent, None, No
     """
     client = _get_client()
     visual = _extract_text(event_data)
+    actor_frames = event_data.get("metadata", {}).get("actor_frames_jpeg") or []
+    valid_actor_frames = [
+        frame for frame in actor_frames
+        if isinstance(frame, bytes) and frame
+    ] if isinstance(actor_frames, (list, tuple)) else []
+    actor_label = _classify_actor_frames(client, valid_actor_frames) if valid_actor_frames else "unclear"
+    visual = _override_actor_subject(visual, actor_label)
     ctx = _get_context_for_query(visual)
     match_state = _get_match_state()
 
     parts = []
+    parts.append(_VIEW_RELATIONSHIP_CONTEXT)
     if ctx:
         parts.append(f"[Game context: {ctx}]")
     if match_state:
         parts.append(f"[Match state: {match_state}]")
+    if actor_label != "unclear":
+        parts.append(f"[Authoritative visual ballhandler: {actor_label}. This overrides the caption actor.]")
     parts.append(visual)
     prompt = "\n".join(parts)
 
     ev = StreamEvent()
+    ev.actor_label = actor_label
     buffer = ""
 
     def _parse_line(line: str) -> bool:
@@ -366,7 +501,11 @@ def stream_gemini(event_data: Dict[str, Any]) -> Generator[StreamEvent, None, No
         if m and ev.priority is None:
             ev.priority = int(m.group(1))
             ev.should_speak = ev.priority <= 3
-            ev.broadcast_text = m.group(2).strip()
+            from .broadcast_grounding import ground_broadcast_text
+            actor_grounded = _override_actor_subject(m.group(2).strip(), actor_label)
+            ev.broadcast_text = ground_broadcast_text(
+                actor_grounded, visual, language=_current_lang
+            )
             return True
 
         if line.startswith("LABEL:") and ev.action_label is None:
@@ -379,7 +518,7 @@ def stream_gemini(event_data: Dict[str, Any]) -> Generator[StreamEvent, None, No
     try:
         for chunk in client.models.generate_content_stream(
             model=_MODEL_NAME,
-            contents=prompt,
+            contents=_build_gemini_contents(event_data, prompt),
             config=_make_generate_config(),
         ):
             chunk_text = chunk.text or ""
