@@ -2,10 +2,76 @@
 
 import os
 import platform
+from typing import List, Optional, Tuple
+
 import cv2
 import numpy as np
 
 from .input import BaseInput
+
+# Webcam selection: prefer external Logitech over built-in laptop cameras.
+_LOGITECH_NAME_SUBSTR = "logitech"
+_SKIP_VIRTUAL_KEYWORDS = (''
+    "obs virtual",
+    "meta quest",
+    "vtubestudio",
+)
+_BUILTIN_LOW_PRIORITY_KEYWORDS = (
+    "asus",
+    "ir camera",
+    "integrated",
+    "facetime",
+    "hd webcam",  # common built-in label on laptops
+)
+
+
+def list_dshow_devices(*, log: bool = False) -> List[Tuple[int, str]]:
+    """Return DirectShow capture devices as (index, name) pairs."""
+    if platform.system() != "Windows":
+        return []
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+
+        return list(enumerate(FilterGraph().get_input_devices()))
+    except Exception:
+        return []
+
+
+def _windows_capture_backends() -> Tuple[int, ...]:
+    return (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY)
+
+
+def probe_camera_index(idx: int) -> bool:
+    """Return True when OpenCV can open idx and read at least one frame."""
+    if platform.system() == "Windows":
+        backends = _windows_capture_backends()
+    else:
+        backends = (cv2.CAP_ANY,)
+    for backend in backends:
+        cap = cv2.VideoCapture(idx, backend)
+        try:
+            if not cap.isOpened():
+                continue
+            ret, _ = cap.read()
+            if ret:
+                return True
+        finally:
+            cap.release()
+    return False
+
+
+def _is_virtual_camera_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(kw in lowered for kw in _SKIP_VIRTUAL_KEYWORDS)
+
+
+def _is_builtin_low_priority(name: str) -> bool:
+    lowered = name.lower()
+    return any(kw in lowered for kw in _BUILTIN_LOW_PRIORITY_KEYWORDS)
+
+
+def _is_logitech_name(name: str) -> bool:
+    return _LOGITECH_NAME_SUBSTR in name.lower()
 
 
 def list_all_cameras(max_scan: int = 10) -> dict:
@@ -33,14 +99,12 @@ def list_all_cameras(max_scan: int = 10) -> dict:
 def find_physical_camera_index(obs_device_name: str = "OBS Virtual Camera",
                                max_scan: int = 10) -> int:
     """
-    Find the first physical (non-OBS) camera index.
+    Find a webcam index for the Webcam / Free Switch camera path.
 
-    Strategy:
-      1. On Linux, read V4L2 device names; return the lowest index whose
-         name does NOT contain obs_device_name.
-      2. On all platforms, fall back to scanning indices and skipping the
-         index that the OBS Virtual Camera occupies.
-    Returns the camera index, or 0 as a last resort.
+    Priority:
+      1. Logitech devices (e.g. StreamCam) when present and openable.
+      2. Other external / non-virtual cameras.
+      3. Built-in laptop cameras (ASUS IR/FHD, etc.) — last resort before index 0.
     """
     system = platform.system()
 
@@ -48,8 +112,9 @@ def find_physical_camera_index(obs_device_name: str = "OBS Virtual Camera",
     if system == "Linux":
         video_dir = "/sys/class/video4linux"
         if os.path.isdir(video_dir):
-            obs_indices = set()
-            candidate = None
+            logitech_candidate = None
+            other_candidate = None
+            builtin_candidate = None
             for entry in sorted(os.listdir(video_dir)):
                 name_file = os.path.join(video_dir, entry, "name")
                 try:
@@ -57,25 +122,65 @@ def find_physical_camera_index(obs_device_name: str = "OBS Virtual Camera",
                         name = f.read().strip()
                     idx = int(entry.replace("video", ""))
                     if obs_device_name.lower() in name.lower():
-                        obs_indices.add(idx)
                         print(f"[Camera] 跳過 OBS 裝置: /dev/video{idx} ({name})")
-                    elif candidate is None:
-                        # Verify it actually opens
-                        cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
-                        if cap.isOpened():
-                            candidate = idx
-                            cap.release()
-                            print(f"[Camera] ✅ 找到實體攝影機 /dev/video{idx} ({name})")
-                        else:
-                            cap.release()
+                        continue
+                    if not probe_camera_index(idx):
+                        continue
+                    if _is_logitech_name(name):
+                        logitech_candidate = idx
+                        print(f"[Camera] ✅ 找到 Logitech 攝影機 /dev/video{idx} ({name})")
+                        break
+                    if _is_builtin_low_priority(name):
+                        if builtin_candidate is None:
+                            builtin_candidate = idx
+                    elif other_candidate is None:
+                        other_candidate = idx
                 except Exception:
                     continue
-            if candidate is not None:
-                return candidate
+            for pick, label in (
+                (logitech_candidate, "Logitech"),
+                (other_candidate, "實體"),
+                (builtin_candidate, "內建"),
+            ):
+                if pick is not None:
+                    if label != "Logitech":
+                        print(f"[Camera] ✅ 使用{label}攝影機 /dev/video{pick}")
+                    return pick
 
-    # --- Windows / fallback: scan and skip known OBS index ---
-    backend = cv2.CAP_DSHOW if system == "Windows" else cv2.CAP_ANY
     obs_index = find_obs_camera_index(obs_device_name)
+    devices = list_dshow_devices()
+
+    if system == "Windows" and devices:
+        print(f"[Camera] 掃描實體相機（優先 Logitech，跳過 OBS index {obs_index}）...")
+
+        def _try_devices(predicate, label: str) -> Optional[int]:
+            for idx, name in devices:
+                if idx == obs_index or _is_virtual_camera_name(name):
+                    continue
+                if not predicate(name):
+                    continue
+                if probe_camera_index(idx):
+                    print(f"[Camera] ✅ 使用 {label} index {idx} ({name})")
+                    return idx
+            return None
+
+        picked = _try_devices(_is_logitech_name, "Logitech")
+        if picked is not None:
+            return picked
+
+        picked = _try_devices(
+            lambda n: not _is_builtin_low_priority(n),
+            "外接/非內建",
+        )
+        if picked is not None:
+            return picked
+
+        picked = _try_devices(_is_builtin_low_priority, "內建")
+        if picked is not None:
+            return picked
+
+    # --- Numeric fallback (non-Windows or pygrabber unavailable) ---
+    backend = cv2.CAP_DSHOW if system == "Windows" else cv2.CAP_ANY
     print(f"[Camera] 掃描實體相機（跳過 OBS index {obs_index}）...")
     for idx in range(max_scan):
         if idx == obs_index:
@@ -126,19 +231,17 @@ def find_obs_camera_index_windows(device_name: str = "OBS Virtual Camera") -> in
     """
     On Windows, use pygrabber to enumerate DirectShow devices by name.
     """
-    try:
-        from pygrabber.dshow_graph import FilterGraph
-        graph = FilterGraph()
-        devices = graph.get_input_devices()
-        print(f"[OBS] Windows DirectShow 裝置列表：")
-        for idx, name in enumerate(devices):
+    devices = list_dshow_devices()
+    if devices:
+        print("[OBS] Windows DirectShow 裝置列表：")
+        for idx, name in devices:
             print(f"  [index {idx}] {name}")
             if device_name.lower() in name.lower():
                 print(f"[OBS] ✅ 找到 OBS Virtual Camera → index {idx}")
                 return idx
         print(f"[OBS] ❌ 找不到名稱含 '{device_name}' 的 DirectShow 裝置")
-    except Exception as e:
-        print(f"[OBS] pygrabber 不可用 ({e})，將改用 index 掃描")
+    else:
+        print("[OBS] pygrabber 不可用，將改用 index 掃描")
     return -1
 
 
@@ -217,14 +320,20 @@ class OBSVirtualCameraInput(BaseInput):
 
     def _try_open_index(self, index: int) -> bool:
         """Open the camera at a specific numeric index."""
-        backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
-        cap = cv2.VideoCapture(index, backend)
+        if platform.system() == "Windows":
+            for backend in _windows_capture_backends():
+                cap = cv2.VideoCapture(index, backend)
+                if cap.isOpened():
+                    self.capture = cap
+                    return True
+                cap.release()
+            return False
+        cap = cv2.VideoCapture(index, cv2.CAP_ANY)
         if cap.isOpened():
             self.capture = cap
             return True
         cap.release()
         return False
-
     # ------------------------------------------------------------------
     # BaseInput interface
     # ------------------------------------------------------------------
