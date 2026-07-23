@@ -1147,7 +1147,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_tts_emit_ts: float = 0.0    # wall-clock time of last TTS emit (dedup)
         self._tts_protect_until: float = 0.0   # wall-clock deadline: block lower-priority below this time
         self._tts_protected_priority: int = 5  # priority being protected until _tts_protect_until
-        self._post_p1_pending: bool = False     # True while waiting for 1.0s post-P1 silence
+        self._post_p1_pending: bool = False     # True while waiting for 0.5s post-P1 silence
         self._pending_livecc_fragment: Optional[tuple] = None  # truncated "..." fragment awaiting stitching
         from .core.models.result_banner_tracker import ResultBannerTracker
         self._result_banner_tracker = ResultBannerTracker()
@@ -1604,7 +1604,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # protecting its queue position.
     _PRIORITY_DECAY_INTERVAL_SEC = 2.0          # every N sec of staleness, priority worsens by 1
     _TTS_PROTECT_WINDOW_SEC = {1: 6.0, 2: 3.0}  # after sending P1/P2, shield queue position this long
-    _FAST_BLADE_DEDUP_WINDOW_S = 5.0            # suppress repeated P1/P2 triggers for the same event
+    _FAST_BLADE_DEDUP_WINDOW_S = 3.0            # suppress repeated P1/P2 triggers for the same event
     _P3_BACKPRESSURE_WATERMARK_SEC = 2.0        # only feed GeminiWorker while TTS backlog is below this
 
     def _format_segment_ui_line(self, start_t: float, stop_t: float, tag: str, body: str) -> str:
@@ -1703,7 +1703,30 @@ class MainWindow(QtWidgets.QMainWindow):
     @staticmethod
     def _scan_priority(text: str) -> int:
         """Return 1 (P1), 2 (P2), or 3 (P3) based on keyword presence in text."""
+        # An exact referee banner is authoritative.  In particular, attached
+        # lead-in context may contain words such as "no points being scored";
+        # that must never upgrade Out of Bounds! from P2 to P1.
+        cue = result_cue(text)
+        if cue == "score":
+            return 1
+        if cue == "out_of_bounds":
+            return 1
         lower = text.lower()
+        # Remove explicit negative outcome clauses before scanning made-basket
+        # keywords.  The old substring scan classified "no points being scored"
+        # and "does not go in" as critical scoring plays.
+        lower = re.sub(
+            r"\b(?:no|not|never)\b[^.!?\n]{0,32}\b"
+            r"(?:score[sd]?|scoring|go(?:es)? in|went in|make[sd]? it)\b",
+            "",
+            lower,
+        )
+        lower = re.sub(
+            r"\b(?:does|did|do)\s+not\b[^.!?\n]{0,24}\b"
+            r"(?:go through|go in|score|make it)\b",
+            "",
+            lower,
+        )
         for kw in MainWindow._P1_KEYWORDS:
             if kw in lower:
                 return 1
@@ -1740,12 +1763,12 @@ class MainWindow(QtWidgets.QMainWindow):
         return enriched
 
     def _broadcast_tts_allowed(self, data: object) -> bool:
-        """Only speak Gemini broadcast_text, never raw LiveCC — all TTS engines."""
+        """Speak grounded Gemini P1-P4 only; P5 remains visible but silent."""
         if not isinstance(data, dict):
             return False
         if not data.get("broadcast_text"):
             return False
-        return bool(data.get("should_speak", True)) or bool(data.get("_background"))
+        return int(data.get("priority", 5)) <= 4 and bool(data.get("should_speak", False))
 
     def _p1_hard_interrupt(self, already_p1: bool) -> None:
         """Hard-cut current TTS so P1 Gemini commentary can play next."""
@@ -1892,16 +1915,21 @@ class MainWindow(QtWidgets.QMainWindow):
             if tts_text and self._is_duplicate_tts(tts_text, window=self._FAST_BLADE_DEDUP_WINDOW_S):
                 logging.info("[FastBlade] P1 duplicate suppressed: %r", tts_text[:80])
             else:
-                if hasattr(self, "gemini_bg_worker"):
-                    self.gemini_bg_worker.pause()
                 already_p1 = self._is_p1_audio_active()
+                # Only an accepted new P1 owns the pause/resume lifecycle.
+                # Repeated cues inside the P1 guard used to pause background
+                # Gemini and then skip enqueue, leaving no completion signal
+                # or fallback timer capable of resuming it.
+                if not already_p1 and hasattr(self, "gemini_bg_worker"):
+                    self.gemini_bg_worker.pause()
                 self._p1_hard_interrupt(already_p1)
                 if tts_text:
                     self._fast_blade_enqueue_gemini(
                         start_t, stop_t, raw, data,
                         already_p1=already_p1, flush=True,
                     )
-            self.signal_p1_confirmed.emit()
+                if not already_p1:
+                    self.signal_p1_confirmed.emit()
 
         elif fast_priority == 2:
             logging.info("[FastBlade] P2 hit: %r", raw[:80])
@@ -2893,6 +2921,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         result = "Scored!" if cue.kind == "score" else "Out of Bounds!"
         banner = f"{result} {cue.side.title()}" if cue.side else result
+        if (
+            cue.kind == "score"
+            and cue.home_score is not None
+            and cue.away_score is not None
+        ):
+            banner += f" Score: Home {cue.home_score}, Away {cue.away_score}"
         recent_action = next(
             (
                 action
@@ -3429,7 +3463,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # 維持原聲: show captions only — do not speak AI audio locally or to Audience.
             if not getattr(self, "_audience_narration_enabled", True):
                 return
-            if self.tts_mode == "openai" and self._use_gemini and not self._broadcast_tts_allowed(data):
+            if self._use_gemini and not self._broadcast_tts_allowed(data):
                 return
             # P1 scoring plays must always be voiced; only dedup routine commentary.
             if seg_priority > 1 and self._is_duplicate_tts(tts_text):
@@ -3472,7 +3506,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 維持原聲: show captions only — do not speak AI audio locally or to Audience.
         if not getattr(self, "_audience_narration_enabled", True):
             return
-        if self.tts_mode == "openai" and self._use_gemini and not self._broadcast_tts_allowed(data):
+        if self._use_gemini and not self._broadcast_tts_allowed(data):
             return
         # P1 scoring plays must always be voiced; only dedup routine commentary.
         if seg_priority > 1 and self._is_duplicate_tts(tts_text):
@@ -3506,8 +3540,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_p1_fallback_timer") and self._p1_fallback_timer is not None:
                 self._p1_fallback_timer.stop()
                 self._p1_fallback_timer = None
-            QtCore.QTimer.singleShot(1000, self._resume_gemini_background)
-            logging.info("[P1 Silence] TTS done naturally, scheduling 1.0s before Gemini resumes")
+            QtCore.QTimer.singleShot(500, self._resume_gemini_background)
+            logging.info("[P1 Silence] TTS done naturally, scheduling 0.5s before Gemini resumes")
 
     def _arm_p1_fallback_timer(self) -> None:
         """Start a 12s safety timer that force-resumes background if signal_tts_done never fires
@@ -3535,7 +3569,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.gemini_bg_worker, "resume",
                 QtCore.Qt.QueuedConnection,
             )
-            logging.info("[P1 Silence] 1.0s elapsed, Gemini background resumed")
+            logging.info("[P1 Silence] 0.5s elapsed, Gemini background resumed")
 
     @QtCore.Slot()
     def on_finished(self) -> None:

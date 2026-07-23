@@ -8,15 +8,15 @@ import re
 PLAYER_SCORE_TEXT = "The player attacks the basket and scores."
 OPPONENT_SCORE_TEXT = "The robot opponent attacks the basket and scores."
 UNKNOWN_SCORE_TEXT = "A basket is confirmed."
-PLAYER_OOB_CALL_TEXT = "The player sends the ball out of bounds."
-OPPONENT_OOB_CALL_TEXT = "The robot opponent sends the ball out of bounds."
+PLAYER_OOB_CALL_TEXT = "The player sends the ball out of bounds, giving possession to the robot opponent."
+OPPONENT_OOB_CALL_TEXT = "The robot opponent sends the ball out of bounds, giving possession to the player."
 UNKNOWN_OUT_OF_BOUNDS_TEXT = "The ball goes out of bounds and possession resets."
 NEUTRAL_SHOT_TEXT = "The player attacks and releases a shot toward the basket."
 PLAYER_SCORE_TEXT_ZH = "玩家攻向籃框並成功得分。"
 OPPONENT_SCORE_TEXT_ZH = "機器人對手攻向籃框並成功得分。"
 UNKNOWN_SCORE_TEXT_ZH = "畫面確認這次進攻得分。"
-PLAYER_OOB_CALL_TEXT_ZH = "玩家將球弄出界。"
-OPPONENT_OOB_CALL_TEXT_ZH = "機器人對手將球弄出界。"
+PLAYER_OOB_CALL_TEXT_ZH = "玩家將球弄出界，球權轉交機器人對手。"
+OPPONENT_OOB_CALL_TEXT_ZH = "機器人對手將球弄出界，球權轉交玩家。"
 UNKNOWN_OUT_OF_BOUNDS_TEXT_ZH = "球出界，雙方重新準備球權。"
 NEUTRAL_SHOT_TEXT_ZH = "球員攻向籃框並出手。"
 PLAYER_CONTROL_TEXT = "The player protects the ball as the robot opponent applies pressure."
@@ -96,18 +96,20 @@ def _contextual_result_text(cue: str, side: str | None, context: str, zh: bool) 
             return f"{actor_en[0].upper() + actor_en[1:]} drives into the lane and finishes for the score."
         return f"{actor_en[0].upper() + actor_en[1:]} releases the shot and scores."
     if cue == "out_of_bounds" and context:
+        receiver_en = "the robot opponent" if side == "home" else "the player" if side == "away" else ""
+        receiver_zh = "機器人對手" if side == "home" else "玩家" if side == "away" else ""
         if actor_en:
             if zh:
                 if context == "pressure":
-                    return f"{actor_zh}在壓力下進攻，球出了界。"
+                    return f"{actor_zh}在壓力下進攻，球出了界，球權轉交{receiver_zh}。"
                 if context == "drive":
-                    return f"{actor_zh}切入進攻，球出了界。"
-                return f"{actor_zh}出手後，球飛出界外。"
+                    return f"{actor_zh}切入進攻，球出了界，球權轉交{receiver_zh}。"
+                return f"{actor_zh}出手後球飛出界外，球權轉交{receiver_zh}。"
             if context == "pressure":
-                return f"{actor_en[0].upper() + actor_en[1:]} attacks under pressure, and the ball goes out of bounds."
+                return f"{actor_en[0].upper() + actor_en[1:]} attacks under pressure, but the ball goes out of bounds and {receiver_en} takes possession."
             if context == "drive":
-                return f"{actor_en[0].upper() + actor_en[1:]} drives into the lane, and the ball goes out of bounds."
-            return f"{actor_en[0].upper() + actor_en[1:]} releases the shot, and the ball goes out of bounds."
+                return f"{actor_en[0].upper() + actor_en[1:]} drives into the lane, but the ball goes out of bounds and {receiver_en} takes possession."
+            return f"{actor_en[0].upper() + actor_en[1:]} releases the shot, the ball goes out of bounds, and {receiver_en} takes possession."
         if zh:
             lead = "在防守壓力下，球出了界" if context == "pressure" else (
                 "切入過程中球出了界" if context == "drive" else "出手後球出了界"
@@ -158,6 +160,29 @@ def result_side(raw_visual_text: str, cue: str | None = None) -> str | None:
     return side.group(1).lower() if side else None
 
 
+def result_score(raw_visual_text: str) -> tuple[int, int] | None:
+    """Read the session score attached to the latest confirmed score cue."""
+    matches = list(_SCORE_CUE_RE.finditer(raw_visual_text))
+    if not matches:
+        return None
+    nearby = raw_visual_text[matches[-1].end() : matches[-1].end() + 120]
+    score = re.search(
+        r"\bscore\s*:\s*home\s+(\d+)\s*,?\s*away\s+(\d+)\b",
+        nearby,
+        re.IGNORECASE,
+    )
+    return (int(score.group(1)), int(score.group(2))) if score else None
+
+
+def _append_score(text: str, score: tuple[int, int] | None, zh: bool) -> str:
+    if score is None:
+        return text
+    home, away = score
+    if zh:
+        return f"{text.rstrip('。')}。目前比分：玩家 {home}，機器人對手 {away}。"
+    return f"{text.rstrip('.')}. The score is player {home}, robot opponent {away}."
+
+
 def ground_broadcast_text(
     broadcast_text: str, raw_visual_text: str, *, language: str = "en"
 ) -> str:
@@ -193,16 +218,17 @@ def ground_broadcast_text(
     cue = result_cue(raw_visual_text)
     if cue == "score":
         side = result_side(raw_visual_text, cue)
+        score = result_score(raw_visual_text)
         contextual = _contextual_result_text(
             cue, side, _result_context(broadcast_text, raw_visual_text), zh
         )
         if contextual:
-            return contextual
+            return _append_score(contextual, score, zh)
         if side == "home":
-            return PLAYER_SCORE_TEXT_ZH if zh else PLAYER_SCORE_TEXT
+            return _append_score(PLAYER_SCORE_TEXT_ZH if zh else PLAYER_SCORE_TEXT, score, zh)
         if side == "away":
-            return OPPONENT_SCORE_TEXT_ZH if zh else OPPONENT_SCORE_TEXT
-        return UNKNOWN_SCORE_TEXT_ZH if zh else UNKNOWN_SCORE_TEXT
+            return _append_score(OPPONENT_SCORE_TEXT_ZH if zh else OPPONENT_SCORE_TEXT, score, zh)
+        return _append_score(UNKNOWN_SCORE_TEXT_ZH if zh else UNKNOWN_SCORE_TEXT, score, zh)
     if cue == "out_of_bounds":
         side = result_side(raw_visual_text, cue)
         contextual = _contextual_result_text(

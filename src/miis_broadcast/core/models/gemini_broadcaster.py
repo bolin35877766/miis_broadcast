@@ -140,13 +140,14 @@ _VIEW_RELATIONSHIP_CONTEXT = (
     "visible Scored! or Out of Bounds! result as the referee's final ruling, overriding "
     "an inferred physical outcome. Scored! Home means the player scored; Scored! Away "
     "means the robot opponent scored. Out of Bounds! Home means the player sent the ball "
-    "out; Out of Bounds! Away means the robot opponent sent the ball out. State the "
+    "out and the robot opponent gets possession; Out of Bounds! Away means the robot "
+    "opponent sent the ball out and the player gets possession. State the "
     "outcome naturally without mentioning text, a banner, a screen, or a referee. Treat "
     "the result ruling and the next visible ballhandler as separate facts. Identify "
     "possession only from visible dribbling or ball contact. A dribbling robot avatar means "
     "the robot opponent has possession; the third-person player's synchronized dribble "
-    "with foreground first-person hands means the player has possession. Never derive the "
-    "next possession from Home/Away or an out-of-bounds ruling. There are "
+    "with foreground first-person hands means the player has possession. After an "
+    "out-of-bounds ruling, use its Home/Away mapping above for the awarded possession. There are "
     "exactly two competitors, no teammates, passes, or assists. Preserve visible "
     "dribbles, cuts, drives, retreats, backcourt resets, steals, blocks, rebounds, "
     "turnovers, and possession changes; do not collapse them into a shot. Never say "
@@ -301,7 +302,7 @@ def _fallback(event_data: Dict[str, Any]) -> Dict[str, Any]:
         "priority": urgency,
         "broadcast_text": event.replace("_", " "),
         "action_label": event,
-        "should_speak": urgency <= 3,
+        "should_speak": urgency <= 4,
     }
 
 
@@ -451,6 +452,41 @@ def _override_actor_subject(text: str, actor: str) -> str:
 
 
 _PLINE_RE = re.compile(r"^P([1-5]):\s*(.+)$")
+_P5_OFF_COURT_RE = re.compile(
+    r"\b(?:off[- ]court|crowd|cheer(?:s|ing)?|celebrat(?:e[sd]?|ing)|"
+    r"headset|controller|equipment|room|camera|viewer|screen)\b|場外|歡呼|觀眾|設備",
+    re.IGNORECASE,
+)
+_P4_ON_COURT_RE = re.compile(
+    r"\b(?:player|opponent|ball|court|basket|hoop|rim|defender|ballhandler|"
+    r"dribbl\w*|possess\w*|standoff|stand(?:s|ing)?|wait(?:s|ing)?|"
+    r"sizes? up|perimeter|lane|paint|backcourt|half[- ]court)\b|"
+    r"球員|玩家|對手|持球|運球|球場|籃框|防守|對峙|等待",
+    re.IGNORECASE,
+)
+_P4_VISIBLE_ACTION_RE = re.compile(
+    r"\b(?:ballhandler|defender|dribbl\w*|possess\w*|standoff|sizes? up|"
+    r"holds? (?:the )?ball|controls? (?:the )?ball|protects? (?:the )?ball)\b|"
+    r"持球|運球|防守|對峙",
+    re.IGNORECASE,
+)
+
+
+def _ground_priority(priority: int, visual: str) -> int:
+    """Reserve P5 for genuinely off-court/unrelated content.
+
+    A quiet on-court standoff is still useful basketball state and must remain
+    audible as P4.  Pure crowd celebration or equipment/room narration stays P5.
+    """
+    if re.search(r"\b(?:scored\s*!|out\s+of\s+bounds\s*!)", visual, re.IGNORECASE):
+        return 1
+    if priority != 5:
+        return priority
+    if _P4_VISIBLE_ACTION_RE.search(visual):
+        return 4
+    if _P5_OFF_COURT_RE.search(visual):
+        return 5
+    return 4 if _P4_ON_COURT_RE.search(visual) else 5
 
 
 def stream_gemini(event_data: Dict[str, Any]) -> Generator[StreamEvent, None, None]:
@@ -499,8 +535,8 @@ def stream_gemini(event_data: Dict[str, Any]) -> Generator[StreamEvent, None, No
 
         m = _PLINE_RE.match(line)
         if m and ev.priority is None:
-            ev.priority = int(m.group(1))
-            ev.should_speak = ev.priority <= 3
+            ev.priority = _ground_priority(int(m.group(1)), visual)
+            ev.should_speak = ev.priority <= 4
             from .broadcast_grounding import ground_broadcast_text
             actor_grounded = _override_actor_subject(m.group(2).strip(), actor_label)
             ev.broadcast_text = ground_broadcast_text(

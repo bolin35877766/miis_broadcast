@@ -21,10 +21,11 @@ def test_basketball_split_prompt_links_both_views_and_bans_device_story() -> Non
     assert "referee's final ruling" in lower
     assert "scored! away means the robot opponent scored" in lower
     assert "out of bounds! away means the robot opponent sent the ball out" in lower
+    assert "the player gets possession" in lower
     assert "without mentioning text, a banner, a screen or a referee" in lower
     assert "a dribbling robot avatar is the robot opponent" in lower
     assert "third-person player's synchronized dribble" in lower
-    assert "never derive next possession from home/away" in lower
+    assert "use the home/away possession mapping above" in lower
     assert "no teammates or passes" in lower
     assert "never mention views, vr, equipment" in lower
 
@@ -49,7 +50,8 @@ def test_gemini_receives_the_same_relationship_guardrail() -> None:
     assert "scored! away means the robot opponent scored" in lower
     assert "referee's final ruling" in lower
     assert "out of bounds! away means the robot opponent sent the ball out" in lower
+    assert "the player gets possession" in lower
     assert "without mentioning text, a banner, a screen, or a referee" in lower
     assert "dribbling robot avatar means the robot opponent has possession" in lower
     assert "third-person player's synchronized dribble" in lower
-    assert "never derive the next possession from home/away" in lower
+    assert "use its home/away mapping above for the awarded possession" in lower

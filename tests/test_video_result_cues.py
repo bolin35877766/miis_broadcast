@@ -42,6 +42,30 @@ def test_tracker_reads_home_and_away_from_verified_video_frames() -> None:
         cap.release()
 
 
+def test_tracker_reads_scores_from_topmost_ui() -> None:
+    video = Path(__file__).resolve().parents[1] / "examples" / "test_merged.mp4"
+    cap = cv2.VideoCapture(str(video))
+    try:
+        for timestamp, expected in (
+            (72.0, (1, 0)),
+            (112.5, (1, 1)),
+            (173.0, (1, 2)),
+            (264.0, (3, 2)),
+            (312.5, (4, 3)),
+            (349.0, (5, 3)),
+        ):
+            cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
+            ok, frame = cap.read()
+            assert ok
+            gameplay = frame[:, frame.shape[1] // 2 :]
+            assert (
+                ResultBannerTracker._detect_scoreboard(gameplay, is_rgb=False)
+                == expected
+            )
+    finally:
+        cap.release()
+
+
 def test_eval_pipeline_uses_gui_tracker_with_fixed_score_identity() -> None:
     video = Path(__file__).resolve().parents[1] / "examples" / "test_merged.mp4"
     records = _detect_result_banner_records(video)
@@ -55,6 +79,21 @@ def test_eval_pipeline_uses_gui_tracker_with_fixed_score_identity() -> None:
         (293.6, "away"),
         (306.9, "home"),
         (342.2, "home"),
+    ]
+    score_raw = [
+        item["livecc_text"]
+        for item in records
+        if item["result_kind"] == "score"
+    ]
+    assert score_raw == [
+        "Scored! Home Score: Home 1, Away 0",
+        "Scored! Away Score: Home 1, Away 1",
+        "Scored! Away Score: Home 1, Away 2",
+        "Scored! Home Score: Home 2, Away 2",
+        "Scored! Home Score: Home 3, Away 2",
+        "Scored! Away Score: Home 3, Away 3",
+        "Scored! Home Score: Home 4, Away 3",
+        "Scored! Home Score: Home 5, Away 3",
     ]
 
 

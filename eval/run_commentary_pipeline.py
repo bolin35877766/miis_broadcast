@@ -121,6 +121,12 @@ def _detect_result_banner_records(video: Path, *, max_seconds: float = 0.0) -> l
             if cue is not None:
                 result = "Scored!" if cue.kind == "score" else "Out of Bounds!"
                 raw = f"{result} {cue.side.title()}" if cue.side else result
+                if (
+                    cue.kind == "score"
+                    and cue.home_score is not None
+                    and cue.away_score is not None
+                ):
+                    raw += f" Score: Home {cue.home_score}, Away {cue.away_score}"
                 records.append({
                     "event": "result_banner_cue",
                     "start": cue.start,

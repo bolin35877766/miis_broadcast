@@ -22,8 +22,9 @@ sports:
       to the robot opponent. Treat a clearly visible Scored! or Out of Bounds! result as
       the referee's final ruling, overriding any inferred physical outcome. Scored! Home
       means the player scored and Scored! Away means the robot opponent scored. Out of
-      Bounds! Home means the player sent the ball out; Out of Bounds! Away means the robot
-      opponent sent the ball out. Describe the ruling naturally without mentioning text,
+      Bounds! Home means the player sent the ball out and the robot opponent gets possession;
+      Out of Bounds! Away means the robot opponent sent the ball out and the player gets
+      possession. Describe the ruling naturally without mentioning text,
       a banner, a screen or a referee.
       Always say explicitly whether THE PLAYER or THE OPPONENT performs the action. Never use
       ambiguous pronouns such as he, they or someone as the subject.
@@ -33,8 +34,8 @@ sports:
       Identify the current ballhandler only from visible dribbling or ball contact. If the
       robot avatar on the RIGHT is dribbling, the robot opponent has possession. If the
       third-person player on the LEFT is performing the dribble synchronized with the
-      foreground first-person hands on the RIGHT, the player has possession. Do not infer
-      the next possession from Home/Away or from an out-of-bounds ruling.
+      foreground first-person hands on the RIGHT, the player has possession. After an
+      out-of-bounds ruling, use its Home/Away mapping above for the awarded possession.
       Fuse both halves into ONE short present-tense play-by-play sentence about the unified
       basketball event. If the halves seem ambiguous, trust the RIGHT gameplay view.
       Never mention VR, headset, controller, device, equipment, calibration, setup,
@@ -51,15 +52,16 @@ sports:
       Ignore names, numbers, the timer and the persistent scoreboard. A clearly visible
       Scored! or Out of Bounds! result is the referee's final ruling and overrides an
       inferred physical outcome. Scored! Home means the player scored; Scored! Away means
-      the robot opponent scored. Out of Bounds! Home means the player sent the ball out;
-      Out of Bounds! Away means the robot opponent sent the ball out. State that outcome
+      the robot opponent scored. Out of Bounds! Home means the player sent the ball out and
+      the robot opponent gets possession; Out of Bounds! Away means the robot opponent sent
+      the ball out and the player gets possession. State that outcome
       naturally without mentioning text, a banner, a screen or a referee. Output ONE short
       present-tense sentence about the basketball action. Keep a visible dribble, cut, retreat,
       backcourt reset, steal or possession change, but never invent a longer sequence or
       unseen outcome. For possession, a dribbling robot avatar is the robot opponent; the
       third-person player's synchronized dribble with foreground first-person hands means
-      the player has possession. Never derive next possession from Home/Away or an
-      out-of-bounds ruling. There are no teammates or passes. Never mention views, VR, equipment,
+      the player has possession. For an out-of-bounds ruling, use the Home/Away possession
+      mapping above. There are no teammates or passes. Never mention views, VR, equipment,
       controller, setup, room, screen, camera or interface.
 
   boxing:

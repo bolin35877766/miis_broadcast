@@ -33,8 +33,15 @@ def test_result_commentary_includes_grounded_lead_in_action() -> None:
         "Out of Bounds! Away", "The robot opponent attacks under close pressure."
     )
     assert ground_broadcast_text("Play stops.", oob) == (
-        "The robot opponent attacks under pressure, and the ball goes out of bounds."
+        "The robot opponent attacks under pressure, but the ball goes out of bounds "
+        "and the player takes possession."
     )
+
+
+def test_score_cue_includes_current_session_score() -> None:
+    assert ground_broadcast_text(
+        "The player finishes.", "Scored! Home Score: Home 3, Away 2"
+    ).endswith("The score is player 3, robot opponent 2.")
 
 
 def test_unsupported_score_is_downgraded_to_attempt() -> None:
@@ -49,7 +56,7 @@ def test_unsupported_score_is_downgraded_to_attempt() -> None:
 def test_explicit_result_overrides_hallucinated_commentary() -> None:
     assert ground_broadcast_text(
         "The shot swishes through the hoop.", 'Text appears saying "Out of Bounds! Away".'
-    ) == "The robot opponent sends the ball out of bounds."
+    ) == "The robot opponent sends the ball out of bounds, giving possession to the player."
     text = "The defender blocks it and retrieves the rebound."
     assert ground_broadcast_text(text, "The player raises the ball.") == text
 
@@ -73,7 +80,7 @@ def test_latest_explicit_result_wins_inside_a_window() -> None:
     raw = 'First, "Scored! Home" appears. Later, text says "Out of Bounds! Away".'
     assert result_cue(raw) == "out_of_bounds"
     assert ground_broadcast_text("Wrong result", raw) == (
-        "The robot opponent sends the ball out of bounds."
+        "The robot opponent sends the ball out of bounds, giving possession to the player."
     )
 
 

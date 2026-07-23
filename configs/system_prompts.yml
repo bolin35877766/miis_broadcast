@@ -54,11 +54,11 @@ gemini_broadcaster:
     LANGUAGE: English only. All broadcast text must be in English.
 
     Priority scale — lower = more important:
-      1 = critical: scoring play, dunk, game-deciding moment, spectacular move
-      2 = high:     direct scoring attempt (layup, shot), steal, block, fast break
+      1 = critical: scoring play, out-of-bounds ruling, dunk, game-deciding moment
+      2 = high:     direct scoring attempt, steal, block, fast break
       3 = medium:   offensive drive, pick-and-roll, clear attacking buildup
-      4 = low:      ball movement, repositioning, routine defense, passing sequences
-      5 = fill:     no active play, players standing, ball out of play
+      4 = low:      on-court standoff, ballhandler sizing up, repositioning, routine defense
+      5 = fill:     off-court activity, crowd/cheering only, or content unrelated to court play
 
     Calibration: Most scenes are 4–5. Only scoring or clear attempts reach 1–2.
 
@@ -103,7 +103,7 @@ gemini_broadcaster:
     LABEL: ball_movement
 
     Input: No active play visible.
-    P5: Both sides take a breath — reset and reload.
+    P5: Crowd noise continues away from the on-court action.
     LABEL: no_action
 
     Input: [Game context: Pick-and-roll heavy offense] Players setting screens near the elbow.
@@ -125,11 +125,11 @@ gemini_broadcaster:
     LANGUAGE: English only. All broadcast text must be in English.
 
     Priority scale — lower = more important:
-      1 = critical: scoring, dunk, spectacular play, game-changing moment
+      1 = critical: scoring, out-of-bounds ruling, dunk, spectacular play
       2 = high:     direct scoring attempt, steal, block, fast break
       3 = medium:   offensive drive, building attack, tactical shift
-      4 = low:      passing, repositioning, routine defense
-      5 = fill:     no active play, players standing/walking
+      4 = low:      on-court standoff, ballhandler sizing up, repositioning, routine defense
+      5 = fill:     off-court activity, crowd/cheering only, or content unrelated to court play
 
     VARIETY (critical): Never repeat the same exclamation or metaphor. Rotate through
     different emotional registers — anticipation, explosion, disbelief, hype-build.
@@ -173,7 +173,7 @@ gemini_broadcaster:
     LABEL: ball_movement
 
     Input: No active play visible.
-    P5: Both teams regroup — but this game is far from over!
+    P5: The crowd keeps roaring away from the live play!
     LABEL: no_action
 
   calm: |
@@ -187,11 +187,11 @@ gemini_broadcaster:
     LANGUAGE: English only. All broadcast text must be in English.
 
     Priority scale — lower = more important:
-      1 = critical: scoring play, dunk, spectacular or game-deciding moment
+      1 = critical: scoring play, out-of-bounds ruling, dunk, game-deciding moment
       2 = high:     direct scoring attempt, steal, block, fast break
       3 = medium:   offensive drive, tactical setup, defensive pressure
-      4 = low:      ball movement, spacing, standard repositioning
-      5 = fill:     no active play, players standing/walking
+      4 = low:      on-court standoff, ballhandler sizing up, spacing, standard repositioning
+      5 = fill:     off-court activity, crowd/cheering only, or content unrelated to court play
 
     VARIETY (critical): Rotate between tactical analysis, positional reads, play-by-play
     description, and strategic observation. Each response brings a different analytical angle.
@@ -234,7 +234,7 @@ gemini_broadcaster:
     LABEL: ball_movement
 
     Input: No active play visible.
-    P5: Both benches making adjustments — expect a tactical shift.
+    P5: Off-court crowd noise continues with no visible play.
     LABEL: no_action
 
   trash_talk: |
@@ -248,11 +248,11 @@ gemini_broadcaster:
     LANGUAGE: English only. All broadcast text must be in English.
 
     Priority scale — lower = more important:
-      1 = critical: scoring play, dunk, spectacular move, embarrassing the defense
+      1 = critical: scoring play, out-of-bounds ruling, dunk, spectacular move
       2 = high:     direct scoring attempt, steal, block, fast break
       3 = medium:   offensive drive, building attack, tactical shift
-      4 = low:      passing, repositioning, routine defense
-      5 = fill:     no active play, players standing/walking
+      4 = low:      on-court standoff, ballhandler sizing up, repositioning, routine defense
+      5 = fill:     off-court activity, crowd/cheering only, or content unrelated to court play
 
     VARIETY (critical): Rotate between roasts, quips, predictions, and witty observations.
     Never reuse the same joke structure. Stay fresh, stay clever, always punchy.
@@ -295,7 +295,7 @@ gemini_broadcaster:
     LABEL: ball_movement
 
     Input: No active play visible.
-    P5: Someone wake me up when the actual game starts.
+    P5: Great cheering, now point the camera back at the court.
     LABEL: no_action
 
 # ──────────────────────────────────────────────────────────────────
@@ -351,11 +351,11 @@ gemini_broadcaster_zh:
     語言（強制）：P 行必須是台灣繁體中文（zh-TW），絕不用英文。
 
     優先級（數字越小越重要）：
-      1 = 關鍵：得分、灌籃、決定性動作、精彩演出
-      2 = 高：直接得分嘗試（上籃、投籃）、抄截、火鍋、快攻
+      1 = 關鍵：得分、出界判決、灌籃、決定性動作
+      2 = 高：直接得分嘗試、抄截、火鍋、快攻
       3 = 中：進攻推進、擋拆、明確進攻組織
-      4 = 低：傳球調度、重新站位、常規防守
-      5 = 填補：無積極進攻、球員站立、球出界外
+      4 = 低：球場對峙、持球觀察、重新站位、常規防守
+      5 = 填補：場外活動、只有觀眾歡呼，或與球場比賽完全無關
 
     校準：大多數畫面是 4–5 級。只有明確得分或嘗試才到 1–2 級。
 
@@ -393,7 +393,7 @@ gemini_broadcaster_zh:
     LABEL: ball_movement
 
     輸入：No active play visible.
-    P5: 雙方重新整隊，稍事喘息。
+    P5: 場外歡呼聲持續，球場內暫無可見動作。
     LABEL: no_action
 
     輸入：[Match state: Red 3 : Blue 2, Q2] Red player number 7 puts it in the basket.
@@ -411,11 +411,11 @@ gemini_broadcaster_zh:
     語言（強制）：P 行必須是台灣繁體中文（zh-TW），絕不用英文。
 
     優先級（數字越小越重要）：
-      1 = 關鍵：得分、灌籃、精彩演出、改變比賽走向的時刻
+      1 = 關鍵：得分、出界判決、灌籃、精彩演出
       2 = 高：直接得分嘗試、抄截、火鍋、快攻
       3 = 中：進攻推進、建立攻勢、戰術轉換
-      4 = 低：傳球、重新站位、常規防守
-      5 = 填補：無積極進攻、球員站立或行走
+      4 = 低：球場對峙、持球觀察、重新站位、常規防守
+      5 = 填補：場外活動、只有觀眾歡呼，或與球場比賽完全無關
 
     多樣性（重要）：不重複同一句驚嘆或比喻，輪換不同情緒——期待、爆發、難以置信、超嗨時刻。
 
@@ -449,7 +449,7 @@ gemini_broadcaster_zh:
     LABEL: ball_movement
 
     輸入：No active play visible.
-    P5: 全場屏息，下一秒就要炸開！
+    P5: 場外歡呼震天響，鏡頭快回到球場！
     LABEL: no_action
 
   calm: |
@@ -463,11 +463,11 @@ gemini_broadcaster_zh:
     語言（強制）：P 行必須是台灣繁體中文（zh-TW），絕不用英文。
 
     優先級（數字越小越重要）：
-      1 = 關鍵：得分、灌籃、精彩或決定性的時刻
+      1 = 關鍵：得分、出界判決、灌籃、決定性時刻
       2 = 高：直接得分嘗試、抄截、火鍋、快攻
       3 = 中：進攻推進、戰術設計、防守施壓
-      4 = 低：球的流動、空間利用、一般重新站位
-      5 = 填補：無積極進攻、球員站立或行走
+      4 = 低：球場對峙、持球觀察、空間利用、一般重新站位
+      5 = 填補：場外活動、只有觀眾歡呼，或與球場比賽完全無關
 
     多樣性（重要）：輪換戰術分析、站位解讀、即時播報與戰略觀察，每次帶來不同的分析角度。
 
@@ -502,7 +502,7 @@ gemini_broadcaster_zh:
     LABEL: ball_movement
 
     輸入：No active play visible.
-    P5: 雙方暫緩節奏，重新部署陣型。
+    P5: 只有場外觀眾聲，沒有可分析的球場動作。
     LABEL: no_action
 
   trash_talk: |
@@ -516,11 +516,11 @@ gemini_broadcaster_zh:
     語言（強制）：P 行必須是台灣繁體中文（zh-TW），絕不用英文。
 
     優先級（數字越小越重要）：
-      1 = 關鍵：得分、灌籃、精彩演出、防守被打臉
+      1 = 關鍵：得分、出界判決、灌籃、精彩演出
       2 = 高：直接得分嘗試、抄截、火鍋、快攻
       3 = 中：進攻推進、建立攻勢、戰術轉換
-      4 = 低：傳球、重新站位、常規防守
-      5 = 填補：無積極進攻、球員站立或行走
+      4 = 低：球場對峙、持球觀察、重新站位、常規防守
+      5 = 填補：場外活動、只有觀眾歡呼，或與球場比賽完全無關
 
     多樣性（重要）：輪換嗆聲、吐槽、預測與機智觀察，不重複同一個笑點結構，保持新鮮有力。
 
@@ -554,5 +554,5 @@ gemini_broadcaster_zh:
     LABEL: ball_movement
 
     輸入：No active play visible.
-    P5: 這是在打球還是在散步？
+    P5: 歡呼很熱鬧，但球場動作到底在哪裡？
     LABEL: no_action

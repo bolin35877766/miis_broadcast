@@ -31,14 +31,14 @@ gemini:
 inference:
   # Gemini bg-worker can repeat the same line every ~1s; 15s window prevents
   # the same broadcast text from being sent to TTS more than once per segment.
-  dedup_window_s: 15.0
+  dedup_window_s: 3.0
   dedup_threshold: 0.85
   max_pending: 400
 
 # Remote inference (set client_only: false to load LiveCC locally)
 remote:
   enabled: true
-  client_only: true
+  client_only: false
   host: 127.0.0.1
   port: 9000
 

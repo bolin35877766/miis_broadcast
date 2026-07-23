@@ -24,8 +24,24 @@ def test_grounding_uses_active_output_language() -> None:
 def test_result_banner_maps_home_to_player_and_away_to_robot() -> None:
     assert ground_broadcast_text("Score!", "Scored!\nHome") == "The player attacks the basket and scores."
     assert ground_broadcast_text("Score!", "Scored! Away") == "The robot opponent attacks the basket and scores."
-    assert ground_broadcast_text("Out", "Out of Bounds! Home") == "The player sends the ball out of bounds."
-    assert ground_broadcast_text("Out", "Out of Bounds! Away") == "The robot opponent sends the ball out of bounds."
+    assert ground_broadcast_text("Out", "Out of Bounds! Home") == (
+        "The player sends the ball out of bounds, giving possession to the robot opponent."
+    )
+    assert ground_broadcast_text("Out", "Out of Bounds! Away") == (
+        "The robot opponent sends the ball out of bounds, giving possession to the player."
+    )
+
+
+def test_confirmed_score_announces_the_updated_session_score() -> None:
+    assert ground_broadcast_text(
+        "Score!", "Scored! Home Score: Home 2, Away 1"
+    ) == (
+        "The player attacks the basket and scores. "
+        "The score is player 2, robot opponent 1."
+    )
+    assert ground_broadcast_text(
+        "得分！", "Scored! Away Score: Home 2, Away 2", language="zh"
+    ) == "機器人對手攻向籃框並成功得分。目前比分：玩家 2，機器人對手 2。"
 
 
 def test_result_cues_require_the_exact_banner_words_and_exclamation() -> None:
@@ -46,7 +62,8 @@ def test_result_commentary_uses_prior_visible_action_context() -> None:
         "Out of Bounds! Away", "The robot opponent drives into the lane."
     )
     assert ground_broadcast_text("Play stops.", oob) == (
-        "The robot opponent drives into the lane, and the ball goes out of bounds."
+        "The robot opponent drives into the lane, but the ball goes out of bounds "
+        "and the player takes possession."
     )
 
 
@@ -55,10 +72,11 @@ def test_pressure_out_of_bounds_names_the_attacking_side_naturally() -> None:
         "Out of Bounds! Home", "The player attacks against close defensive pressure."
     )
     assert ground_broadcast_text("Play stops.", raw) == (
-        "The player attacks under pressure, and the ball goes out of bounds."
+        "The player attacks under pressure, but the ball goes out of bounds "
+        "and the robot opponent takes possession."
     )
     assert ground_broadcast_text("停止比賽。", raw, language="zh") == (
-        "玩家在壓力下進攻，球出了界。"
+        "玩家在壓力下進攻，球出了界，球權轉交機器人對手。"
     )
 
 

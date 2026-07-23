@@ -11,6 +11,7 @@ def test_background_loop_yields_to_queued_context(monkeypatch):
     """The polling scheduler must not starve update_context queued signals."""
     app = QtCore.QCoreApplication.instance() or QtCore.QCoreApplication([])
     worker = GeminiBackgroundWorker(get_remaining_sec_fn=lambda: 0.0)
+    worker._initialized = True
     worker.POLL_INTERVAL_MS = 10
     worker.MIN_FIRE_INTERVAL_SEC = 0.0
     worker._build_context = lambda: {"event": "fresh context"}

@@ -159,9 +159,9 @@ class GeminiWorker(QtCore.QObject):
                     return
 
                 if not priority_emitted and ev.priority is not None:
-                    ev.should_speak = True  # always speak: every LiveCC segment gets voiced
+                    ev.should_speak = ev.priority <= 4
                     self.signal_priority.emit(
-                        start_t, stop_t, ev.priority, True
+                        start_t, stop_t, ev.priority, bool(ev.should_speak)
                     )
                     priority_emitted = True
 
@@ -170,7 +170,7 @@ class GeminiWorker(QtCore.QObject):
                         ev.broadcast_text, raw_visual, language=get_language()
                     )
                     result = ev.to_dict()
-                    result["should_speak"] = True  # override: direct LiveCC feed always speaks
+                    result["should_speak"] = bool(ev.should_speak)
                     result["_enqueue_ts"] = enqueue_ts
                     self.signal_broadcast.emit(start_t, stop_t, result)
                     broadcast_emitted = True
@@ -196,7 +196,7 @@ class GeminiBackgroundWorker(QtCore.QObject):
     Gemini API (~300-500ms/call) outpaces TTS playback (~3-4s/sentence).
 
     Pause/resume: P1 events call pause() to halt the loop; after the mandatory
-    1.0s post-interrupt silence, resume() re-enables it.
+    0.5s post-interrupt silence, resume() re-enables it.
 
     Thread safety: _paused and _abort_current are bool flags (CPython GIL-safe
     for single assignment). _context_pool writes arrive via update_context() Slot
@@ -222,7 +222,10 @@ class GeminiBackgroundWorker(QtCore.QObject):
         self._paused: bool = False
         self._initialized: bool = False
         self._context_pool: deque = deque(maxlen=4)
+        self._context_version: int = 0
+        self._last_fired_context_version: int = -1
         self._last_fire_t: float = 0.0
+        self._poll_timer: Optional[QtCore.QTimer] = None
 
     @QtCore.Slot()
     def initialize(self) -> None:
@@ -237,59 +240,80 @@ class GeminiBackgroundWorker(QtCore.QObject):
 
     @QtCore.Slot()
     def run_background_loop(self) -> None:
-        """Main continuous loop. Start via QueuedConnection after initialize()."""
+        """Start non-blocking polling in the worker thread.
+
+        A permanent while/msleep loop here used to starve this object's queued
+        update_context(), pause(), and resume() slots.  It also fired once with
+        empty "Game in progress" context and consumed the first 8-second
+        throttle window.  QTimer keeps the thread event loop available.
+        """
+        self._stop_requested = False
+        self._paused = False
+        self._last_fire_t = 0.0
+        self._last_fired_context_version = -1
+        if self._poll_timer is None:
+            self._poll_timer = QtCore.QTimer(self)
+            self._poll_timer.setInterval(self.POLL_INTERVAL_MS)
+            self._poll_timer.timeout.connect(self._poll_once)
+        else:
+            self._poll_timer.setInterval(self.POLL_INTERVAL_MS)
+        self._poll_timer.start()
         logging.info("[GeminiBackgroundWorker] Background loop started")
-        while not self._stop_requested:
-            if self._paused:
-                QtCore.QThread.msleep(self.POLL_INTERVAL_MS)
-                continue
 
-            # Hard floor: prevent rapid re-firing due to async QueuedConnection lag
-            now = time.time()
-            if now - self._last_fire_t < self.MIN_FIRE_INTERVAL_SEC:
-                QtCore.QThread.msleep(self.POLL_INTERVAL_MS)
-                continue
+    @QtCore.Slot()
+    def _poll_once(self) -> None:
+        if self._stop_requested:
+            if self._poll_timer is not None:
+                self._poll_timer.stop()
+            logging.info("[GeminiBackgroundWorker] Background loop stopped")
+            return
+        if self._paused or not self._initialized:
+            return
+        # Never spend the first throttle window on synthetic empty context.
+        if not self._context_pool:
+            return
+        # Do not rebroadcast unchanged context every eight seconds.
+        if self._context_version == self._last_fired_context_version:
+            return
 
-            remaining = self._get_remaining_sec()
-            if remaining > self.WATERMARK_SEC:
-                QtCore.QThread.msleep(self.POLL_INTERVAL_MS)
-                continue
+        now = time.time()
+        if now - self._last_fire_t < self.MIN_FIRE_INTERVAL_SEC:
+            return
+        remaining = self._get_remaining_sec()
+        if remaining > self.WATERMARK_SEC:
+            return
 
-            self._abort_current = False
-            context = self._build_context()
-            t_now = time.time()
-            self._last_fire_t = t_now
+        self._abort_current = False
+        context = self._build_context()
+        t_now = time.time()
+        self._last_fire_t = t_now
+        self._last_fired_context_version = self._context_version
 
-            final_ev = None
-            try:
-                from ..core.models.gemini_broadcaster import stream_gemini
-                for ev in stream_gemini(context):
-                    if self._abort_current or self._stop_requested:
-                        logging.info("[GeminiBackgroundWorker] Stream aborted mid-way")
-                        break
-                    if ev.broadcast_text:
-                        final_ev = ev
-                if final_ev and not self._abort_current and not self._stop_requested:
-                    from ..core.models.broadcast_grounding import ground_broadcast_text
-                    from ..core.models.gemini_broadcaster import get_language
-                    final_ev.broadcast_text = ground_broadcast_text(
-                        final_ev.broadcast_text or "",
-                        context.get("event", ""),
-                        language=get_language(),
-                    )
-                    result = final_ev.to_dict()
-                    result["_enqueue_ts"] = t_now
-                    result["should_speak"] = True
-                    result["_background"] = True  # wall-clock timestamp, not video-relative
-                    self.signal_broadcast.emit(t_now, t_now, result)
-            except Exception as e:
-                logging.exception("[GeminiBackgroundWorker] stream_gemini error")
-                self.signal_error.emit(str(e))
-
-            if not self._abort_current and not self._stop_requested:
-                QtCore.QThread.msleep(self.INTER_SENTENCE_MS)
-
-        logging.info("[GeminiBackgroundWorker] Background loop stopped")
+        final_ev = None
+        try:
+            from ..core.models.gemini_broadcaster import stream_gemini
+            for ev in stream_gemini(context):
+                if self._abort_current or self._stop_requested:
+                    logging.info("[GeminiBackgroundWorker] Stream aborted mid-way")
+                    break
+                if ev.broadcast_text:
+                    final_ev = ev
+            if final_ev and not self._abort_current and not self._stop_requested:
+                from ..core.models.broadcast_grounding import ground_broadcast_text
+                from ..core.models.gemini_broadcaster import get_language
+                final_ev.broadcast_text = ground_broadcast_text(
+                    final_ev.broadcast_text or "",
+                    context.get("event", ""),
+                    language=get_language(),
+                )
+                result = final_ev.to_dict()
+                result["_enqueue_ts"] = t_now
+                result["should_speak"] = bool(final_ev.should_speak)
+                result["_background"] = True
+                self.signal_broadcast.emit(t_now, t_now, result)
+        except Exception as e:
+            logging.exception("[GeminiBackgroundWorker] stream_gemini error")
+            self.signal_error.emit(str(e))
 
     def _build_context(self) -> dict:
         from ..core.models.gemini_broadcaster import _get_match_state
@@ -334,8 +358,15 @@ class GeminiBackgroundWorker(QtCore.QObject):
     def update_context(self, description: object) -> None:
         """Receive LiveCC P3 description via signal_livecc_context (QueuedConnection)."""
         self._context_pool.append(description)
+        self._context_version += 1
 
     @QtCore.Slot()
     def requestStop(self) -> None:
         self._abort_current = True
         self._stop_requested = True
+        self._context_pool.clear()
+        if (
+            self._poll_timer is not None
+            and QtCore.QThread.currentThread() is self.thread()
+        ):
+            self._poll_timer.stop()

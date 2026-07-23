@@ -7,6 +7,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from miis_broadcast.workers.gemini import GeminiBackgroundWorker
+from miis_broadcast.core.models.gemini_broadcaster import _ground_priority
 from miis_broadcast.gui import MainWindow
 
 
@@ -47,3 +48,92 @@ def test_gui_attaches_nearest_frames_only_to_routine_action() -> None:
         "Scored! Home",
     )
     assert "actor_frames_jpeg" not in result["metadata"]
+
+
+def test_priority_policy_speaks_p4_but_keeps_p5_silent() -> None:
+    p4 = {"priority": 4, "broadcast_text": "The player resets.", "should_speak": True}
+    p5 = {"priority": 5, "broadcast_text": "Both players wait.", "should_speak": False}
+    assert MainWindow._broadcast_tts_allowed(None, p4)
+    assert not MainWindow._broadcast_tts_allowed(None, p5)
+    # A stale/incorrect should_speak flag must not bypass the hard P5 guard.
+    assert not MainWindow._broadcast_tts_allowed(None, dict(p5, should_speak=True))
+
+
+def test_p5_is_reserved_for_off_court_or_unrelated_content() -> None:
+    assert _ground_priority(5, "The player and robot opponent stand in a standoff.") == 4
+    assert _ground_priority(5, "The ballhandler waits at the perimeter.") == 4
+    assert _ground_priority(5, "The crowd is cheering away from the court.") == 5
+    assert _ground_priority(5, "A person adjusts equipment in the room.") == 5
+    assert _ground_priority(5, "An unrelated indoor scene.") == 5
+
+
+def test_fast_dedup_and_out_of_bounds_priority_are_configured() -> None:
+    assert MainWindow._FAST_BLADE_DEDUP_WINDOW_S == 3.0
+    assert MainWindow._scan_priority("Out of Bounds! Away") == 1
+    root = Path(__file__).resolve().parents[1]
+    assert "dedup_window_s: 3.0" in (root / "configs" / "app.yml").read_text()
+    prompts = (root / "configs" / "system_prompts.yml").read_text()
+    assert "scoring play, out-of-bounds ruling" in prompts
+    assert "得分、出界判決" in prompts
+    assert prompts.count("on-court standoff") == 4
+    assert prompts.count("球場對峙") == 4
+    assert prompts.count("off-court activity, crowd/cheering only") == 4
+    assert prompts.count("場外活動、只有觀眾歡呼") == 4
+
+
+def test_referee_cue_wins_over_negative_scoring_lead_in() -> None:
+    assert MainWindow._scan_priority(
+        "Previous visible action: no points being scored.\nOut of Bounds! Home"
+    ) == 1
+    assert MainWindow._scan_priority("The shot does not go through.") == 3
+    assert MainWindow._scan_priority("No points are scored on the attempt.") == 3
+    assert MainWindow._scan_priority("Scored! Away") == 1
+
+
+class _CounterSignal:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def emit(self, *_args) -> None:
+        self.calls += 1
+
+
+class _PauseCounter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def pause(self) -> None:
+        self.calls += 1
+
+
+def test_repeated_guarded_p1_does_not_pause_background_again() -> None:
+    background = _PauseCounter()
+    confirmed = _CounterSignal()
+    routed = []
+    fake = SimpleNamespace(
+        _use_gemini=True,
+        _ensure_log_dir=lambda: None,
+        _recent_basketball_actions=deque(),
+        _with_actor_frames=lambda data, *_args: data,
+        _pending_livecc_fragment=None,
+        _scan_priority=MainWindow._scan_priority,
+        _write_log=lambda *_args: None,
+        _fmt_time=lambda value: f"{value:.1f}",
+        _FAST_BLADE_DEDUP_WINDOW_S=3.0,
+        livecc_log_file=Path("/tmp/unused.log"),
+        mode="camera",
+        _is_duplicate_tts=lambda *_args, **_kwargs: False,
+        _is_p1_audio_active=lambda: True,
+        _p1_hard_interrupt=lambda already: routed.append(("interrupt", already)),
+        _fast_blade_enqueue_gemini=lambda *_args, **kwargs: routed.append(
+            ("enqueue", kwargs["already_p1"])
+        ),
+        gemini_bg_worker=background,
+        signal_p1_confirmed=confirmed,
+    )
+    MainWindow._route_segment(
+        fake, 10.0, 11.0, {"event": "raw_description", "metadata": {"raw": "Scored! Home"}}
+    )
+    assert background.calls == 0
+    assert confirmed.calls == 0
+    assert routed == [("interrupt", True), ("enqueue", True)]

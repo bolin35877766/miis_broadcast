@@ -23,8 +23,8 @@ NEUTRAL_SHOT_TEXT = "The player attacks and releases a shot toward the basket."
 PLAYER_SCORE_TEXT = "The player attacks the basket and scores."
 OPPONENT_SCORE_TEXT = "The robot opponent attacks the basket and scores."
 UNKNOWN_SCORE_TEXT = "A basket is confirmed."
-PLAYER_OOB_CALL_TEXT = "The player sends the ball out of bounds."
-OPPONENT_OOB_CALL_TEXT = "The robot opponent sends the ball out of bounds."
+PLAYER_OOB_CALL_TEXT = "The player sends the ball out of bounds, giving possession to the robot opponent."
+OPPONENT_OOB_CALL_TEXT = "The robot opponent sends the ball out of bounds, giving possession to the player."
 UNKNOWN_OUT_OF_BOUNDS_TEXT = "The ball goes out of bounds and possession resets."
 NEUTRAL_CONTROL_TEXT = "The player controls the ball under pressure."
 _PRESSURE_CONTEXT_RE = re.compile(
@@ -69,12 +69,13 @@ def _contextual_result_text(cue: str, side: str | None, context: str) -> str | N
             return f"{actor[0].upper() + actor[1:]} drives into the lane and finishes for the score."
         return f"{actor[0].upper() + actor[1:]} releases the shot and scores."
     if cue == "out_of_bounds" and context:
+        receiver = "the robot opponent" if side == "home" else "the player" if side == "away" else ""
         if actor:
             if context == "pressure":
-                return f"{actor[0].upper() + actor[1:]} attacks under pressure, and the ball goes out of bounds."
+                return f"{actor[0].upper() + actor[1:]} attacks under pressure, but the ball goes out of bounds and {receiver} takes possession."
             if context == "drive":
-                return f"{actor[0].upper() + actor[1:]} drives into the lane, and the ball goes out of bounds."
-            return f"{actor[0].upper() + actor[1:]} releases the shot, and the ball goes out of bounds."
+                return f"{actor[0].upper() + actor[1:]} drives into the lane, but the ball goes out of bounds and {receiver} takes possession."
+            return f"{actor[0].upper() + actor[1:]} releases the shot, the ball goes out of bounds, and {receiver} takes possession."
         lead = "Under defensive pressure, the ball goes out of bounds" if context == "pressure" else (
             "The drive ends with the ball going out of bounds" if context == "drive"
             else "After the shot attempt, the ball goes out of bounds"
@@ -109,6 +110,26 @@ def result_side(raw_visual_text: str, cue: str | None = None) -> str | None:
     return side.group(1).lower() if side else None
 
 
+def result_score(raw_visual_text: str) -> tuple[int, int] | None:
+    matches = list(_SCORE_CUE_RE.finditer(raw_visual_text))
+    if not matches:
+        return None
+    nearby = raw_visual_text[matches[-1].end() : matches[-1].end() + 120]
+    score = re.search(
+        r"\bscore\s*:\s*home\s+(\d+)\s*,?\s*away\s+(\d+)\b",
+        nearby,
+        re.IGNORECASE,
+    )
+    return (int(score.group(1)), int(score.group(2))) if score else None
+
+
+def _append_score(text: str, score: tuple[int, int] | None) -> str:
+    if score is None:
+        return text
+    home, away = score
+    return f"{text.rstrip('.')}. The score is player {home}, robot opponent {away}."
+
+
 def ground_broadcast_text(broadcast_text: str, raw_visual_text: str) -> str:
     """Make outcome wording agree with the latest explicit visual result banner."""
     broadcast_text = re.sub(
@@ -127,10 +148,12 @@ def ground_broadcast_text(broadcast_text: str, raw_visual_text: str) -> str:
     cue = result_cue(raw_visual_text)
     if cue == "score":
         side = result_side(raw_visual_text, cue)
+        score = result_score(raw_visual_text)
         contextual = _contextual_result_text(cue, side, _result_context(broadcast_text, raw_visual_text))
         if contextual:
-            return contextual
-        return PLAYER_SCORE_TEXT if side == "home" else OPPONENT_SCORE_TEXT if side == "away" else UNKNOWN_SCORE_TEXT
+            return _append_score(contextual, score)
+        base = PLAYER_SCORE_TEXT if side == "home" else OPPONENT_SCORE_TEXT if side == "away" else UNKNOWN_SCORE_TEXT
+        return _append_score(base, score)
     if cue == "out_of_bounds":
         side = result_side(raw_visual_text, cue)
         contextual = _contextual_result_text(cue, side, _result_context(broadcast_text, raw_visual_text))
