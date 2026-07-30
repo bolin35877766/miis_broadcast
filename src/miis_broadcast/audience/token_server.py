@@ -45,20 +45,32 @@ class AudienceTokenServer:
         self._lan_hint_host = (lan_hint_host or "").strip() or None
         self._server: Optional[Any] = None  # uvicorn.Server, imported lazily
         self._thread: Optional[threading.Thread] = None
-        # When False ("維持原聲"), audience page must hide the cat avatar.
+        # When False ("維持原聲"), the audience page plays original audio instead
+        # of AI narration. The cat avatar is hidden in that mode regardless.
         self._narration_enabled = True
+        # Independent operator switch for the cat mascot itself.
+        self._mascot_enabled = True
         self._state_lock = threading.Lock()
 
     # ── Public API ────────────────────────────────────────────────────────
 
     def set_narration_enabled(self, enabled: bool) -> None:
-        """Operator toggle: AI narration on → avatar shown; off → avatar hidden."""
+        """Operator toggle: AI narration on → audience hears TTS; off → original audio."""
         with self._state_lock:
             self._narration_enabled = bool(enabled)
 
     def get_narration_enabled(self) -> bool:
         with self._state_lock:
             return self._narration_enabled
+
+    def set_mascot_enabled(self, enabled: bool) -> None:
+        """Operator toggle for the cat mascot, independent of the audio mode."""
+        with self._state_lock:
+            self._mascot_enabled = bool(enabled)
+
+    def get_mascot_enabled(self) -> bool:
+        with self._state_lock:
+            return self._mascot_enabled
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -143,14 +155,18 @@ class AudienceTokenServer:
                     "url": self._livekit_url,
                     "token": token,
                     "narration_enabled": self.get_narration_enabled(),
+                    "mascot_enabled": self.get_mascot_enabled(),
                 }
             )
 
         @app.get("/api/audience/status")
         async def status():
-            """Pollable mode flag so late joiners / missed data packets stay in sync."""
+            """Pollable mode flags so late joiners / missed data packets stay in sync."""
             return JSONResponse(
-                {"narration_enabled": self.get_narration_enabled()}
+                {
+                    "narration_enabled": self.get_narration_enabled(),
+                    "mascot_enabled": self.get_mascot_enabled(),
+                }
             )
 
         config = uvicorn.Config(

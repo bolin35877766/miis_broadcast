@@ -42,10 +42,10 @@ log = logging.getLogger(__name__)
 def _camera_infer_cfg() -> Dict[str, float]:
     """Load live clip params from models.yml (same keys as GUI LiveCCCameraWorker)."""
     defaults = {
-        "window_sec": 1.33,
-        "target_fps": 3.0,
-        "infer_interval": 1.33,
-        "memory_reset_every": 8.0,
+        "window_sec": 1.0,
+        "target_fps": 2.0,
+        "infer_interval": 1.0,
+        "memory_reset_every": 24.0,
     }
     try:
         from ..core.utils.config import load_models_config

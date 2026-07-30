@@ -249,8 +249,11 @@
   let avatarComposerRaf = null;
   let lastAvatarPaintTs = 0;
   let avatarDisabled = false; // set true when video asset is missing (404)
-  // Operator "啟用播報" vs "維持原聲": avatar only when narration is on.
+  // Operator "啟用播報" vs "維持原聲": drives lip-sync and which audio is sent.
   let narrationEnabled = true;
+  // Operator's separate mascot switch. The cat needs BOTH: it has nothing to
+  // lip-sync to while the audience is hearing original game audio.
+  let mascotEnabled = true;
   let statusPollTimer = null;
 
   avatarSrc.addEventListener("loadeddata", () => {
@@ -568,9 +571,9 @@
     audioEls.set(tname, audioEl);
     audioEl.play().catch(() => {});
     console.log("[AUDIO] subscribed:", tname, "total:", audioEls.size,
-                "narration=", narrationEnabled);
-    // Lip-sync analyser only when AI narration (cat) is visible.
-    if (narrationEnabled && track.mediaStreamTrack) {
+                "narration=", narrationEnabled, "mascot=", mascotEnabled);
+    // Lip-sync analyser only when the cat is actually visible.
+    if (mascotShouldShow() && track.mediaStreamTrack) {
       initAnalyser(track.mediaStreamTrack);
     }
   }
@@ -595,14 +598,20 @@
     });
   }
 
-  function applyNarrationEnabled(enabled) {
-    narrationEnabled = !!enabled;
+  function mascotShouldShow() {
+    return narrationEnabled && mascotEnabled;
+  }
+
+  function applyAudienceMode(narration, mascot) {
+    narrationEnabled = !!narration;
+    mascotEnabled = !!mascot;
+    const showCat = mascotShouldShow();
     if (statusBar.classList.contains("visible")) {
-      setAvatarVisible(narrationEnabled);
+      setAvatarVisible(showCat);
     }
     // Keep playing the audio track in both modes (AI vs original).
-    // Only the cat mascot / lip-sync follows narrationEnabled.
-    if (!narrationEnabled) {
+    // Only the cat mascot / lip-sync follows these flags.
+    if (!showCat) {
       if (analyser) { analyser.disconnect(); analyser = null; }
       timeDomain = null;
       emaRms = 0;
@@ -618,7 +627,7 @@
     overlay.classList.add("hidden");
     statusBar.classList.add("visible");
     controls.style.display = "flex";
-    setAvatarVisible(narrationEnabled);
+    setAvatarVisible(mascotShouldShow());
     stateDot.className = "dot live";
     stateText.textContent = "直播中";
   }
@@ -660,7 +669,10 @@
       if (!res.ok) throw new Error(`join failed: ${res.status}`);
       const joinInfo = await res.json();
       const { url, token } = joinInfo;
-      applyNarrationEnabled(joinInfo.narration_enabled !== false);
+      applyAudienceMode(
+        joinInfo.narration_enabled !== false,
+        joinInfo.mascot_enabled !== false,
+      );
 
       setStatus("連線中…");
 
@@ -694,13 +706,13 @@
         }
       });
 
-      // Operator toggles 啟用播報 / 維持原聲 → hide/show cat avatar live.
+      // Operator toggles 啟用播報 / 維持原聲 or the mascot switch → apply live.
       room.on(RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
         if (topic && topic !== "audience_mode") return;
         try {
           const msg = JSON.parse(new TextDecoder().decode(payload));
           if (msg && msg.type === "audience_mode") {
-            applyNarrationEnabled(!!msg.narration_enabled);
+            applyAudienceMode(!!msg.narration_enabled, msg.mascot_enabled !== false);
           }
         } catch (e) {
           console.warn("[AUDIENCE] bad mode packet:", e);
@@ -725,7 +737,10 @@
           if (!r.ok) return;
           const j = await r.json();
           if (typeof j.narration_enabled === "boolean") {
-            applyNarrationEnabled(j.narration_enabled);
+            applyAudienceMode(
+              j.narration_enabled,
+              typeof j.mascot_enabled === "boolean" ? j.mascot_enabled : mascotEnabled,
+            );
           }
         } catch (_) { /* ignore */ }
       }, 2000);

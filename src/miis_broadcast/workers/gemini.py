@@ -149,7 +149,7 @@ class GeminiWorker(QtCore.QObject):
         api_start = time.time()
         raw_visual = data.get("metadata", {}).get("raw") or data.get("event", "")
         try:
-            from ..core.models.gemini_broadcaster import get_language, stream_gemini
+            from ..core.models.gemini_broadcaster import get_language, get_style, stream_gemini
             from ..core.models.broadcast_grounding import ground_broadcast_text
             for ev in stream_gemini(data):
                 if self._abort_current:
@@ -167,7 +167,10 @@ class GeminiWorker(QtCore.QObject):
 
                 if not broadcast_emitted and ev.broadcast_text is not None:
                     ev.broadcast_text = ground_broadcast_text(
-                        ev.broadcast_text, raw_visual, language=get_language()
+                        ev.broadcast_text,
+                        raw_visual,
+                        language=get_language(),
+                        style=get_style(),
                     )
                     result = ev.to_dict()
                     result["should_speak"] = bool(ev.should_speak)
@@ -209,7 +212,7 @@ class GeminiBackgroundWorker(QtCore.QObject):
     WATERMARK_SEC = 1.0       # trigger next call when TTS remaining < this
     POLL_INTERVAL_MS = 200    # polling interval while watermark not reached
     INTER_SENTENCE_MS = 500   # silence injected between consecutive sentences
-    MIN_FIRE_INTERVAL_SEC = 8.0  # aggregate enough temporal context; avoids repetitive play calls
+    MIN_FIRE_INTERVAL_SEC = 5.0  # keep possession/standoff calls flowing; 8s felt score-only
 
     def __init__(self, get_remaining_sec_fn, parent=None) -> None:
         super().__init__(parent)
@@ -300,11 +303,21 @@ class GeminiBackgroundWorker(QtCore.QObject):
                     final_ev = ev
             if final_ev and not self._abort_current and not self._stop_requested:
                 from ..core.models.broadcast_grounding import ground_broadcast_text
-                from ..core.models.gemini_broadcaster import get_language
+                from ..core.models.gemini_broadcaster import get_language, get_style
+                # Ground against the LATEST pooled caption only, not the full
+                # aggregated pool (up to 4 recent LiveCC captions joined
+                # together). Grounding against the aggregate let one stale
+                # "size up" / "rocks" mention from a few cycles ago keep
+                # forcing 假動作 onto several unrelated later sentences —
+                # gate on what is actually happening right now.
+                latest_raw = context.get("metadata", {}).get("latest_raw") or context.get(
+                    "event", ""
+                )
                 final_ev.broadcast_text = ground_broadcast_text(
                     final_ev.broadcast_text or "",
-                    context.get("event", ""),
+                    latest_raw,
                     language=get_language(),
+                    style=get_style(),
                 )
                 result = final_ev.to_dict()
                 result["_enqueue_ts"] = t_now
@@ -332,9 +345,13 @@ class GeminiBackgroundWorker(QtCore.QObject):
             if description:
                 descriptions.append(description)
         event_text = " ".join(descriptions) if descriptions else "Game in progress."
+        # Kept separately (not just descriptions[-1]) so post-hoc grounding can
+        # gate wording (e.g. fake/size-up) on the single most recent moment
+        # instead of the whole pooled aggregate — see _poll_once.
+        latest_raw = descriptions[-1] if descriptions else event_text
         context = {
             "event": event_text,
-            "metadata": {"raw": event_text},
+            "metadata": {"raw": event_text, "latest_raw": latest_raw},
             # Shared 0:0-opening suppression (see _get_match_state) so background
             # commentary doesn't recite a bogus scoreline before anyone scores.
             "match_state": _get_match_state(),

@@ -172,6 +172,8 @@ def build_clip_from_buffer(
     - buffer 裡存的已經是相對時間了，直接用就好
     - t_min: optional exclusive lower bound so successive clips do not overlap
       (closer to offline live_cc() time-axis advance without more frequent inference)
+    - Sampling is by timestamp grid at ``target_fps`` (LiveCC paper: 2 FPS), not
+      every-Nth frame from a bursty capture buffer, so motion midpoints survive lag.
     """
     from ..core.models.livecc_transformers import VideoClip
 
@@ -198,14 +200,30 @@ def build_clip_from_buffer(
     if duration <= 0:
         return None
 
-    raw_fps = len(frames_in_window) / max(duration, 1e-6)
-
-    if target_fps < raw_fps:
-        step = int(round(raw_fps / target_fps))
-        step = max(step, 1)
-        frames_sampled = frames_in_window[::step]
-    else:
-        frames_sampled = frames_in_window
+    # Even temporal grid at target_fps: pick the nearest buffered frame to each
+    # sample time so dropped/bursty capture still yields paper-like 2 FPS clips.
+    fps = max(float(target_fps), 1e-6)
+    n_samples = max(2, int(round(duration * fps)) + 1)
+    sample_times = [
+        frames_in_window[0].t + i * (duration / max(n_samples - 1, 1))
+        for i in range(n_samples)
+    ]
+    frames_sampled: list[FrameItem] = []
+    cursor = 0
+    for st in sample_times:
+        while (
+            cursor + 1 < len(frames_in_window)
+            and abs(frames_in_window[cursor + 1].t - st)
+            <= abs(frames_in_window[cursor].t - st)
+        ):
+            cursor += 1
+        pick = frames_in_window[cursor]
+        if not frames_sampled or pick is not frames_sampled[-1]:
+            frames_sampled.append(pick)
+    if len(frames_sampled) < 2:
+        frames_sampled = frames_in_window[:: max(1, len(frames_in_window) // 2)]
+        if len(frames_sampled) < 2:
+            frames_sampled = frames_in_window[:2]
 
     frames_rgb = []
     for fi in frames_sampled:
@@ -222,11 +240,10 @@ def build_clip_from_buffer(
         logging.exception(f"[LiveCCCameraWorker] numpy.stack 失敗: {e}")
         return None
 
-    # ✅ 簡化：直接用 frames_sampled[0].t，因為已經是相對時間了
     clip = VideoClip(
         frames=frames_np,
         fps=float(target_fps),
-        t_start=frames_sampled[0].t,  # 已經是相對於開啟鏡頭時的秒數
+        t_start=frames_sampled[0].t,
     )
     return clip
 
@@ -249,10 +266,10 @@ class LiveCCCameraWorker(QtCore.QObject):
     def __init__(
         self,
         device_id: int = 0,
-        window_sec: float = 1.33,
-        target_fps: float = 3.0,
-        infer_interval: float = 1.33,
-        memory_reset_every: int = 8,
+        window_sec: float = 1.0,
+        target_fps: float = 2.0,
+        infer_interval: float = 1.0,
+        memory_reset_every: int = 24,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)

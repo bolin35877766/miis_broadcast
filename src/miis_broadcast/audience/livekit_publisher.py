@@ -83,6 +83,7 @@ class AudiencePublisher:
         self._connected = False
         self._room: Optional[Any] = None  # livekit.rtc.Room while connected
         self._narration_enabled = True
+        self._mascot_enabled = True
 
         # Pipeline: compositing one frame while the previous may still encode.
         self._vr_executor = concurrent.futures.ThreadPoolExecutor(
@@ -187,14 +188,22 @@ class AudiencePublisher:
         _drain_queue(self._audio_q)
 
     def set_narration_enabled(self, enabled: bool) -> None:
-        """Notify audience clients whether the cat avatar / AI narration mode is on.
+        """Notify audience clients whether AI narration (vs original audio) is on.
 
         Does not change the published video track. Switching modes flushes the audio
         queue so TTS and original desktop audio do not cross-fade into each other;
-        clients hide the mascot when narration is off but keep playing the audio track.
+        clients keep playing the audio track either way.
         """
         self._narration_enabled = bool(enabled)
         self.flush_pending_audio()
+        self._notify_audience_mode()
+
+    def set_mascot_enabled(self, enabled: bool) -> None:
+        """Show/hide the cat mascot on audience clients, independent of audio mode."""
+        self._mascot_enabled = bool(enabled)
+        self._notify_audience_mode()
+
+    def _notify_audience_mode(self) -> None:
         loop = self._loop
         if loop is None or loop.is_closed() or not self._connected:
             return
@@ -213,6 +222,7 @@ class AudiencePublisher:
             {
                 "type": "audience_mode",
                 "narration_enabled": self._narration_enabled,
+                "mascot_enabled": self._mascot_enabled,
             }
         ).encode("utf-8")
         try:
@@ -223,7 +233,7 @@ class AudiencePublisher:
             )
             print(
                 f"{_ts()} | [AUDIENCE] mode notify narration_enabled="
-                f"{self._narration_enabled}"
+                f"{self._narration_enabled} mascot_enabled={self._mascot_enabled}"
             )
         except Exception as exc:
             print(f"{_ts()} | [WARN] [AUDIENCE] mode notify failed: {exc}")

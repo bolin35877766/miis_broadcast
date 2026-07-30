@@ -1,5 +1,5 @@
 # configs/livecc_prompts.yml
-version: 6
+version: 13
 
 # 用啟動參數 --sport 選擇要載入哪一組 prompt（basketball / boxing）。
 default_sport: basketball
@@ -7,42 +7,59 @@ default_sport: basketball
 sports:
   basketball:
     label: "籃球"
-    # Both halves are synchronized views of one play.  This relationship must be explicit:
-    # otherwise LiveCC often mistakes the third-person player motion for device adjustment.
+    # Default for the current LiveCC feed: one 640x480 gameplay view (OBS / VR /
+    # Free Switch). Do NOT describe LEFT|RIGHT halves here.
     livecc_query: |-
-      This is one synchronized LEFT-RIGHT view of the SAME live one-on-one basketball play.
-      LEFT is the third-person gameplay view of the player performing the action. RIGHT is
-      that same player's first-person in-game view and is the authoritative source for the
-      ball, hoop, defender and result. Movements on the LEFT correspond to dribbling,
-      shooting or defending on the RIGHT; they are not setup or equipment adjustments.
-      IDENTITY IS FIXED: the person shown on the LEFT and the first-person hands on the RIGHT
-      are "the player". The other avatar visible in the RIGHT gameplay view is "the opponent".
-      That avatar is the robot/test_bot opponent. The top scoreboard has three fixed regions:
-      LEFT Home score belongs to the player, CENTER is time only, and RIGHT Away score belongs
-      to the robot opponent. Treat a clearly visible Scored! or Out of Bounds! result as
-      the referee's final ruling, overriding any inferred physical outcome. Scored! Home
-      means the player scored and Scored! Away means the robot opponent scored. Out of
-      Bounds! Home means the player sent the ball out and the robot opponent gets possession;
-      Out of Bounds! Away means the robot opponent sent the ball out and the player gets
-      possession. Describe the ruling naturally without mentioning text,
-      a banner, a screen or a referee.
-      Always say explicitly whether THE PLAYER or THE OPPONENT performs the action. Never use
-      ambiguous pronouns such as he, they or someone as the subject.
+      This is one live one-on-one basketball gameplay view at about 640x480.
+      The feed may switch between first-person and third-person angles; treat every
+      frame as the same match. Call the human-controlled athlete "the player" and the
+      other avatar (often labeled test_bot) "the robot opponent". Explicitly name which
+      one acts. Never use ambiguous pronouns such as he, they or someone as the subject.
+      The top scoreboard has three fixed regions: LEFT Home score belongs to the player,
+      CENTER is time only, and RIGHT Away score belongs to the robot opponent. Treat a
+      clearly visible Scored!, Out of Bounds!, or Shot Clock Violation! result as the
+      referee's final ruling, overriding any inferred physical outcome. Scored! Home
+      means the player scored; Scored! Away means the robot opponent scored. Out of
+      Bounds! Home means the player sent the ball out and the robot opponent gets
+      possession; Out of Bounds! Away means the robot opponent sent the ball out and the
+      player gets possession. Shot Clock Violation! Home means the player ran out of shot
+      clock and possession goes to the robot opponent; Shot Clock Violation! Away means
+      the robot opponent ran out of shot clock and possession goes to the player. State
+      the ruling naturally without mentioning text, a banner, a screen or a referee.
       There are exactly two competitors: one ballhandler and one defender. There are no
       teammates and no passes. A possession change is a steal, rebound, reset or turnover,
-      never a pass to a teammate.
-      Identify the current ballhandler only from visible dribbling or ball contact. If the
-      robot avatar on the RIGHT is dribbling, the robot opponent has possession. If the
-      third-person player on the LEFT is performing the dribble synchronized with the
-      foreground first-person hands on the RIGHT, the player has possession. After an
-      out-of-bounds ruling, use its Home/Away mapping above for the awarded possession.
-      Fuse both halves into ONE short present-tense play-by-play sentence about the unified
-      basketball event. If the halves seem ambiguous, trust the RIGHT gameplay view.
-      Never mention VR, headset, controller, device, equipment, calibration, setup,
-      adjustment, room, screen, camera or viewer. Never describe a person checking or
-      adjusting equipment. Use third person and plain natural words only.
+      never a pass to a teammate. Identify the ballhandler only from visible dribbling or
+      ball contact.
+      MOVE NAMING: name a finishing move only from what is visible. A dunk carries the
+      ball up to rim height and pushes it down through the hoop with a hand at the rim.
+      A layup is a close-range release while the shooter is still moving into the rim,
+      often off the backboard. A jump shot leaves the floor away from the rim and releases
+      above the head with an arc.
+      FAKE / SIZE-UP (required when motion is visible): when the ball stays IN the
+      hands against a defender AND you see rocking the ball or body side to side,
+      jab step, hesitation, pump/shot fake, or a size-up standoff with visible sway —
+      your sentence MUST include "fake" or "size-up" (e.g. "fakes", "pump fake",
+      "sizes up"). Quiet holding or staring with NO rocking / jab / sway is NOT a
+      fake — then just say holds the ball or faces the defender. Never invent a
+      shot or a made basket from a still possession.
+      MISSED SHOTS MATTER (required wording): a shot or layup does not always go in.
+      If the ball leaves the shooter's hand on a real release (jumper, layup, floater,
+      or close-range try) and then clearly bounces off the rim, backboard, or iron —
+      or sails short / long — with no Scored! banner, your sentence MUST include the
+      word "misses", "missed", "rims out", or "no good". Name the attempt type when
+      visible (e.g. "misses the layup", "misses the jumper"). Do not silently skip the
+      outcome, do not stop at "releases the shot", and do not pretend no shot happened.
+      The feed can lag or drop frames. If you did not actually see the release, describe
+      the visible attack instead - drives to the rim, backs the defender down, or holds
+      the ball - and never guess between dunk, layup and jumper, and never invent an
+      outcome or a fake.
+      Output ONE short present-tense play-by-play sentence about the basketball action.
+      Keep a visible dribble, cut, retreat, backcourt reset, steal, or possession change,
+      but never invent a longer sequence. Never mention VR, headset,
+      controller, device, equipment, calibration, setup, adjustment, room, screen, camera
+      or viewer. Use third person and plain natural words only.
 
-    # Explicit split-screen prompt used by the GUI and evaluation harness.
+    # Only used when input.splitscreen is true (LEFT|RIGHT composite).
     livecc_query_splitscreen: |-
       Both halves show the SAME one-on-one basketball moment. LEFT is the player's
       third-person gameplay view; RIGHT is that player's first-person view and is the
@@ -50,37 +67,45 @@ sports:
       Always call the LEFT person and RIGHT hands "the player". Always call the other
       RIGHT avatar "the robot opponent". Explicitly name which one acts.
       Ignore names, numbers, the timer and the persistent scoreboard. A clearly visible
-      Scored! or Out of Bounds! result is the referee's final ruling and overrides an
-      inferred physical outcome. Scored! Home means the player scored; Scored! Away means
-      the robot opponent scored. Out of Bounds! Home means the player sent the ball out and
-      the robot opponent gets possession; Out of Bounds! Away means the robot opponent sent
-      the ball out and the player gets possession. State that outcome
-      naturally without mentioning text, a banner, a screen or a referee. Output ONE short
-      present-tense sentence about the basketball action. Keep a visible dribble, cut, retreat,
-      backcourt reset, steal or possession change, but never invent a longer sequence or
-      unseen outcome. For possession, a dribbling robot avatar is the robot opponent; the
-      third-person player's synchronized dribble with foreground first-person hands means
-      the player has possession. For an out-of-bounds ruling, use the Home/Away possession
-      mapping above. There are no teammates or passes. Never mention views, VR, equipment,
-      controller, setup, room, screen, camera or interface.
+      Scored!, Out of Bounds!, or Shot Clock Violation! result is the referee's final
+      ruling and overrides an inferred physical outcome. Scored! Home means the player
+      scored; Scored! Away means the robot opponent scored. Out of Bounds! Home means the
+      player sent the ball out and the robot opponent gets possession; Out of Bounds! Away
+      means the robot opponent sent the ball out and the player gets possession. State that
+      outcome naturally without mentioning text, a banner, a screen or a referee. Output
+      ONE short present-tense sentence about the basketball action. Keep a visible dribble,
+      cut, retreat, backcourt reset, steal or possession change, but never invent a longer
+      sequence or unseen outcome.
+      Name a finishing move only when you see it: a dunk is pushed down through the hoop
+      from rim height, a layup is released at close range while still moving into the rim,
+      and a jump shot leaves the floor and releases above the head from range. A shot or
+      pump fake, a jab step, a hesitation, or rocking the ball or body side to side
+      against a defender keeps the ball in the hands — your sentence MUST include
+      "fake" or "size-up"; quiet holding with no rocking / jab is not a fake. Never
+      invent a shot or a make. A
+      shot or layup does not always go in: if the release is visible and
+      the ball clearly bounces off the rim, backboard, or iron — or comes up short —
+      with no Scored! banner, your sentence MUST include "misses", "missed", "rims out",
+      or "no good" (e.g. "misses the layup") rather than stopping at the release or
+      staying silent about the outcome. The feed can lag or drop frames, so if the
+      release was not visible, say the ballhandler drives, backs the defender down, holds
+      the ball or faces the defender rather than guessing dunk, layup or jumper.
+      For possession, a dribbling robot avatar is the robot opponent; the third-person
+      player's synchronized dribble with foreground first-person hands means the player has
+      possession. For an out-of-bounds ruling, use the Home/Away possession mapping above.
+      There are no teammates or passes. Never mention views, VR, equipment, controller,
+      setup, room, screen, camera or interface.
 
   boxing:
     label: "拳擊"
     livecc_query: |-
-      This is one synchronized LEFT-RIGHT view of the SAME live one-on-one boxing exchange.
-      LEFT is the third-person gameplay view of the boxer performing the action. RIGHT is
-      that same boxer's first-person in-game view and is authoritative for punches, guard,
-      opponent and impact. Movements on the LEFT correspond to punches or defense on the
-      RIGHT; they are not setup or equipment adjustments.
-      IDENTITY IS FIXED: the LEFT boxer and first-person hands on the RIGHT are "the player";
-      the other boxer visible on the RIGHT is "the opponent". Explicitly name the actor and
-      never use an ambiguous pronoun as the subject.
-      Fuse both views into ONE short present-tense play-by-play sentence. If ambiguous,
-      trust the RIGHT gameplay view.
-      Never mention VR, headset, controller, device, equipment, calibration, setup,
-      adjustment, room, screen, camera or viewer. Use third person and plain words only.
+      This is one live one-on-one boxing gameplay view. Call the human-controlled boxer
+      "the player" and the other boxer "the opponent". Explicitly name the actor and never
+      use an ambiguous pronoun as the subject. Output ONE short present-tense play-by-play
+      sentence. Never mention VR, headset, controller, device, equipment, calibration,
+      setup, adjustment, room, screen, camera or viewer. Use third person and plain words
+      only.
 
-    # Fallback prompt for the UN-cropped left-right split frame (no OpenCV crop).
     livecc_query_splitscreen: |-
       The LEFT and RIGHT halves are synchronized views of the SAME boxing action:
       - LEFT: third-person gameplay view of the boxer performing the action.

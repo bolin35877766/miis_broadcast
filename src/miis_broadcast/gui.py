@@ -25,7 +25,18 @@ from .audience.livekit_publisher import AudiencePublisher
 from .audience.token_server import AudienceTokenServer
 from .audience.original_audio_capture import OriginalAudioCapture
 from .core.prompt.prompt_manager import PromptManager
-from .core.models.broadcast_grounding import compose_result_evidence, result_cue
+from .core.models.broadcast_grounding import (
+    compose_result_evidence,
+    finish_type,
+    pick_result_action,
+    result_cue,
+    result_side,
+    strip_fake_moves,
+)
+from .core.models.rim_hand_contact import (
+    DUNK_CONTACT_EVIDENCE,
+    RimHandContactDetector,
+)
 from .core.match_tracker import match_tracker
 from .core.utils.session_logger import SessionLogger
 from .core.utils.audio_recorder import AudioRecorder
@@ -704,6 +715,18 @@ class ControlPanel(QtWidgets.QWidget):
         )
         self.cmb_audience_mode.setStyleSheet(combo_style)
 
+        # --- Cat mascot: independent of the audio mode above ---
+        self.l_mascot = _make_lbl("貓咪主播:")
+        self.chk_mascot = QtWidgets.QCheckBox("在觀眾端顯示")
+        self.chk_mascot.setChecked(True)
+        self.chk_mascot.setStyleSheet("QCheckBox { color: #dedede; }")
+        self.chk_mascot.setToolTip(
+            "勾選：Audience 頁面右下角顯示貓咪主播（含嘴型同步）。\n"
+            "取消：只播畫面與聲音，不顯示貓咪。\n"
+            "「維持原聲」時本來就沒有貓咪（沒有 AI 語音可對嘴）。\n"
+            "預設值可在 app.yml 的 audience.mascot_enabled 設定。"
+        )
+
         # --- LiveCC style ---
         self.l_style = _make_lbl("Style:")
         self.cmb_style = QtWidgets.QComboBox()
@@ -763,6 +786,7 @@ class ControlPanel(QtWidgets.QWidget):
 
         _settings_row_combo("tts", self.l_tts, self.cmb_tts)
         _settings_row_combo("audience_mode", self.l_audience_mode, self.cmb_audience_mode)
+        _settings_row_combo("mascot", self.l_mascot, self.chk_mascot)
         _settings_row_combo("style", self.l_style, self.cmb_style)
         _settings_row_combo("voice", self.l_voice, self.cmb_voice)
         _settings_row_combo("tts_lang", self.l_tts_lang, self.cmb_tts_lang)
@@ -977,6 +1001,9 @@ class ControlPanel(QtWidgets.QWidget):
         if rows:
             if "style" in rows:
                 rows["style"].setVisible(show_style)
+            if "mascot" in rows:
+                # 維持原聲 has no AI voice to lip-sync to, so the cat is off anyway.
+                rows["mascot"].setVisible(narration_on)
             rows["voice"].setVisible(show_openai)
             rows["tts_lang"].setVisible(show_openai)
             rows["speed"].setVisible(show_openai)
@@ -1018,6 +1045,10 @@ class ControlPanel(QtWidgets.QWidget):
     def get_audience_narration_enabled(self) -> bool:
         """True when Audience hears AI narration; False for video-only."""
         return bool(self.cmb_audience_mode.currentData())
+
+    def get_mascot_enabled(self) -> bool:
+        """True when the audience page should show the cat mascot."""
+        return bool(self.chk_mascot.isChecked())
 
     def get_selected_style_key(self) -> str:
         return self.cmb_style.currentData()
@@ -1119,15 +1150,24 @@ class MainWindow(QtWidgets.QMainWindow):
         "it's good", "it's in",
         "進球", "得分",
     })
+    # Soft LiveCC wording → P2. "out of bounds" is intentionally NOT here:
+    # ResultBanner often misses the orange OOB flash, so the LiveCC phrase is
+    # promoted to hard P1 in ``_scan_priority`` as a backup interrupt.
     _P2_KEYWORDS = frozenset({
-        "misses", "missed",
-        "bounces off", "off the rim",
+        "misses", "missed", "missing",
+        "no good", "airball", "air ball",
+        "rims out", "rattles out", "comes up short", "falls short",
+        "bounces off", "bounces out", "off the rim", "off the iron",
+        "clangs off", "doesn't go in", "does not go in",
+        "doesn't go through", "does not go through",
         "rebound", "rebounds",
-        "out of bounds",
-        "未進", "彈框", "籃板", "界外",
+        "未進", "沒進", "沒中", "打鐵", "彈框", "籃板",
     })
     # Back-compat alias (tests / older references).
     _P1_KEYWORDS = _SOFT_SCORE_KEYWORDS
+    # Result banners are only announced once the broadcast has been running this
+    # long, so a ruling left on screen from before Start opens with silence.
+    _BANNER_ARM_DELAY_SEC = 1.5
 
     def __init__(self, configs: dict, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -1159,11 +1199,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pending_livecc_fragment: Optional[tuple] = None  # truncated "..." fragment awaiting stitching
         from .core.models.result_banner_tracker import ResultBannerTracker
         self._result_banner_tracker = ResultBannerTracker()
+        # Soft dunk cue: black/yellow player hand overlapping the orange rim.
+        self._rim_hand_detector = RimHandContactDetector()
+        # LEFT|RIGHT composite input (see _live_frame_is_splitscreen).
+        self._input_is_splitscreen: bool = bool(
+            self.configs.get("input", {}).get("splitscreen", False)
+        )
         self._actor_frame_cache: deque[tuple[float, bytes]] = deque(maxlen=80)
         self._recent_basketball_actions: deque[tuple[float, str]] = deque(maxlen=6)
+        # Scored! banners wait briefly so a lagged LiveCC dunk/layup caption can
+        # land in _recent_basketball_actions before we lock the finish type.
+        # Remote/client_only telemetry shows LiveCC naming a dunk/layup up to
+        # ~2-2.5s after the OpenCV banner fires (clip window + network + queue),
+        # so a short ~750ms hold almost never catches it — bump to 2.2s. Any
+        # matching dunk/layup caption that lands DURING the hold still flushes
+        # immediately (see _route_segment early-flush), so this mostly only
+        # adds latency to the (rarer) case with no finish-naming caption at all.
+        self._pending_score_banner: Optional[tuple[float, float, str, int]] = None
+        self._pending_score_generation: int = 0
+        self._SCORE_BANNER_HOLD_MS: int = 2200
+        # Anti-echo: LiveCC frequently perceives the SAME on-screen referee banner
+        # a second time a beat after we've already announced it (it just describes
+        # what it sees), producing a confusing duplicate/generic re-announcement
+        # ("玩家三分命中" immediately followed by a bland "玩家攻向籃框並成功得分" for
+        # the identical basket). Track the last (kind, side) we ourselves handled
+        # and its video timestamp so a bare repeat within the cooldown is dropped.
+        self._last_banner_kind_side: Optional[tuple[str, str]] = None
+        self._last_banner_video_t: float = -1e9
+        self._BANNER_ECHO_COOLDOWN_S: float = 4.0
         self._last_actor_frame_sec: float = -1e9
         self._last_banner_scan_sec: float = -1e9   # throttle heavy banner template scan off the GUI thread hot path
         self._last_banner_probe_sec: float = -1e9  # throttle the diagnostic confidence probe
+        self._last_rimhand_probe_sec: float = -1e9  # throttle the RimHand diagnostic pixel-count probe
         self._livecc_start_wall: float = 0.0   # wall-clock anchor for file-mode "frame appeared" latency (== LiveCC inference start)
 
         # Audience second-screen services (Free Switch mode only)
@@ -1171,6 +1238,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._audience_token_server: Optional[AudienceTokenServer] = None
         # When False, Audience gets original desktop/game audio (not AI TTS).
         self._audience_narration_enabled: bool = True
+        # Independent switch for the cat mascot on the audience page.
+        self._audience_mascot_enabled: bool = bool(
+            self.configs.get("audience", {}).get("mascot_enabled", True)
+        )
         self._original_audio_capture: Optional[OriginalAudioCapture] = None
 
         self.font_family = "Sans Serif"
@@ -1404,6 +1475,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.video_panel = VideoPanel()
         self.control_panel = ControlPanel()
+        # Reflect the app.yml startup default before any signals are connected.
+        self.control_panel.chk_mascot.setChecked(self._audience_mascot_enabled)
 
         self.top_splitter.addWidget(self.video_panel)
         self.top_splitter.addWidget(self.control_panel)
@@ -1725,7 +1798,26 @@ class MainWindow(QtWidgets.QMainWindow):
             return 1
         if cue == "out_of_bounds":
             return 1
+        if cue == "shot_clock_violation":
+            return 1
         lower = text.lower()
+        # Backup hard-cut: LiveCC often names OOB / shot-clock when the orange
+        # banner is missed by template matching. Keep score narrative as soft P2.
+        if "out of bounds" in lower or "界外" in lower:
+            return 1
+        if (
+            "shot clock violation" in lower
+            or "shot-clock violation" in lower
+            or "進攻時間違例" in lower
+            or "24秒違例" in lower
+        ):
+            return 1
+        # Miss / rebound P2 must run BEFORE the negative-clause strip below.
+        # That strip deletes "does not go through" / "doesn't go in" so they
+        # cannot be misread as makes — but those phrases ARE miss signals.
+        for kw in MainWindow._P2_KEYWORDS:
+            if kw in lower:
+                return 2
         # Remove explicit negative outcome clauses before scanning soft score
         # keywords.  The old substring scan classified "no points being scored"
         # and "does not go in" as critical scoring plays.
@@ -1741,10 +1833,10 @@ class MainWindow(QtWidgets.QMainWindow):
             "",
             lower,
         )
+        # A shot fake / hesitation keeps the ball in the ballhandler's hands, so
+        # "fakes the dunk" must not queue a scoring call ahead of real play.
+        lower = strip_fake_moves(lower)
         for kw in MainWindow._SOFT_SCORE_KEYWORDS:
-            if kw in lower:
-                return 2
-        for kw in MainWindow._P2_KEYWORDS:
             if kw in lower:
                 return 2
         return 3
@@ -1757,17 +1849,35 @@ class MainWindow(QtWidgets.QMainWindow):
     def _with_actor_frames(
         self, data: object, start_t: float, stop_t: float, raw: str
     ) -> object:
-        """Attach three nearby right-view frames to routine basketball events."""
+        """Attach three right-view frames spanning the segment to routine events.
+
+        The frames are sampled at the start, middle and end of the caption's own
+        window instead of clustered around its midpoint, so the windup and the
+        release both appear. That span is what lets Gemini separate a dunk from a
+        layup, and a real attempt from a fake where the ball never leaves the hands.
+        """
         if not isinstance(data, dict) or not self._actor_frame_cache:
             return data
         lower = raw.lower()
-        if "scored!" in lower or "out of bounds!" in lower:
+        if (
+            "scored!" in lower
+            or "out of bounds!" in lower
+            or "shot clock violation!" in lower
+        ):
             return data
-        midpoint = (float(start_t) + float(stop_t)) / 2.0
-        nearest = sorted(
-            self._actor_frame_cache,
-            key=lambda item: abs(item[0] - midpoint),
-        )[:3]
+        begin, end = float(start_t), float(stop_t)
+        midpoint = (begin + end) / 2.0
+        cached = list(self._actor_frame_cache)
+        nearest: list[tuple[float, bytes]] = []
+        for anchor in (begin, midpoint, end):
+            frame = min(cached, key=lambda item: abs(item[0] - anchor))
+            if frame not in nearest:
+                nearest.append(frame)
+        for frame in sorted(cached, key=lambda item: abs(item[0] - midpoint)):
+            if len(nearest) >= 3:
+                break
+            if frame not in nearest:
+                nearest.append(frame)
         if not nearest:
             return data
         enriched = dict(data)
@@ -1884,8 +1994,66 @@ class MainWindow(QtWidgets.QMainWindow):
             raw = data.get("metadata", {}).get("raw", "") or data.get("event", "")
         elif isinstance(data, str):
             raw = data
+        # Anti-echo: LiveCC often re-perceives the SAME on-screen referee banner a
+        # beat after we already announced it via _emit_result_banner_if_any /
+        # _flush_pending_score_banner, producing a confusing duplicate/generic
+        # re-announcement of the identical basket. Drop a bare repeat of the same
+        # kind within the cooldown window. LiveCC echoes frequently omit the
+        # Home/Away side ("Ahh! Shot clock violation!") — treat a missing side
+        # as matching the last announced side for that kind.
+        echo_cue = result_cue(raw)
+        if echo_cue is not None and self._last_banner_kind_side is not None:
+            last_kind, last_side = self._last_banner_kind_side
+            echo_side = result_side(raw, echo_cue)
+            same_event = echo_cue == last_kind and (
+                echo_side is None or echo_side == last_side
+            )
+            if (
+                same_event
+                and 0.0 <= start_t - self._last_banner_video_t <= self._BANNER_ECHO_COOLDOWN_S
+            ):
+                logging.info(
+                    "[ResultBanner] suppress echo %s %s @ %.2f (last %s @ %.2f): %r",
+                    echo_cue, echo_side or last_side, start_t,
+                    last_side, self._last_banner_video_t, raw[:80],
+                )
+                return
         if raw.strip() and result_cue(raw) is None:
             self._recent_basketball_actions.append((stop_t, raw.strip()))
+            # A dunk caption that lands during the Scored! hold should flush
+            # immediately so the P1 line names the dunk. Do NOT early-flush on
+            # a LiveCC "layup" when RimHand already saw hand-on-rim for this
+            # Home score — a lagged layup caption used to beat the dunk attach
+            # (and the rest of the hold) and lock the call as 上籃.
+            if self._pending_score_banner is not None:
+                finish = finish_type(raw)
+                if finish == "dunk":
+                    logging.info(
+                        "[ResultBanner] early flush on LiveCC finish=dunk: %r",
+                        raw[:80],
+                    )
+                    self._flush_pending_score_banner()
+                    return
+                if finish == "layup":
+                    p_start, _p_end, p_banner, _p_gen = self._pending_score_banner
+                    side_away = "away" in p_banner.lower()
+                    if (
+                        not side_away
+                        and self._rim_hand_detector.recently_contacted(
+                            p_start, for_attach=True
+                        )
+                    ):
+                        logging.info(
+                            "[ResultBanner] keep hold — RimHand dunk outranks LiveCC layup: %r",
+                            raw[:80],
+                        )
+                    else:
+                        logging.info(
+                            "[ResultBanner] early flush on LiveCC finish=layup: %r",
+                            raw[:80],
+                        )
+                        self._flush_pending_score_banner()
+                        return
         data = self._with_actor_frames(data, start_t, stop_t, raw)
 
         # Stitch truncated fragments: LiveCC frequently cuts text off mid-thought
@@ -2244,6 +2412,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._on_audience_mode_changed
             )
 
+            self.control_panel.chk_mascot.toggled.connect(
+                self._on_mascot_enabled_changed
+            )
+
             self._on_tts_mode_changed()
             self._on_audience_mode_changed()
 
@@ -2331,6 +2503,23 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_text("Audience: 啟用播報（AI 語音會播送到觀眾端）")
         else:
             self.append_text("Audience: 維持原聲（系統／遊戲音訊會播送到觀眾端）")
+
+    @QtCore.Slot()
+    def _on_mascot_enabled_changed(self) -> None:
+        """Show/hide the cat mascot on the audience page (VR / Free Switch)."""
+        enabled = (
+            self.control_panel.get_mascot_enabled()
+            if hasattr(self, "control_panel")
+            else True
+        )
+        self._audience_mascot_enabled = enabled
+        if self._audience_token_server is not None:
+            self._audience_token_server.set_mascot_enabled(self._audience_mascot_enabled)
+        if self._audience_publisher is not None:
+            self._audience_publisher.set_mascot_enabled(self._audience_mascot_enabled)
+        self.append_text(
+            "Audience: 顯示貓咪主播" if enabled else "Audience: 隱藏貓咪主播"
+        )
 
     @QtCore.Slot()
     def on_open_video_clicked(self) -> None:
@@ -2707,6 +2896,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._audience_token_server.set_narration_enabled(
             getattr(self, "_audience_narration_enabled", True)
         )
+        self._audience_token_server.set_mascot_enabled(
+            getattr(self, "_audience_mascot_enabled", True)
+        )
         self._audience_token_server.start()
 
     def _stop_audience_token_server(self) -> None:
@@ -2863,6 +3055,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._audience_token_server.set_narration_enabled(
                 getattr(self, "_audience_narration_enabled", True)
             )
+            self._audience_token_server.set_mascot_enabled(
+                getattr(self, "_audience_mascot_enabled", True)
+            )
 
         lk_url = audience_cfg.get("livekit_url", "ws://localhost:7880")
         api_key = audience_cfg.get("api_key", "devkey")
@@ -2875,6 +3070,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._audience_publisher.reset_session_telemetry()
         self._audience_publisher.set_narration_enabled(
             getattr(self, "_audience_narration_enabled", True)
+        )
+        self._audience_publisher.set_mascot_enabled(
+            getattr(self, "_audience_mascot_enabled", True)
         )
         self._audience_publisher.start()
 
@@ -2963,25 +3161,33 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
 
     def _live_frame_is_splitscreen(self) -> bool:
-        """True when the preview / LiveCC frame is LEFT|RIGHT composite.
+        """True when the preview / LiveCC frame is a LEFT|RIGHT composite.
 
-        Production OBS / VR feeds in this project are synchronized third-person |
-        first-person splits. Only Free Switch's plain webcam source is single-view.
+        The LiveCC feed is currently a single 640×480 view, so banner ROIs and
+        actor frames cover the whole frame. ``input.splitscreen`` in app.yml
+        switches the composite layout back on. A plain webcam is never a split.
         """
-        if self.mode in ("file", "dual_sync", "obs"):
-            return True
         if self.mode == "free_switch" and self.free_switch_thread is not None:
-            # webcam = single camera; vr/dual = OBS composite (L|R) or stitched dual
-            return self.free_switch_thread.active_source != "webcam"
-        return False
+            if self.free_switch_thread.active_source == "webcam":
+                return False
+        return self._input_is_splitscreen
 
     def _resolve_livecc_query(self) -> str:
-        """Same as before: prefer splitscreen prompt, fall back to livecc_query."""
+        """Pick the LiveCC prompt that matches the current frame layout.
+
+        Single-view 640×480 (default) uses ``livecc_query``. Only when
+        ``input.splitscreen`` is true do we send the LEFT|RIGHT prompt.
+        """
         if self.prompt_manager is None:
             return "Describe only what you see on screen right now in one objective sentence."
+        if self._live_frame_is_splitscreen():
+            return (
+                self.prompt_manager.livecc_query_splitscreen()
+                or self.prompt_manager.livecc_query()
+            )
         return (
-            self.prompt_manager.livecc_query_splitscreen()
-            or self.prompt_manager.livecc_query()
+            self.prompt_manager.livecc_query()
+            or self.prompt_manager.livecc_query_splitscreen()
         )
 
     def _emit_result_banner_if_any(
@@ -2994,9 +3200,79 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         # Template matching + scoreboard OCR is expensive and runs on the GUI
         # thread. Cap it to ~8 scans/sec so playback / preview stays responsive.
+        # Rim-hand dunk probe shares this cadence (same OpenCV HSV pass budget).
         if sec - self._last_banner_scan_sec < 0.12:
             return
         self._last_banner_scan_sec = sec
+
+        dunk_contact = self._rim_hand_detector.update(
+            frame_rgb, sec, is_rgb=True, splitscreen=splitscreen
+        )
+        if dunk_contact is not None:
+            logging.info(
+                "[RimHand] possible dunk @ %.2f (overlap=%d rim=%d hand=%d)",
+                dunk_contact.timestamp,
+                dunk_contact.overlap_pixels,
+                dunk_contact.rim_pixels,
+                dunk_contact.hand_pixels,
+            )
+            self.append_text(
+                f"[RimHand] 手碰籃框 → 可能灌籃 @ {dunk_contact.timestamp:.2f}s"
+            )
+            # Do NOT push dunk text into _recent_basketball_actions: that deque
+            # feeds pick_result_action for every later Scored!, and a single
+            # false contact would sticky-label subsequent makes as dunks.
+            # If a Home Scored! is already holding for LiveCC, a *strong*
+            # dunk cue is better evidence than waiting out the hold — flush
+            # immediately so the announcement can name the dunk. Weak brushes
+            # (below attach thresholds) must not force an early flush.
+            pending = self._pending_score_banner
+            if pending is not None:
+                p_start, _end, banner, gen = pending
+                if (
+                    "away" not in banner.lower()
+                    and self._rim_hand_detector.recently_contacted(
+                        p_start, for_attach=True
+                    )
+                ):
+                    logging.info(
+                        "[RimHand] early-flush dunk into pending %s @ %.2f "
+                        "(overlap=%d hand=%d)",
+                        banner,
+                        dunk_contact.timestamp,
+                        dunk_contact.overlap_pixels,
+                        dunk_contact.hand_pixels,
+                    )
+                    self._flush_pending_score_banner(gen)
+        # Diagnostic: the detector stays completely silent below threshold, so a
+        # real dunk that never fires looks identical in the log to "nothing near
+        # the rim happened". Dump raw pixel counts so a genuine miss (rim/hand
+        # never even detected) can be told apart from a near-miss (thresholds
+        # too strict) and tuned against real footage next time. Log immediately
+        # whenever anything rim/hand-ish shows up (short dunk windows can be
+        # under a second) and otherwise fall back to a slow heartbeat so we can
+        # confirm the probe itself is alive even when nothing is near the rim.
+        rimhand_due = sec - self._last_rimhand_probe_sec >= 5.0
+        rh_stats = self._rim_hand_detector.last_probe
+        interesting = bool(rh_stats) and (
+            rh_stats["overlap_pixels"] > 0
+            or rh_stats["rim_pixels"] >= self._rim_hand_detector.min_rim_pixels
+            or (rh_stats["yellow_near_rim"] > 0 and rh_stats["black_near_rim"] > 0)
+        )
+        if rh_stats and (rimhand_due or interesting):
+            self._last_rimhand_probe_sec = sec
+            logging.info(
+                "[RimHandProbe] @ %.2f rim=%d hand=%d yellow_near_rim=%d black_near_rim=%d "
+                "overlap=%d (need rim>=%d yellow>=%d black>=%d overlap>=%d)",
+                sec,
+                rh_stats["rim_pixels"], rh_stats["hand_pixels"],
+                rh_stats["yellow_near_rim"], rh_stats["black_near_rim"], rh_stats["overlap_pixels"],
+                self._rim_hand_detector.min_rim_pixels,
+                self._rim_hand_detector.min_yellow_near,
+                self._rim_hand_detector.min_black_near,
+                self._rim_hand_detector.min_overlap,
+            )
+
         cue = self._result_banner_tracker.update(
             frame_rgb, sec, is_rgb=True, splitscreen=splitscreen
         )
@@ -3007,7 +3283,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._last_banner_probe_sec = sec
                 logging.info(self._result_banner_tracker.debug_probe(frame_rgb, is_rgb=True))
             return
-        result = "Scored!" if cue.kind == "score" else "Out of Bounds!"
+        # A banner already on screen when Start is pressed belongs to a play that
+        # happened before this broadcast, so announcing it opens the session with
+        # a stale ruling. Stay silent until the first banner that actually appears
+        # on our watch. cue.start is when the banner was first seen.
+        if cue.start < self._BANNER_ARM_DELAY_SEC:
+            logging.info(
+                "[ResultBanner] ignore pre-existing %s @ %.2f (arm=%.1fs)",
+                cue.kind, cue.start, self._BANNER_ARM_DELAY_SEC,
+            )
+            return
+        result = {
+            "score": "Scored!",
+            "out_of_bounds": "Out of Bounds!",
+            "shot_clock_violation": "Shot Clock Violation!",
+        }.get(cue.kind, cue.kind)
         banner = f"{result} {cue.side.title()}" if cue.side else result
         if (
             cue.kind == "score"
@@ -3020,16 +3310,84 @@ class MainWindow(QtWidgets.QMainWindow):
             banner, cue.start, cue.end, splitscreen,
         )
         self.append_text(f"[ResultBanner] {banner}")
-        recent_action = next(
-            (
+        # Scored! waits briefly: LiveCC often names the dunk/layup a beat after
+        # the OpenCV banner, and a miss caption from the previous try must not
+        # lock the finish type. OOB / shot-clock can speak immediately.
+        if cue.kind == "score":
+            self._schedule_score_banner(cue.start, cue.end, banner)
+            return
+        recent_action = pick_result_action(
+            [
                 action
                 for action_t, action in reversed(self._recent_basketball_actions)
-                if 0.0 <= cue.start - action_t <= 8.0
-            ),
-            "",
+                if -2.5 <= cue.start - action_t <= 8.0
+            ]
         )
         raw = compose_result_evidence(banner, recent_action)
         self._route_segment(cue.start, cue.end, self._livecc_event_dict(raw))
+        # Record AFTER routing — see the matching note in _flush_pending_score_banner.
+        if cue.side:
+            self._last_banner_kind_side = (cue.kind, cue.side.lower())
+            self._last_banner_video_t = cue.start
+
+    def _schedule_score_banner(self, start: float, end: float, banner: str) -> None:
+        self._pending_score_generation += 1
+        gen = self._pending_score_generation
+        self._pending_score_banner = (start, end, banner, gen)
+        logging.info(
+            "[ResultBanner] hold Scored! %.0fms for LiveCC finish (%s)",
+            self._SCORE_BANNER_HOLD_MS,
+            banner,
+        )
+        QtCore.QTimer.singleShot(
+            self._SCORE_BANNER_HOLD_MS,
+            lambda g=gen: self._flush_pending_score_banner(g),
+        )
+
+    def _flush_pending_score_banner(self, generation: int | None = None) -> None:
+        pending = self._pending_score_banner
+        if pending is None:
+            return
+        start, end, banner, gen = pending
+        if generation is not None and generation != gen:
+            return
+        self._pending_score_banner = None
+        # Hand-on-rim within the attach window can name Home dunks — but only
+        # when contact cleared the stronger attach thresholds. A marginal brush
+        # (overlap at the emit floor) must not rewrite a non-dunk make.
+        side_away = "away" in banner.lower()
+        if not side_away and self._rim_hand_detector.recently_contacted(
+            start, for_attach=True
+        ):
+            recent_action = DUNK_CONTACT_EVIDENCE
+            logging.info(
+                "[RimHand] attach dunk evidence to %s (overlap=%d hand=%d)",
+                banner,
+                self._rim_hand_detector._last_contact_overlap,
+                self._rim_hand_detector._last_contact_hand,
+            )
+        else:
+            # Include captions that arrive slightly AFTER the banner timestamp:
+            # LiveCC clip ends often land 0.5–2s past OpenCV Scored! detection.
+            recent_action = pick_result_action(
+                [
+                    action
+                    for action_t, action in reversed(self._recent_basketball_actions)
+                    if -2.5 <= start - action_t <= 8.0
+                ],
+                for_score=True,
+            )
+        raw = compose_result_evidence(banner, recent_action)
+        logging.info(
+            "[ResultBanner] flush score evidence=%r → %r",
+            (recent_action or "")[:80],
+            raw[:120],
+        )
+        self._route_segment(start, end, self._livecc_event_dict(raw))
+        # Record AFTER routing: an earlier record would self-suppress this very
+        # announcement (the raw text we just built also contains "Scored! ...").
+        self._last_banner_kind_side = ("score", "away" if side_away else "home")
+        self._last_banner_video_t = start
 
     def _maybe_cache_actor_frame(
         self, frame_rgb: np.ndarray, sec: float, *, splitscreen: bool
@@ -3098,6 +3456,8 @@ class MainWindow(QtWidgets.QMainWindow):
         print(f"[Main] Session log started: {log_path}")
 
         self._clear_local_inference_telemetry_for_new_session()
+        from .core.models.broadcast_grounding import reset_style_line_memory
+        reset_style_line_memory()
 
         style_key = self.control_panel.get_selected_style_key()
         style_label = self.control_panel.get_selected_style_label()
@@ -3130,8 +3490,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.is_inference_running = True
         self._result_banner_tracker.reset()
+        self._rim_hand_detector.reset()
         self._actor_frame_cache.clear()
         self._recent_basketball_actions.clear()
+        self._pending_score_banner = None
+        self._pending_score_generation += 1
+        self._last_banner_kind_side = None
+        self._last_banner_video_t = -1e9
         self._last_actor_frame_sec = -1e9
         self._reset_broadcast_timeline()
 
@@ -3237,6 +3602,10 @@ class MainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_pending_segments"):
                 self._pending_segments.clear()
             self._pending_livecc_fragment = None
+            self._pending_score_banner = None
+            self._pending_score_generation += 1
+            self._last_banner_kind_side = None
+            self._last_banner_video_t = -1e9
             self._actor_frame_cache.clear()
             self._recent_basketball_actions.clear()
             self._last_actor_frame_sec = -1e9
@@ -3330,14 +3699,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 and self.prompt_manager.current_sport() == "basketball"
                 and sec - self._last_actor_frame_sec >= 0.24
             ):
-                self._maybe_cache_actor_frame(frame_rgb, sec, splitscreen=True)
+                self._maybe_cache_actor_frame(
+                    frame_rgb, sec, splitscreen=self._live_frame_is_splitscreen()
+                )
 
             if (
                 self.is_inference_running
                 and self.prompt_manager is not None
                 and self.prompt_manager.current_sport() == "basketball"
             ):
-                self._emit_result_banner_if_any(frame_rgb, sec, splitscreen=True)
+                self._emit_result_banner_if_any(
+                    frame_rgb, sec, splitscreen=self._live_frame_is_splitscreen()
+                )
 
         # Stream video frames to remote server for file-mode inference
         if self.mode == "file" and self.is_inference_running and self._socket_runner is not None:

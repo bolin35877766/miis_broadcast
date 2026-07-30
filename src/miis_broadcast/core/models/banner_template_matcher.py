@@ -1,14 +1,23 @@
 """Template matching for basketball result banners.
 
 Templates live in ``assets/result_banners/`` (scored.png, out_of_bounds.png,
-home.png, away.png). Matching is grayscale ``TM_CCOEFF_NORMED`` over the centre
-ROI of the gameplay (right) view.
+shot_clock_violation.png, home.png, away.png) and are tight text crops taken
+from the LiveCC gameplay view (currently **640×480 / 4:3**). Matching is
+grayscale ``TM_CCOEFF_NORMED`` over the banner band of that view.
 
 The search scales each template so its **width becomes a fraction of the ROI
 width**, rather than a multiple of the template's own pixel size. This makes
-detection independent of both the capture resolution and how large the template
-was cropped — the only thing that stays roughly constant across renders is how
-much of the screen the banner occupies.
+detection independent of absolute pixel size — the only thing that stays
+roughly constant across renders is how much of the screen the banner occupies.
+
+Geometry measured on 640×480 gameplay captures (fractions of the view):
+
+    banner text   y 0.42-0.53,  width 0.31 (Scored!) … 0.70 (Shot Clock Violation!)
+    Home / Away   y 0.61-0.70,  width 0.22, centred at x 0.47
+
+The templates must keep the render's own width:height ratio. Crops taken from a
+different aspect ratio (e.g. 16:9) stretch the glyphs on 4:3 and collapse every
+confidence into an indistinguishable 0.3-0.55 band.
 """
 
 from __future__ import annotations
@@ -27,20 +36,22 @@ _DEFAULT_DIR = (
     Path(__file__).resolve().parents[4] / "assets" / "result_banners"
 )
 
+_KIND_KEYS = ("score", "out_of_bounds", "shot_clock_violation")
+
 
 def default_template_dir() -> Path:
     return _DEFAULT_DIR
 
 
 class BannerTemplateMatcher:
-    """Match ``Scored!`` / ``Out of Bounds!`` / ``Home`` / ``Away`` templates."""
+    """Match result banners: Scored! / Out of Bounds! / Shot Clock Violation!."""
 
     def __init__(
         self,
         template_dir: Optional[Path | str] = None,
         *,
-        score_threshold: float = 0.55,
-        side_threshold: float = 0.55,
+        score_threshold: float = 0.70,
+        side_threshold: float = 0.75,
         work_width: int = 420,
         kind_width_fracs: Optional[np.ndarray] = None,
         side_width_fracs: Optional[np.ndarray] = None,
@@ -48,23 +59,23 @@ class BannerTemplateMatcher:
         self.template_dir = Path(template_dir) if template_dir else _DEFAULT_DIR
         self.score_threshold = float(score_threshold)
         self.side_threshold = float(side_threshold)
-        # Cap the ROI working width so matchTemplate cost stays bounded even for
-        # 1080p/4K frames (this runs on the GUI thread).
+        # Cap the ROI working width so matchTemplate cost stays bounded
+        # (this runs on the GUI thread). LiveCC frames are 640×480; 420 keeps
+        # a little headroom if a higher-res preview is scanned instead.
         self.work_width = int(work_width)
-        # Banner width as a fraction of the kind ROI width. Observed live:
-        # "Scored!" ~0.34, "Out of Bounds!" ~0.68 → cover 0.22–0.85 finely.
-        # A fine step matters: TM_CCOEFF_NORMED on sharp text drops sharply once
-        # the scale is off by more than a few percent.
+        # Banner width as a fraction of the kind ROI width. Measured on 640×480
+        # captures: "Scored!" ~0.34, "Out of Bounds!" ~0.66,
+        # "Shot Clock Violation!" ~0.76.
         self.kind_width_fracs = (
             kind_width_fracs
             if kind_width_fracs is not None
-            else np.linspace(0.22, 0.85, 22, dtype=np.float64)
+            else np.linspace(0.26, 0.90, 22, dtype=np.float64)
         )
-        # Side word as a fraction of the (narrower) side ROI width (~0.6 live).
+        # Home / Away occupies ~0.37 of the side ROI width.
         self.side_width_fracs = (
             side_width_fracs
             if side_width_fracs is not None
-            else np.linspace(0.35, 0.9, 16, dtype=np.float64)
+            else np.linspace(0.26, 0.58, 12, dtype=np.float64)
         )
         self._templates: dict[str, np.ndarray] = {}
         self._load()
@@ -78,6 +89,7 @@ class BannerTemplateMatcher:
         mapping = {
             "scored": "scored.png",
             "out_of_bounds": "out_of_bounds.png",
+            "shot_clock_violation": "shot_clock_violation.png",
             "home": "home.png",
             "away": "away.png",
         }
@@ -95,7 +107,7 @@ class BannerTemplateMatcher:
             )
         if not self.available:
             _LOG.warning(
-                "[BannerTM] templates missing in %s — colour fallback only",
+                "[BannerTM] templates missing in %s — banner detection disabled",
                 self.template_dir,
             )
 
@@ -156,38 +168,44 @@ class BannerTemplateMatcher:
 
     def match_kind(
         self, gameplay_bgr: np.ndarray
-    ) -> tuple[Optional[str], float, float]:
-        """Return ``(kind, score_conf, oob_conf)`` for the centre banner ROI.
+    ) -> tuple[Optional[str], dict[str, float]]:
+        """Return ``(kind, confidences)`` for the centre banner ROI.
 
-        kind is ``"score"``, ``"out_of_bounds"``, or None.
+        kind is ``"score"``, ``"out_of_bounds"``, ``"shot_clock_violation"``, or None.
         """
+        confs = {key: -1.0 for key in _KIND_KEYS}
         if not self.available:
-            return None, -1.0, -1.0
+            return None, confs
         height, width = gameplay_bgr.shape[:2]
         roi = gameplay_bgr[
-            int(height * 0.30) : int(height * 0.66),
-            int(width * 0.02) : int(width * 0.98),
+            int(height * 0.36) : int(height * 0.60),
+            int(width * 0.04) : int(width * 0.96),
         ]
-        scored_c = self._best_match(
-            roi, self._templates["scored"], self.kind_width_fracs
-        )
-        oob_c = self._best_match(
-            roi, self._templates["out_of_bounds"], self.kind_width_fracs
-        )
-        kind: Optional[str] = None
-        if scored_c >= self.score_threshold or oob_c >= self.score_threshold:
-            if scored_c >= oob_c and scored_c >= self.score_threshold:
-                kind = "score"
-            elif oob_c >= self.score_threshold:
-                kind = "out_of_bounds"
-        return kind, scored_c, oob_c
+        template_key = {
+            "score": "scored",
+            "out_of_bounds": "out_of_bounds",
+            "shot_clock_violation": "shot_clock_violation",
+        }
+        for kind_key, tmpl_key in template_key.items():
+            tmpl = self._templates.get(tmpl_key)
+            if tmpl is None:
+                continue
+            confs[kind_key] = self._best_match(roi, tmpl, self.kind_width_fracs)
+
+        # Aligned templates put a real banner at 0.83-0.98 and leave cluttered
+        # gameplay below 0.55, so a single threshold separates them. A relaxed
+        # "best beats the rest" fallback used to live here and fired the long
+        # orange templates on plain scenery, including on the first frame after
+        # Start.
+        best_kind, best_c = max(confs.items(), key=lambda item: item[1])
+        return (best_kind if best_c >= self.score_threshold else None), confs
 
     def match_side(self, gameplay_bgr: np.ndarray) -> tuple[Optional[str], float]:
         """Return ``("home"|"away"|None, confidence)`` from side-word templates."""
         height, width = gameplay_bgr.shape[:2]
         roi = gameplay_bgr[
-            int(height * 0.55) : int(height * 0.80),
-            int(width * 0.12) : int(width * 0.88),
+            int(height * 0.56) : int(height * 0.80),
+            int(width * 0.20) : int(width * 0.80),
         ]
         home_c = -1.0
         away_c = -1.0

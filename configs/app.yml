@@ -28,6 +28,13 @@ gemini:
   # a real red-vs-blue game with MatchTracker score events.
   inject_match_state: false
 
+input:
+  # true  = the feed is a LEFT|RIGHT composite (third-person | first-person) and
+  #         only the right half is gameplay.
+  # false = one full-frame view (LiveCC input is currently 640×480 / 4:3);
+  #         banner ROIs, scoreboard reading and actor frames use the whole frame.
+  splitscreen: false
+
 inference:
   # Gemini bg-worker can repeat the same line every ~1s; 15s window prevents
   # the same broadcast text from being sent to TTS more than once per segment.
@@ -53,3 +60,6 @@ audience:
   # If true, silence the operator's own speaker (Free Switch AND pure VR)
   mute_operator_local: true
   original_audio_device: null
+  # Startup state of the cat mascot on the audience page (VR / Free Switch).
+  # Runtime toggle: the "貓咪主播" checkbox in the control panel.
+  mascot_enabled: false

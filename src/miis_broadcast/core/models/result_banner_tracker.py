@@ -40,10 +40,10 @@ class ResultBannerCue:
 
 
 class ResultBannerTracker:
-    """Detect ``Scored!`` / ``Out of Bounds!`` via template matching (+ scoreboard).
+    """Detect ``Scored!`` / ``Out of Bounds!`` / ``Shot Clock Violation!``.
 
-    Primary path: multi-scale template match on the gameplay (right) view.
-    Colour heuristics are only a fallback when templates are missing.
+    Primary path: multi-scale template match on the gameplay view (the whole
+    frame, or its right half when the feed is a LEFT|RIGHT composite).
     Scoreboard digit templates optionally attach Home/Away totals after a make.
     """
 
@@ -92,18 +92,24 @@ class ResultBannerTracker:
 
     @staticmethod
     def _detect_side(gameplay: np.ndarray, *, is_rgb: bool) -> str | None:
-        """Classify the large Home/Away word printed below a result banner."""
+        """Classify the large Home/Away word printed below a result banner.
+
+        Measured on 640×480 gameplay captures: the word sits at y 0.61-0.70 and
+        x 0.36-0.59, so the ROI below brackets it with margin for FOV drift.
+        "Away" is told from "Home" by its descender dropping below the baseline.
+        """
         height, width = gameplay.shape[:2]
         roi = gameplay[
-            int(height * 0.54) : int(height * 0.75),
-            int(width * 0.18) : int(width * 0.82),
+            int(height * 0.56) : int(height * 0.80),
+            int(width * 0.20) : int(width * 0.80),
         ]
         if roi.size == 0:
             return None
         hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV if is_rgb else cv2.COLOR_BGR2HSV)
         white = cv2.inRange(hsv, (0, 0, 185), (180, 95, 255))
         count, _, stats, _ = cv2.connectedComponentsWithStats(white)
-        scale = max(0.25, roi.shape[0] * roi.shape[1] / (101 * 410))
+        # Reference ROI area at 640×480: ~115×384.
+        scale = max(0.25, roi.shape[0] * roi.shape[1] / (115 * 384))
         glyphs: list[tuple[int, int, int, int, int]] = []
         for x, y, glyph_w, glyph_h, area in stats[1:count]:
             if (
@@ -157,36 +163,26 @@ class ResultBannerTracker:
     def _detect_scoreboard(
         cls, gameplay: np.ndarray, *, is_rgb: bool
     ) -> tuple[int, int] | None:
-        """Read Home/Away scores from the persistent top UI, never the timer."""
+        """Read Home/Away scores from the persistent top UI, never the timer.
+
+        Measured on 640×480 captures: digits sit at y 0.05-0.13. Home is just
+        left of the clock (x ~0.34-0.36); Away is just right of it
+        (x ~0.515-0.555). The clock itself occupies ~0.39-0.46 and must stay out
+        of both windows. Enrichment only — a missed digit never blocks a banner.
+        """
         height, width = gameplay.shape[:2]
-        y0, y1 = int(height * 0.07), int(height * 0.17)
+        y0, y1 = int(height * 0.050), int(height * 0.130)
         home = cls._read_score_number(
-            gameplay[y0:y1, int(width * 0.185) : int(width * 0.275)],
+            gameplay[y0:y1, int(width * 0.340) : int(width * 0.360)],
             is_rgb=is_rgb,
         )
         away = cls._read_score_number(
-            gameplay[y0:y1, int(width * 0.515) : int(width * 0.615)],
+            gameplay[y0:y1, int(width * 0.515) : int(width * 0.555)],
             is_rgb=is_rgb,
         )
         if home is None or away is None or home > 99 or away > 99:
             return None
         return home, away
-
-    def _detect_kind_colour(
-        self, gameplay: np.ndarray, *, is_rgb: bool
-    ) -> Optional[str]:
-        """Legacy colour flash detector (fallback when templates unavailable)."""
-        height = gameplay.shape[0]
-        center = gameplay[int(height * 0.35) : int(height * 0.60)]
-        hsv = cv2.cvtColor(center, cv2.COLOR_RGB2HSV if is_rgb else cv2.COLOR_BGR2HSV)
-        orange = cv2.countNonZero(cv2.inRange(hsv, (5, 180, 180), (22, 255, 255)))
-        cyan = cv2.countNonZero(cv2.inRange(hsv, (38, 160, 160), (95, 255, 255)))
-        scale = center.shape[0] * center.shape[1] / (120 * 640)
-        if orange > 5000 * scale:
-            return "out_of_bounds"
-        if 3000 * scale < cyan < 50000 * scale:
-            return "score"
-        return None
 
     def _resolve_side(
         self, gameplay: np.ndarray, gameplay_bgr: np.ndarray, *, is_rgb: bool
@@ -225,7 +221,7 @@ class ResultBannerTracker:
         actually respond to, and at what confidence vs the score_threshold.
         """
         if self._matcher is None:
-            return "[BannerProbe] templates unavailable (colour-only fallback)"
+            return "[BannerProbe] templates unavailable"
         regions = {
             "full": frame,
             "left": frame[:, : frame.shape[1] // 2],
@@ -234,10 +230,12 @@ class ResultBannerTracker:
         parts: list[str] = []
         for name, region in regions.items():
             region_bgr = self._as_bgr(region, is_rgb=is_rgb)
-            _kind, scored_c, oob_c = self._matcher.match_kind(region_bgr)
+            _kind, confs = self._matcher.match_kind(region_bgr)
             side, side_c = self._matcher.match_side(region_bgr)
             parts.append(
-                f"{name}: scored={scored_c:.2f} oob={oob_c:.2f} "
+                f"{name}: scored={confs.get('score', -1):.2f} "
+                f"oob={confs.get('out_of_bounds', -1):.2f} "
+                f"scv={confs.get('shot_clock_violation', -1):.2f} "
                 f"side={side or '-'}({side_c:.2f})"
             )
         return (
@@ -313,13 +311,15 @@ class ResultBannerTracker:
             self._last_scoreboard_score = scoreboard
             self.home_score, self.away_score = scoreboard
 
-        # ── Kind detection: templates first, colour fallback ──────────────
+        # ── Kind detection: template match only ───────────────────────────
         kind: Optional[str] = None
-        scored_c = oob_c = -1.0
+        confs: dict[str, float] = {
+            "score": -1.0,
+            "out_of_bounds": -1.0,
+            "shot_clock_violation": -1.0,
+        }
         if self._matcher is not None:
-            kind, scored_c, oob_c = self._matcher.match_kind(gameplay_bgr)
-        if kind is None and self._matcher is None:
-            kind = self._detect_kind_colour(gameplay, is_rgb=is_rgb)
+            kind, confs = self._matcher.match_kind(gameplay_bgr)
 
         if kind is None and self._kind is not None:
             if timestamp - self._last_seen <= self.merge_gap_sec:
@@ -350,6 +350,9 @@ class ResultBannerTracker:
                 else None
             )
             cue = ResultBannerCue(self._start, timestamp, kind, side)
+            scored_c = confs.get("score", -1.0)
+            oob_c = confs.get("out_of_bounds", -1.0)
+            scv_c = confs.get("shot_clock_violation", -1.0)
             if kind == "score":
                 # A template-confirmed Scored! is trustworthy on its own → emit
                 # immediately so the broadcast actually cuts in. Side (Home/Away)
@@ -366,15 +369,24 @@ class ResultBannerTracker:
                         self._last_scoreboard_score = scoreboard
                         self.home_score, self.away_score = scoreboard
                 logging.info(
-                    "[ResultBanner] Scored! %s via template (scored=%.2f oob=%.2f)",
-                    side, scored_c, oob_c,
+                    "[ResultBanner] Scored! %s via template "
+                    "(scored=%.2f oob=%.2f scv=%.2f)",
+                    side, scored_c, oob_c, scv_c,
                 )
                 return ResultBannerCue(
                     self._start, timestamp, "score", side, home_s, away_s
                 )
+            if kind == "shot_clock_violation":
+                logging.info(
+                    "[ResultBanner] Shot Clock Violation! %s "
+                    "(tm scored=%.2f oob=%.2f scv=%.2f)",
+                    side, scored_c, oob_c, scv_c,
+                )
+                return cue
             logging.info(
-                "[ResultBanner] Out of Bounds! %s (tm scored=%.2f oob=%.2f)",
-                side, scored_c, oob_c,
+                "[ResultBanner] Out of Bounds! %s "
+                "(tm scored=%.2f oob=%.2f scv=%.2f)",
+                side, scored_c, oob_c, scv_c,
             )
             return cue
         return None

@@ -128,29 +128,41 @@ _current_style_key: str = _DEFAULT_STYLE
 _current_lang: str = "en"  # "en" | "zh"
 
 _VIEW_RELATIONSHIP_CONTEXT = (
-    "[View relationship: LEFT is a synchronized third-person gameplay view and "
-    "RIGHT is the same action from the first-person in-game view. Treat any claim "
-    "about VR equipment, controllers, setup, calibration, or device adjustment as "
-    "an observer error. Broadcast only the unified sports action, using RIGHT as "
-    "the authoritative gameplay evidence. Role identity is fixed: LEFT person and "
-    "RIGHT first-person hands are the player; the other RIGHT-side avatar is the "
-    "robot/test_bot opponent. Explicitly name the player or the robot opponent as "
-    "the actor. The scoreboard mapping is fixed: left Home score is the player's, "
-    "center is time only, and right Away score is the robot opponent's. Treat a clearly "
-    "visible Scored! or Out of Bounds! result as the referee's final ruling, overriding "
-    "an inferred physical outcome. Scored! Home means the player scored; Scored! Away "
-    "means the robot opponent scored. Out of Bounds! Home means the player sent the ball "
-    "out and the robot opponent gets possession; Out of Bounds! Away means the robot "
-    "opponent sent the ball out and the player gets possession. State the "
+    "[View relationship: the feed is one live basketball gameplay view (about 640x480). "
+    "It may switch between first-person and third-person angles of the same match. Treat "
+    "any claim about VR equipment, controllers, setup, calibration, or device adjustment "
+    "as an observer error. Broadcast only the unified sports action. Role identity is "
+    "fixed: the human-controlled athlete is the player; the other avatar (often test_bot) "
+    "is the robot opponent. Explicitly name the player or the robot opponent as the actor. "
+    "The scoreboard mapping is fixed: left Home score is the player's, center is time only, "
+    "and right Away score is the robot opponent's. Treat a clearly "
+    "visible Scored!, Out of Bounds!, or Shot Clock Violation! result as the referee's "
+    "final ruling, overriding an inferred physical outcome. Scored! Home means the player "
+    "scored; Scored! Away means the robot opponent scored. Out of Bounds! Home means the "
+    "player sent the ball out and the robot opponent gets possession; Out of Bounds! Away "
+    "means the robot opponent sent the ball out and the player gets possession. "
+    "Shot Clock Violation! Home means the player ran out of shot clock and possession "
+    "goes to the robot opponent; Shot Clock Violation! Away means the robot opponent "
+    "ran out of shot clock and possession goes to the player. "
+    "State the "
     "outcome naturally without mentioning text, a banner, a screen, or a referee. Treat "
     "the result ruling and the next visible ballhandler as separate facts. Identify "
     "possession only from visible dribbling or ball contact. A dribbling robot avatar means "
-    "the robot opponent has possession; the third-person player's synchronized dribble "
-    "with foreground first-person hands means the player has possession. After an "
+    "the robot opponent has possession; foreground first-person hands or the third-person "
+    "player dribbling means the player has possession. After an "
     "out-of-bounds ruling, use its Home/Away mapping above for the awarded possession. There are "
     "exactly two competitors, no teammates, passes, or assists. Preserve visible "
     "dribbles, cuts, drives, retreats, backcourt resets, steals, blocks, rebounds, "
-    "turnovers, and possession changes; do not collapse them into a shot. Never say "
+    "turnovers, and possession changes; do not collapse them into a shot. Keep the "
+    "finishing move the caption actually reports: a dunk is pushed down through the hoop "
+    "from rim height, a layup is released at close range while still moving into the rim, "
+    "and a jumper leaves the floor and releases from range. A shot or pump fake, a jab "
+    "step, a hesitation, size-up, or rocking the ball or body side to side keeps the ball "
+    "in the hands: when the caption shows that motion, the broadcast MUST use fake or "
+    "size-up wording and never upgrade it to a shot, a make, or a miss. Never invent a "
+    "fake for quiet holding or staring with no rock / jab / sway. If the caption never "
+    "names the release, say the ballhandler attacks, backs the defender down, or "
+    "holds at the perimeter instead of inventing dunk, layup, or three. Never say "
     "kick it back out, dish, or feed: say the same ballhandler retreats, carries the "
     "ball back out, returns to the perimeter, or resets in the backcourt.]"
 )
@@ -200,6 +212,11 @@ def set_language(lang: str) -> None:
 def get_language() -> str:
     """Return the active Gemini broadcast language."""
     return _current_lang
+
+
+def get_style() -> str:
+    """Return the active Gemini broadcast style key (e.g. objective / hype)."""
+    return _current_style_key
 _retriever: _ContextRetriever = _ContextRetriever(top_k=3)
 _raw_context: str = ""
 _RAG_THRESHOLD: int = int(_gemini_cfg.get("rag_threshold", 600))
@@ -380,7 +397,12 @@ def _build_gemini_contents(event_data: Dict[str, Any], prompt: str) -> list[Any]
             "OVERRIDE the text actor when visual ball contact is clear. A ball held, "
             "touched, or released by test_bot requires the subject 'the robot opponent' "
             "even when the text says player. A ball in the foreground hands requires "
-            "the subject 'the player'. If ownership is unclear, do not infer it from pose.]"
+            "the subject 'the player'. If ownership is unclear, do not infer it from pose. "
+            "The images are also the evidence for the finishing move: rim-height push-down "
+            "is a dunk, a close-range release while still moving into the rim is a layup, "
+            "an off-the-floor release from range is a jumper, and a ball that stays in the "
+            "hands is a fake or a size-up rather than an attempt. If the release is not "
+            "visible in these images, do not name dunk, layup, or three.]"
         )
         contents.extend(
             genai_types.Part.from_bytes(data=frame, mime_type="image/jpeg")
@@ -466,8 +488,9 @@ _P4_ON_COURT_RE = re.compile(
 )
 _P4_VISIBLE_ACTION_RE = re.compile(
     r"\b(?:ballhandler|defender|dribbl\w*|possess\w*|standoff|sizes? up|"
+    r"fake[sd]?|faking|hesitat\w*|jab[- ]steps?|crossover|crosses over|"
     r"holds? (?:the )?ball|controls? (?:the )?ball|protects? (?:the )?ball)\b|"
-    r"持球|運球|防守|對峙",
+    r"持球|運球|防守|對峙|假動作|試探步",
     re.IGNORECASE,
 )
 
@@ -478,7 +501,11 @@ def _ground_priority(priority: int, visual: str) -> int:
     A quiet on-court standoff is still useful basketball state and must remain
     audible as P4.  Pure crowd celebration or equipment/room narration stays P5.
     """
-    if re.search(r"\b(?:scored\s*!|out\s+of\s+bounds\s*!)", visual, re.IGNORECASE):
+    if re.search(
+        r"\b(?:scored\s*!|out\s+of\s+bounds\s*!|shot\s*[- ]?\s*clock\s+violation\s*!)",
+        visual,
+        re.IGNORECASE,
+    ):
         return 1
     if priority != 5:
         return priority
@@ -540,7 +567,7 @@ def stream_gemini(event_data: Dict[str, Any]) -> Generator[StreamEvent, None, No
             from .broadcast_grounding import ground_broadcast_text
             actor_grounded = _override_actor_subject(m.group(2).strip(), actor_label)
             ev.broadcast_text = ground_broadcast_text(
-                actor_grounded, visual, language=_current_lang
+                actor_grounded, visual, language=_current_lang, style=_current_style_key
             )
             return True
 

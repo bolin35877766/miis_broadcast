@@ -503,6 +503,13 @@ async def _openai_realtime_worker():
         warmed_up = False
         doing_warmup = False
         awaiting_cancel_ack = False
+        # Safety valve: if the server's cancel ack (response.done /
+        # response.cancelled / response_cancel_not_active) is ever dropped or
+        # races with the response finishing on its own, awaiting_cancel_ack
+        # would stay True forever and permanently wedge the text-send gate in
+        # (C) — new segments keep queuing but audio never plays again for the
+        # rest of the session. Bound how long we wait for that ack.
+        cancel_ack_deadline = 0.0
 
         try:
             async with websockets.connect(TTS_MODEL_URL, additional_headers=TTS_HEADERS) as websocket:
@@ -541,9 +548,25 @@ async def _openai_realtime_worker():
                         if is_response_active:
                             await websocket.send(json.dumps({"type": "response.cancel"}))
                             awaiting_cancel_ack = True
+                            cancel_ack_deadline = time.time() + 3.0
                         clear_audio_queue()
                         is_response_active = False
                         _interrupt_event.clear()
+
+                    # Stale cancel-ack watchdog: normally response.done /
+                    # response.cancelled / response_cancel_not_active clears
+                    # awaiting_cancel_ack within tens of ms. If none of those
+                    # ever arrive (e.g. the cancel raced the response finishing
+                    # and the server just replied with something we don't
+                    # match), force the gate open again instead of silencing
+                    # every future utterance for the rest of the session.
+                    if awaiting_cancel_ack and time.time() > cancel_ack_deadline:
+                        _log.warning(
+                            "[OpenAITTS] response.cancel ack never arrived — force-clearing "
+                            "awaiting_cancel_ack to avoid a permanent silence"
+                        )
+                        awaiting_cancel_ack = False
+                        is_response_active = False
 
                     # (C) 送出新文字邏輯 (加入對 active 狀態的嚴格檢查)
                     if warmed_up and not awaiting_cancel_ack:
@@ -565,6 +588,7 @@ async def _openai_realtime_worker():
                                 if is_response_active:
                                     await websocket.send(json.dumps({"type": "response.cancel"}))
                                     awaiting_cancel_ack = True
+                                    cancel_ack_deadline = time.time() + 3.0
                                     clear_audio_queue()  # 同步清空已緩衝的音訊，避免舊內容繼續播
                                     _text_queue.put((target_text, ref_ts, start_t, stop_t, priority, log_meta))
                                     continue  # 跳出本次循環，去聽事件 (D)
@@ -618,7 +642,12 @@ async def _openai_realtime_worker():
                             if "active response" in msg:
                                 is_response_active = True
                             if err.get("code") == "response_cancel_not_active":
-                                pass
+                                # Server confirms no response is active — our cancel
+                                # request raced the response finishing/being cancelled
+                                # on its own. There's nothing to wait for, so release
+                                # the gate now instead of relying on the 3s watchdog.
+                                awaiting_cancel_ack = False
+                                is_response_active = False
                             elif _looks_like_openai_api_key_rejection(str(msg) + " " + str(err.get("type", ""))):
                                 _log_openai_tts_rejection_once("server_event", str(msg))
                             else:

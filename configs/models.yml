@@ -6,28 +6,30 @@ classifiers:
     attn_implementation: auto
     device_id: 0
     suppress_numbers: false
-    fps: 3.0
-    initial_fps_frames: 4
-    streaming_fps_frames: 4
+    # Aligned with LiveCC paper / official demo (2 FPS streaming commentary).
+    fps: 2.0
+    initial_fps_frames: 6
+    streaming_fps_frames: 2
     max_new_tokens: 26
     headroom: 1024
-    mm_window_sec: 6.0
-    carry_text_max_chars: 120
-    carry_recent_k: 2
+    # Paper discards visual tokens ~every 240s; we keep a shorter but useful
+    # multimodal window so dunk wind-ups / fakes survive under live lag.
+    mm_window_sec: 30.0
+    carry_text_max_chars: 200
+    carry_recent_k: 3
     generation:
       temperature: 0.5
       top_p: 0.9
       top_k: 30
       repetition_penalty: 1.15
       no_repeat_ngram_size: 3
-    # Live / remote clip path (live_cc_from_frames). Tuned to mirror offline
-    # streaming chunks (~4 frames @ 3 fps ≈ 1.33s) with non-overlapping
-    # infer_interval so we do NOT increase inference rate / latency.
+    # Live / remote clip path (live_cc_from_frames). Match paper demo:
+    # 2 frames @ 2 FPS ≈ 1.0s non-overlapping steps.
     camera:
-      window_sec: 1.33
-      target_fps: 3.0
-      infer_interval: 1.33
-      memory_reset_every: 8
+      window_sec: 1.0
+      target_fps: 2.0
+      infer_interval: 1.0
+      memory_reset_every: 24
 
 # ---------------------------------------------------------------------------
 # ByteTrack — YOLOX + BYTETracker subject-tracking configuration

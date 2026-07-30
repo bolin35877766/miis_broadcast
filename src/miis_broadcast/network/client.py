@@ -82,6 +82,10 @@ class SocketClientRunner(QtCore.QThread):
         self._frame_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(
             maxsize=_FRAME_QUEUE_MAX
         )
+        # LiveCC paper / demo streams at 2 FPS. Cap wire frames so lag drops
+        # intermediate motion less aggressively than flooding ~30 JPEG/s.
+        self._send_fps: float = 2.0
+        self._last_sent_t: float = -1e9
 
     # ------------------------------------------------------------------ #
     # QThread entry point
@@ -158,13 +162,21 @@ class SocketClientRunner(QtCore.QThread):
     def send_frame(self, frame_bgr: np.ndarray, t: float) -> None:
         """
         Encode frame and enqueue for sending.  Returns immediately (non-blocking).
-        One ``FRAME`` per call (wire FPS follows whatever invokes ``send_frame``, e.g. camera ~30 Hz).
+
+        Timestamps are throttled to ``_send_fps`` (default 2, matching LiveCC) so
+        the wire carries an even temporal grid instead of ~30 JPEG/s that collapse
+        to "latest only" under backpressure.
 
         If the outbound queue is full, this frame may be skipped (``queue.Full``); GUI never blocks
         on ``sendall``.
         """
         if self._sock is None or self._stop_requested:
             return
+
+        min_dt = 1.0 / max(self._send_fps, 1e-6)
+        if float(t) - self._last_sent_t < min_dt:
+            return
+        self._last_sent_t = float(t)
 
         try:
             ret, jpeg_buf = cv2.imencode(
@@ -221,6 +233,7 @@ class SocketClientRunner(QtCore.QThread):
 
     def start_inference(self, mode: str, query: str) -> None:
         """Tell server to begin inference with given mode and query prompt."""
+        self._last_sent_t = -1e9
         self._send_ctrl(
             pack_message({"type": MSG_START, "mode": mode, "query": query})
         )
